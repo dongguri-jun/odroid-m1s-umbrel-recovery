@@ -184,8 +184,11 @@ http://192.168.0.10
 
 ---
 
-## 10. 더 자세한 Umbrel OS 사용법
+## 10. 더 자세한 자료
 
-더 자세한 Umbrel OS 사용법은 아래 자료를 참고하세요.
+설치를 마친 뒤 더 알아보고 싶은 내용이 있다면 아래 자료를 참고하세요.
 
-- https://philemon21.com/wp-content/uploads/2026/01/3.-%ED%92%80-%EB%85%B8%EB%93%9C-%EC%9A%B4%EC%98%81-%EA%B0%80%EC%9D%B4%EB%93%9C-v.2.1-2025.-9.-1.pdf
+- **ODROID M1S 공식 위키 (Hardkernel)** — https://wiki.odroid.com/odroid-m1s/odroid-m1s
+  - 하드웨어 사양, 부팅, Ubuntu 설치 등 ODROID M1S 자체에 대한 공식 자료입니다.
+- **Umbrel OS 사용 가이드 (PDF, 한국어)** — https://philemon21.com/wp-content/uploads/2026/01/3.-%ED%92%80-%EB%85%B8%EB%93%9C-%EC%9A%B4%EC%98%81-%EA%B0%80%EC%9D%B4%EB%93%9C-v.2.1-2025.-9.-1.pdf
+  - 설치 후 Umbrel을 운영하는 데 참고할 수 있는 한국어 가이드입니다.
