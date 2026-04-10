@@ -6,8 +6,14 @@ RELEASE_MODE=0
 IMAGE="dockurr/umbrel"
 DATA_DIR="/mnt/fullnode"
 PRESERVE_TAILSCALE=1
-TARGET_PARTITION="/dev/nvme0n1p1"
+TARGET_PARTITION=""
+TARGET_INPUT=""
+TARGET_MODE="partition"
+TARGET_DISK_PATH=""
+TARGET_INPUT_RESOLVED=""
 EXISTING_TARGET_MOUNT=""
+TARGET_EXISTING_PARTITIONS=()
+TARGET_MOUNT_PATHS=()
 TARGET_SWAP_PATHS=()
 
 log() {
@@ -72,6 +78,109 @@ remove_path() {
   fi
 }
 
+partition_path_for_disk() {
+  local disk_path="$1"
+  local disk_name
+  disk_name="$(basename "$disk_path")"
+  if [[ "$disk_name" =~ [0-9]$ ]]; then
+    printf '%sp1\n' "$disk_path"
+  else
+    printf '%s1\n' "$disk_path"
+  fi
+}
+
+wait_for_block_device() {
+  local path="$1"
+  local attempts="${2:-10}"
+  local i
+  for ((i=0; i<attempts; i++)); do
+    [[ -b "$path" ]] && return 0
+    sleep 1
+  done
+  return 1
+}
+
+resolve_block_path() {
+  local path="$1"
+  if command -v readlink >/dev/null 2>&1; then
+    readlink -f -- "$path" 2>/dev/null || printf '%s\n' "$path"
+  elif command -v realpath >/dev/null 2>&1; then
+    realpath "$path" 2>/dev/null || printf '%s\n' "$path"
+  else
+    printf '%s\n' "$path"
+  fi
+}
+
+guess_parent_disk_path() {
+  local path="$1"
+  if [[ "$path" =~ ^(/dev/.+)p[0-9]+$ ]]; then
+    printf '%s\n' "${BASH_REMATCH[1]}"
+  elif [[ "$path" =~ ^(/dev/[a-z]+)[0-9]+$ ]]; then
+    printf '%s\n' "${BASH_REMATCH[1]}"
+  else
+    printf '%s\n' ""
+  fi
+}
+
+select_target_disk_interactive() {
+  local candidate_paths=()
+  local candidate_sizes=()
+  local candidate_models=()
+  local candidate_mounts=()
+  local candidate_parts=()
+  local disk_path size model mounts part_count disk_name choice index
+
+  if [[ -z "$ROOT_DISK" ]]; then
+    err "Could not determine the current root/system disk automatically."
+    err "For safety, rerun with --target-partition and specify the intended SSD disk or partition explicitly."
+    exit 1
+  fi
+
+  while IFS='|' read -r disk_path size model; do
+    [[ -z "$disk_path" ]] && continue
+    disk_name="$(basename "$disk_path")"
+    if [[ -n "$ROOT_DISK" && "$disk_name" == "$ROOT_DISK" ]]; then
+      continue
+    fi
+
+    mounts="$(lsblk -nrpo MOUNTPOINT "$disk_path" 2>/dev/null | awk 'NF' | paste -sd ', ' -)"
+    [[ -n "$mounts" ]] || mounts="NOT_MOUNTED"
+    part_count="$(lsblk -nrpo NAME,TYPE "$disk_path" 2>/dev/null | awk '$2 == "part" {count++} END {print count+0}')"
+
+    candidate_paths+=("$disk_path")
+    candidate_sizes+=("$size")
+    candidate_models+=("${model:-unknown}")
+    candidate_mounts+=("$mounts")
+    candidate_parts+=("$part_count")
+  done < <(lsblk -dnpo NAME,SIZE,MODEL,TYPE 2>/dev/null | awk -F'|' '{gsub(/[[:space:]]+$/, "", $3)} $4 == "disk" {print $1 "|" $2 "|" $3}' OFS='|')
+
+  if [[ "${#candidate_paths[@]}" -eq 0 ]]; then
+    err "No candidate storage disks were found."
+    exit 1
+  fi
+
+  echo
+  echo "Detected non-root storage disks:"
+  for index in "${!candidate_paths[@]}"; do
+    printf '  %d) %s  size=%s  model=%s  partitions=%s  mounts=%s\n' \
+      "$((index + 1))" \
+      "${candidate_paths[$index]}" \
+      "${candidate_sizes[$index]}" \
+      "${candidate_models[$index]}" \
+      "${candidate_parts[$index]}" \
+      "${candidate_mounts[$index]}"
+  done
+
+  while true; do
+    read -r -p "Choose the storage disk to initialize [1-${#candidate_paths[@]}]: " choice
+    if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#candidate_paths[@]} )); then
+      TARGET_INPUT="${candidate_paths[$((choice - 1))]}"
+      return 0
+    fi
+    warn "Invalid selection. Please enter a number from 1 to ${#candidate_paths[@]}."
+  done
+}
+
 usage() {
   cat <<'EOF'
 ODROID M1S Ubuntu cleanup + Umbrel Docker installer
@@ -84,7 +193,7 @@ Options:
   --release                  Release mode: remove tailscale too
   --image IMAGE              Docker image to run (default: dockurr/umbrel)
   --data-dir PATH            Umbrel data directory (default: /mnt/fullnode)
-  --target-partition PATH    SSD partition to format and mount (default: /dev/nvme0n1p1)
+  --target-partition PATH    Target SSD disk or partition to initialize
   --remove-tailscale         Alias for --release
   -h, --help                 Show this help
 
@@ -92,6 +201,7 @@ Examples:
   sudo bash m1s-clean-install-umbrel.sh --dry-run
   sudo bash m1s-clean-install-umbrel.sh --data-dir /mnt/fullnode
   sudo bash m1s-clean-install-umbrel.sh --image tao9317/tao-umbrel --data-dir /mnt/fullnode
+  sudo bash m1s-clean-install-umbrel.sh --target-partition /dev/nvme0n1
   sudo bash m1s-clean-install-umbrel.sh --target-partition /dev/nvme0n1p1
 EOF
 }
@@ -134,6 +244,8 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 
+TARGET_INPUT="$TARGET_PARTITION"
+
 if [[ "${EUID}" -ne 0 ]]; then
   err "Run this script with sudo or as root."
   exit 1
@@ -173,29 +285,58 @@ fi
 
 ROOT_SOURCE="$(findmnt -n -o SOURCE / || true)"
 ROOT_DISK="$(lsblk -no PKNAME "$ROOT_SOURCE" 2>/dev/null | head -n1 || true)"
-TARGET_DISK="$(lsblk -no PKNAME "$TARGET_PARTITION" 2>/dev/null | head -n1 || true)"
+TARGET_DISK=""
 CURRENT_DATA_SOURCE="$(findmnt -n -o SOURCE --target "$DATA_DIR" 2>/dev/null || true)"
-EXISTING_TARGET_MOUNT="$(findmnt -rn -S "$TARGET_PARTITION" -o TARGET 2>/dev/null | head -n1 || true)"
+EXISTING_TARGET_MOUNT=""
 
-while IFS= read -r swap_path; do
-  [[ -z "$swap_path" ]] && continue
-  TARGET_SWAP_PATHS+=("$swap_path")
-done < <(swapon --noheadings --raw --output=NAME 2>/dev/null | while read -r p; do
-  [[ -n "$p" ]] || continue
-  if [[ "$p" == "$TARGET_PARTITION" ]]; then
-    printf '%s\n' "$p"
-  elif [[ -n "$EXISTING_TARGET_MOUNT" && "$p" == "$EXISTING_TARGET_MOUNT"* ]]; then
-    printf '%s\n' "$p"
+if [[ -z "$TARGET_INPUT" ]]; then
+  select_target_disk_interactive
+fi
+
+TARGET_INPUT_RESOLVED="$(resolve_block_path "$TARGET_INPUT")"
+
+if [[ -b "$TARGET_INPUT" ]]; then
+  TARGET_INPUT_RESOLVED="$(resolve_block_path "$TARGET_INPUT")"
+  TARGET_TYPE="$(lsblk -dn -o TYPE "$TARGET_INPUT_RESOLVED" 2>/dev/null | head -n1 || true)"
+  case "$TARGET_TYPE" in
+    part)
+      TARGET_MODE="partition"
+      TARGET_PARTITION="$TARGET_INPUT_RESOLVED"
+      TARGET_DISK="$(lsblk -no PKNAME "$TARGET_PARTITION" 2>/dev/null | head -n1 || true)"
+      TARGET_DISK_PATH="/dev/$TARGET_DISK"
+      EXISTING_TARGET_MOUNT="$(findmnt -rn -S "$TARGET_PARTITION" -o TARGET 2>/dev/null | head -n1 || true)"
+      ;;
+    disk)
+      TARGET_MODE="raw-disk"
+      TARGET_DISK_PATH="$TARGET_INPUT_RESOLVED"
+      TARGET_DISK="$(basename "$TARGET_DISK_PATH")"
+      TARGET_PARTITION="$(partition_path_for_disk "$TARGET_DISK_PATH")"
+      ;;
+    *)
+      err "Target path must be a partition or disk block device: $TARGET_INPUT"
+      exit 1
+      ;;
+  esac
+else
+  TARGET_DISK_PATH="$(guess_parent_disk_path "$TARGET_INPUT")"
+  TARGET_DISK_PATH="$(resolve_block_path "$TARGET_DISK_PATH")"
+  if [[ -n "$TARGET_DISK_PATH" ]]; then
+    if [[ -b "$TARGET_DISK_PATH" ]]; then
+      TARGET_MODE="raw-disk"
+      TARGET_DISK="$(basename "$TARGET_DISK_PATH")"
+    fi
   fi
-done)
 
-if [[ ! -b "$TARGET_PARTITION" ]]; then
-  err "Target partition does not exist: $TARGET_PARTITION"
-  exit 1
+  if [[ "$TARGET_MODE" == "raw-disk" ]]; then
+    TARGET_PARTITION="$(partition_path_for_disk "$TARGET_DISK_PATH")"
+  else
+    err "Target partition does not exist: $TARGET_INPUT"
+    exit 1
+  fi
 fi
 
 if [[ -z "$TARGET_DISK" ]]; then
-  err "Could not determine parent disk for target partition: $TARGET_PARTITION"
+  err "Could not determine target disk for: $TARGET_INPUT"
   exit 1
 fi
 
@@ -208,6 +349,47 @@ if [[ "$TARGET_DISK" != nvme* ]]; then
   warn "Target partition parent disk is /dev/$TARGET_DISK, not an nvme device."
 fi
 
+if [[ "$TARGET_MODE" == "partition" ]]; then
+  TARGET_EXISTING_PARTITIONS+=("$TARGET_PARTITION")
+  EXISTING_TARGET_MOUNT="$(findmnt -rn -S "$TARGET_PARTITION" -o TARGET 2>/dev/null | head -n1 || true)"
+  if [[ -n "$EXISTING_TARGET_MOUNT" ]] && append_unique "$EXISTING_TARGET_MOUNT" "${TARGET_MOUNT_PATHS[@]}"; then
+    TARGET_MOUNT_PATHS+=("$EXISTING_TARGET_MOUNT")
+  fi
+else
+  while IFS= read -r child_name; do
+    [[ -z "$child_name" ]] && continue
+    if append_unique "$child_name" "${TARGET_EXISTING_PARTITIONS[@]}"; then
+      TARGET_EXISTING_PARTITIONS+=("$child_name")
+    fi
+    child_mount="$(findmnt -rn -S "$child_name" -o TARGET 2>/dev/null | head -n1 || true)"
+    if [[ -n "$child_mount" ]] && append_unique "$child_mount" "${TARGET_MOUNT_PATHS[@]}"; then
+      TARGET_MOUNT_PATHS+=("$child_mount")
+    fi
+  done < <(lsblk -nrpo NAME,TYPE "$TARGET_DISK_PATH" 2>/dev/null | awk '$2 == "part" {print $1}')
+  EXISTING_TARGET_MOUNT="${TARGET_MOUNT_PATHS[*]:-}"
+fi
+
+while IFS= read -r swap_path; do
+  [[ -z "$swap_path" ]] && continue
+  if append_unique "$swap_path" "${TARGET_SWAP_PATHS[@]}"; then
+    TARGET_SWAP_PATHS+=("$swap_path")
+  fi
+done < <(swapon --noheadings --raw --output=NAME 2>/dev/null | while read -r p; do
+  [[ -n "$p" ]] || continue
+  for target_dev in "${TARGET_EXISTING_PARTITIONS[@]}"; do
+    if [[ "$p" == "$target_dev" ]]; then
+      printf '%s\n' "$p"
+      continue 2
+    fi
+  done
+  for mount_path in "${TARGET_MOUNT_PATHS[@]}"; do
+    if [[ -n "$mount_path" && "$p" == "$mount_path"* ]]; then
+      printf '%s\n' "$p"
+      continue 2
+    fi
+  done
+done)
+
 cat <<EOF
 
 === ODROID M1S Cleanup + Umbrel Installer ===
@@ -217,7 +399,9 @@ Architecture:       $ARCH
 Root filesystem:    ${ROOT_SOURCE:-unknown}
 Umbrel image:       $IMAGE
 Umbrel data dir:    $DATA_DIR
+Target input:       $TARGET_INPUT
 Target partition:   $TARGET_PARTITION
+Target mode:        $TARGET_MODE
 Existing mount:     ${EXISTING_TARGET_MOUNT:-NOT_MOUNTED}
 Current data mount: ${CURRENT_DATA_SOURCE:-NOT_MOUNTED}
 Preserve Tailscale: $PRESERVE_TAILSCALE
@@ -232,13 +416,17 @@ This script will:
   5. install Docker fresh
   6. start Umbrel as a Docker container
 
-This script WILL erase all existing data on $TARGET_PARTITION.
+This script WILL erase all existing data on the selected SSD target.
 EOF
 
 if [[ "$DRY_RUN" -eq 0 ]]; then
   echo
   warn "This is destructive for services and files stored on eMMC."
-  warn "This will also format $TARGET_PARTITION and erase all existing SSD data on that partition."
+  if [[ "$TARGET_MODE" == "raw-disk" ]]; then
+    warn "This will repartition $TARGET_DISK_PATH, create $TARGET_PARTITION, and erase all existing SSD data on that disk."
+  else
+    warn "This will also format $TARGET_PARTITION and erase all existing SSD data on that partition."
+  fi
   read -r -p "Type ERASE-EMMC-AND-FORMAT-SSD-AND-INSTALL-UMBREL to continue: " CONFIRM
   if [[ "$CONFIRM" != "ERASE-EMMC-AND-FORMAT-SSD-AND-INSTALL-UMBREL" ]]; then
     err "Confirmation text mismatch. Aborting."
@@ -433,25 +621,38 @@ done
 
 info "Cleaning fstab entries that belong to RaspiBlitz eMMC setup"
 TARGET_SWAP_PATHS_STR="${TARGET_SWAP_PATHS[*]}"
-run_shell "EXISTING_MOUNT=${EXISTING_TARGET_MOUNT@Q} DATA_DIR_VALUE=${DATA_DIR@Q} TARGET_SWAP_PATHS_STR=${TARGET_SWAP_PATHS_STR@Q} python3 - <<'PY'
+TARGET_MOUNT_PATHS_STR="${TARGET_MOUNT_PATHS[*]}"
+TARGET_EXISTING_PARTITIONS_STR="${TARGET_EXISTING_PARTITIONS[*]}"
+run_shell "TARGET_MOUNT_PATHS_STR=${TARGET_MOUNT_PATHS_STR@Q} DATA_DIR_VALUE=${DATA_DIR@Q} TARGET_SWAP_PATHS_STR=${TARGET_SWAP_PATHS_STR@Q} TARGET_EXISTING_PARTITIONS_STR=${TARGET_EXISTING_PARTITIONS_STR@Q} python3 - <<'PY'
 from pathlib import Path
 import os
 fstab = Path('/etc/fstab')
 text = fstab.read_text()
 lines = text.splitlines()
 filtered = []
-existing_mount = os.environ.get('EXISTING_MOUNT', '')
+target_mounts = [p for p in os.environ.get('TARGET_MOUNT_PATHS_STR', '').split() if p]
 data_dir = os.environ.get('DATA_DIR_VALUE', '')
 target_swaps = [p for p in os.environ.get('TARGET_SWAP_PATHS_STR', '').split() if p]
+target_devices = [p for p in os.environ.get('TARGET_EXISTING_PARTITIONS_STR', '').split() if p]
 for line in lines:
     stripped = line.strip()
+    if not stripped or stripped.startswith('#'):
+        filtered.append(line)
+        continue
     if '/var/cache/raspiblitz' in stripped:
         continue
-    if existing_mount and existing_mount in stripped:
+    parts = stripped.split()
+    if len(parts) < 2:
+        filtered.append(line)
         continue
-    if data_dir and data_dir in stripped:
+    source, mountpoint = parts[0], parts[1]
+    if mountpoint in target_mounts:
         continue
-    if any(swap_path in stripped for swap_path in target_swaps):
+    if data_dir and mountpoint == data_dir:
+        continue
+    if source in target_swaps:
+        continue
+    if source in target_devices:
         continue
     filtered.append(line)
 new = '\n'.join(filtered) + ('\n' if text.endswith('\n') else '')
@@ -463,34 +664,66 @@ info "Formatting and mounting SSD for Umbrel data"
 run_cmd mkdir -p "$DATA_DIR"
 if command -v fuser >/dev/null 2>&1; then
   info "Checking for processes still using the current SSD mount"
-  if [[ -n "$EXISTING_TARGET_MOUNT" ]]; then
-    run_shell "fuser -vm '$EXISTING_TARGET_MOUNT' || true"
-  fi
+  for mount_path in "${TARGET_MOUNT_PATHS[@]}"; do
+    [[ -n "$mount_path" ]] || continue
+    run_shell "fuser -vm '$mount_path' || true"
+  done
 fi
 if [[ "$DRY_RUN" -eq 1 ]]; then
   for swap_path in "${TARGET_SWAP_PATHS[@]}"; do
     run_shell "swapoff '$swap_path' >/dev/null 2>&1 || true"
   done
-  if [[ -n "$EXISTING_TARGET_MOUNT" ]]; then
-    run_shell "umount '$EXISTING_TARGET_MOUNT' >/dev/null 2>&1 || true"
+  for mount_path in "${TARGET_MOUNT_PATHS[@]}"; do
+    [[ -n "$mount_path" ]] || continue
+    run_shell "umount '$mount_path' >/dev/null 2>&1 || true"
+  done
+  for target_dev in "${TARGET_EXISTING_PARTITIONS[@]}"; do
+    [[ -n "$target_dev" ]] || continue
+    run_shell "umount '$target_dev' >/dev/null 2>&1 || true"
+  done
+  if [[ "$TARGET_MODE" == "partition" ]]; then
+    run_shell "umount '$TARGET_PARTITION' >/dev/null 2>&1 || true"
   fi
-  run_shell "umount '$TARGET_PARTITION' >/dev/null 2>&1 || true"
   run_shell "umount '$DATA_DIR' >/dev/null 2>&1 || true"
 else
   for swap_path in "${TARGET_SWAP_PATHS[@]}"; do
     bash -lc "swapoff '$swap_path' >/dev/null 2>&1 || true"
   done
-  if [[ -n "$EXISTING_TARGET_MOUNT" ]]; then
-    bash -lc "umount '$EXISTING_TARGET_MOUNT' >/dev/null 2>&1 || true"
+  while IFS= read -r active_swap; do
+    [[ -z "$active_swap" ]] && continue
+    err "Target swap is still active after swapoff attempt: $active_swap"
+    err "Disable swap users on the SSD and try again."
+    exit 1
+  done < <(swapon --noheadings --raw --output=NAME 2>/dev/null | while read -r p; do
+    [[ -n "$p" ]] || continue
+    for swap_path in "${TARGET_SWAP_PATHS[@]}"; do
+      if [[ "$p" == "$swap_path" ]]; then
+        printf '%s\n' "$p"
+        continue 2
+      fi
+    done
+  done)
+  for mount_path in "${TARGET_MOUNT_PATHS[@]}"; do
+    [[ -n "$mount_path" ]] || continue
+    bash -lc "umount '$mount_path' >/dev/null 2>&1 || true"
+  done
+  for target_dev in "${TARGET_EXISTING_PARTITIONS[@]}"; do
+    [[ -n "$target_dev" ]] || continue
+    bash -lc "umount '$target_dev' >/dev/null 2>&1 || true"
+  done
+  if [[ "$TARGET_MODE" == "partition" ]]; then
+    bash -lc "umount '$TARGET_PARTITION' >/dev/null 2>&1 || true"
   fi
-  bash -lc "umount '$TARGET_PARTITION' >/dev/null 2>&1 || true"
   bash -lc "umount '$DATA_DIR' >/dev/null 2>&1 || true"
 
-  if findmnt -rn -S "$TARGET_PARTITION" >/dev/null 2>&1; then
-    err "Target partition is still mounted after unmount attempt: $TARGET_PARTITION"
-    err "Stop remaining processes using the SSD and try again."
-    exit 1
-  fi
+  for target_dev in "${TARGET_EXISTING_PARTITIONS[@]}"; do
+    [[ -n "$target_dev" ]] || continue
+    if findmnt -rn -S "$target_dev" >/dev/null 2>&1; then
+      err "Target device is still mounted after unmount attempt: $target_dev"
+      err "Stop remaining processes using the SSD and try again."
+      exit 1
+    fi
+  done
 
   CURRENT_DATA_SOURCE="$(findmnt -rn -o SOURCE -T "$DATA_DIR" 2>/dev/null || true)"
   if [[ -n "$CURRENT_DATA_SOURCE" && "$CURRENT_DATA_SOURCE" != "$ROOT_SOURCE" && "$CURRENT_DATA_SOURCE" != "tmpfs" ]]; then
@@ -499,6 +732,28 @@ else
     exit 1
   fi
 fi
+
+if [[ "$TARGET_MODE" == "raw-disk" ]]; then
+  info "Creating a fresh GPT partition on raw SSD $TARGET_DISK_PATH"
+  if ! command -v sfdisk >/dev/null 2>&1; then
+    err "sfdisk is required to create a partition on raw SSD targets, but it is not installed."
+    exit 1
+  fi
+  run_shell "printf ',,L\n' | sfdisk --label gpt '$TARGET_DISK_PATH'"
+  if command -v partprobe >/dev/null 2>&1; then
+    run_cmd partprobe "$TARGET_DISK_PATH"
+  fi
+  if command -v udevadm >/dev/null 2>&1; then
+    run_cmd udevadm settle
+  fi
+  if [[ "$DRY_RUN" -eq 0 ]]; then
+    if ! wait_for_block_device "$TARGET_PARTITION" 15; then
+      err "Partition creation completed but target partition did not appear: $TARGET_PARTITION"
+      exit 1
+    fi
+  fi
+fi
+
 run_cmd mkfs.ext4 -F "$TARGET_PARTITION"
 
 TARGET_UUID_CMD="blkid -s UUID -o value '$TARGET_PARTITION'"
