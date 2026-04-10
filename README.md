@@ -124,6 +124,28 @@ git clone https://github.com/dongguri-jun/odroid-m1s-umbrel-recovery.git
 
 입력 후 **엔터**를 누르세요. 네트워크를 통해 파일이 내려받아집니다.
 
+### `git clone` 이 안 될 때
+
+만약 아래처럼 나오면:
+
+```text
+Could not resolve host: github.com
+```
+
+아래 명령을 한 줄씩 실행하세요.
+
+```bash
+ping -c 3 github.com
+curl -I https://github.com
+sudo systemctl restart systemd-resolved
+```
+
+그 다음 다시 아래 명령을 실행하세요.
+
+```bash
+git clone https://github.com/dongguri-jun/odroid-m1s-umbrel-recovery.git
+```
+
 **(4) 내려받은 폴더 안으로 들어갑니다.**
 
 ```bash
