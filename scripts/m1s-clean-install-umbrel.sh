@@ -181,7 +181,20 @@ select_target_disk_interactive() {
   while true; do
     read -r -p "Choose the storage disk to initialize [1-${#candidate_paths[@]}]: " choice
     if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#candidate_paths[@]} )); then
-      TARGET_INPUT="${candidate_paths[$((choice - 1))]}"
+      local selected="${candidate_paths[$((choice - 1))]}"
+      local selected_name
+      selected_name="$(basename "$selected")"
+      if [[ "$selected_name" != nvme* ]]; then
+        echo
+        warn "WARNING: '$selected' is NOT an NVMe device."
+        warn "This script is designed for NVMe SSD. Formatting a non-NVMe device may destroy important data."
+        read -r -p "Type YES-USE-THIS-DISK to proceed with this non-NVMe disk: " non_nvme_confirm
+        if [[ "$non_nvme_confirm" != "YES-USE-THIS-DISK" ]]; then
+          warn "Selection cancelled. Please choose again."
+          continue
+        fi
+      fi
+      TARGET_INPUT="$selected"
       return 0
     fi
     warn "Invalid selection. Please enter a number from 1 to ${#candidate_paths[@]}."
@@ -223,14 +236,26 @@ while [[ $# -gt 0 ]]; do
       PRESERVE_TAILSCALE=0
       ;;
     --image)
+      if [[ $# -lt 2 ]]; then
+        err "--image requires a value (e.g. --image dockurr/umbrel)"
+        exit 1
+      fi
       IMAGE="$2"
       shift
       ;;
     --data-dir)
+      if [[ $# -lt 2 ]]; then
+        err "--data-dir requires a value (e.g. --data-dir /mnt/fullnode)"
+        exit 1
+      fi
       DATA_DIR="$2"
       shift
       ;;
     --target-partition)
+      if [[ $# -lt 2 ]]; then
+        err "--target-partition requires a value (e.g. --target-partition /dev/nvme0n1)"
+        exit 1
+      fi
       TARGET_PARTITION="$2"
       shift
       ;;
@@ -279,6 +304,13 @@ if [[ "$ARCH" != "aarch64" && "$ARCH" != "arm64" ]]; then
   exit 1
 fi
 
+for required_cmd in python3 curl blkid mkfs.ext4 lsblk findmnt; do
+  if ! command -v "$required_cmd" >/dev/null 2>&1; then
+    err "Required command '$required_cmd' is not installed."
+    exit 1
+  fi
+done
+
 MODEL="unknown"
 if [[ -r /proc/device-tree/model ]]; then
   MODEL="$(tr -d '\0' </proc/device-tree/model)"
@@ -295,6 +327,21 @@ ROOT_DISK="$(lsblk -no PKNAME "$ROOT_SOURCE" 2>/dev/null | head -n1 || true)"
 TARGET_DISK=""
 CURRENT_DATA_SOURCE="$(findmnt -n -o SOURCE --target "$DATA_DIR" 2>/dev/null || true)"
 EXISTING_TARGET_MOUNT=""
+
+if [[ -z "$ROOT_DISK" ]]; then
+  warn "Could not determine the current root/system disk automatically."
+  if [[ -n "$TARGET_INPUT" ]]; then
+    warn "Root disk detection failed. Proceeding with explicit target: $TARGET_INPUT"
+    warn "Please verify this is NOT your system disk."
+    if [[ "$DRY_RUN" -eq 0 ]]; then
+      read -r -p "Type CONFIRM-TARGET to continue anyway: " ROOT_CONFIRM
+      if [[ "$ROOT_CONFIRM" != "CONFIRM-TARGET" ]]; then
+        err "Aborted by user."
+        exit 1
+      fi
+    fi
+  fi
+fi
 
 if [[ -z "$TARGET_INPUT" ]]; then
   select_target_disk_interactive
@@ -628,10 +675,17 @@ done
 info "Removing dedicated service accounts"
 USERS_TO_REMOVE=(admin bitcoin blitzapi electrs)
 for user in "${USERS_TO_REMOVE[@]}"; do
+  if [[ -n "${SUDO_USER:-}" && "$user" == "$SUDO_USER" ]]; then
+    warn "Skipping removal of '$user': this is the current sudo user."
+    continue
+  fi
   if user_exists "$user"; then
-    run_cmd userdel -r "$user"
+    run_cmd userdel -r "$user" || warn "Failed to remove user '$user' (continuing)"
   fi
 done
+
+info "Backing up /etc/fstab before modification"
+run_cmd cp /etc/fstab "/etc/fstab.bak.$(date +%s)"
 
 info "Cleaning fstab entries that belong to RaspiBlitz eMMC setup"
 TARGET_SWAP_PATHS_STR="${TARGET_SWAP_PATHS[*]}"
@@ -639,7 +693,7 @@ TARGET_MOUNT_PATHS_STR="${TARGET_MOUNT_PATHS[*]}"
 TARGET_EXISTING_PARTITIONS_STR="${TARGET_EXISTING_PARTITIONS[*]}"
 run_shell "TARGET_MOUNT_PATHS_STR=${TARGET_MOUNT_PATHS_STR@Q} DATA_DIR_VALUE=${DATA_DIR@Q} TARGET_SWAP_PATHS_STR=${TARGET_SWAP_PATHS_STR@Q} TARGET_EXISTING_PARTITIONS_STR=${TARGET_EXISTING_PARTITIONS_STR@Q} python3 - <<'PY'
 from pathlib import Path
-import os
+import os, tempfile
 fstab = Path('/etc/fstab')
 text = fstab.read_text()
 lines = text.splitlines()
@@ -671,7 +725,12 @@ for line in lines:
     filtered.append(line)
 new = '\n'.join(filtered) + ('\n' if text.endswith('\n') else '')
 if new != text:
-    fstab.write_text(new)
+    fd, tmp = tempfile.mkstemp(dir='/etc', prefix='fstab.tmp.')
+    os.write(fd, new.encode())
+    os.fsync(fd)
+    os.close(fd)
+    os.chmod(tmp, 0o644)
+    os.rename(tmp, str(fstab))
 PY"
 
 info "Formatting and mounting SSD for Umbrel data"
@@ -786,14 +845,38 @@ fi
 run_cmd mount "$TARGET_PARTITION" "$DATA_DIR"
 run_cmd chown -R root:root "$DATA_DIR"
 
-run_shell "python3 - <<'PY'
+run_shell "FSTAB_UUID=${TARGET_UUID@Q} FSTAB_MOUNT=${DATA_DIR@Q} python3 - <<'PY'
 from pathlib import Path
+import os, tempfile
 fstab = Path('/etc/fstab')
-entry = 'UUID=${TARGET_UUID}\t${DATA_DIR}\text4\tdefaults,auto,exec,rw\t0\t0\n'
-with fstab.open('a') as f:
-    if not f.tell() == 0:
-        pass
-    f.write(entry)
+uuid_val = os.environ['FSTAB_UUID']
+mount_val = os.environ['FSTAB_MOUNT']
+entry = 'UUID={}\t{}\text4\tdefaults,auto,exec,rw\t0\t0'.format(uuid_val, mount_val)
+text = fstab.read_text()
+lines = text.splitlines()
+# Remove any existing entries for the same UUID or mountpoint to prevent duplicates
+filtered = []
+for line in lines:
+    stripped = line.strip()
+    if not stripped or stripped.startswith('#'):
+        filtered.append(line)
+        continue
+    parts = stripped.split()
+    if len(parts) >= 2:
+        source, mountpoint = parts[0], parts[1]
+        if source == 'UUID={}'.format(uuid_val):
+            continue
+        if mountpoint == mount_val:
+            continue
+    filtered.append(line)
+filtered.append(entry)
+new = '\n'.join(filtered) + '\n'
+fd, tmp = tempfile.mkstemp(dir='/etc', prefix='fstab.tmp.')
+os.write(fd, new.encode())
+os.fsync(fd)
+os.close(fd)
+os.chmod(tmp, 0o644)
+os.rename(tmp, str(fstab))
 PY"
 
 CURRENT_DATA_SOURCE="$(findmnt -n -o SOURCE --target "$DATA_DIR" 2>/dev/null || true)"
@@ -803,7 +886,19 @@ if [[ "$DRY_RUN" -eq 0 && "$CURRENT_DATA_SOURCE" != "$TARGET_PARTITION" ]]; then
 fi
 
 info "Installing fresh Docker"
-run_shell 'curl -fsSL https://get.docker.com | sh'
+if [[ "$DRY_RUN" -eq 0 ]]; then
+  if ! curl -fsSL https://get.docker.com | sh; then
+    err "Docker installation failed."
+    err "The SSD has already been formatted and mounted at $DATA_DIR."
+    err "To retry Docker installation only, run:"
+    err "  curl -fsSL https://get.docker.com | sudo sh"
+    err "Then start Umbrel manually:"
+    err "  sudo docker run -d --name umbrel --restart always -p 80:80 -v $DATA_DIR:/data -v /var/run/docker.sock:/var/run/docker.sock --stop-timeout 60 --privileged $IMAGE"
+    exit 1
+  fi
+else
+  run_shell 'curl -fsSL https://get.docker.com | sh'
+fi
 run_cmd systemctl enable docker
 run_cmd systemctl start docker
 
@@ -814,7 +909,23 @@ fi
 info "Pulling and starting Umbrel"
 run_cmd docker pull "$IMAGE"
 run_shell "docker rm -f umbrel >/dev/null 2>&1 || true"
+# Note: --privileged and docker.sock mount are required by the dockurr/umbrel image
+# to manage its internal Docker containers. --pid=host is required for process management.
 run_cmd docker run -d --name umbrel --restart always -p 80:80 -v "$DATA_DIR:/data" -v /var/run/docker.sock:/var/run/docker.sock --stop-timeout 60 --pid=host --privileged "$IMAGE"
+
+if [[ "$DRY_RUN" -eq 0 ]]; then
+  info "Waiting for Umbrel container to stabilize..."
+  sleep 10
+  CONTAINER_STATE="$(docker inspect --format='{{.State.Status}}' umbrel 2>/dev/null || true)"
+  if [[ "$CONTAINER_STATE" != "running" ]]; then
+    warn "Umbrel container is not running (state: ${CONTAINER_STATE:-unknown})."
+    warn "Check logs with: docker logs umbrel"
+    warn "The SSD is mounted at $DATA_DIR and Docker is installed. You can retry:"
+    warn "  docker rm -f umbrel; docker run -d --name umbrel --restart always -p 80:80 -v $DATA_DIR:/data -v /var/run/docker.sock:/var/run/docker.sock --stop-timeout 60 --pid=host --privileged $IMAGE"
+  else
+    info "Umbrel container is running."
+  fi
+fi
 
 info "Done."
 cat <<EOF
