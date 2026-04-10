@@ -128,7 +128,7 @@ select_target_disk_interactive() {
   local candidate_models=()
   local candidate_mounts=()
   local candidate_parts=()
-  local disk_path size model mounts part_count disk_name choice index
+  local disk_path size model mounts part_count disk_name choice index line name type
 
   if [[ -z "$ROOT_DISK" ]]; then
     err "Could not determine the current root/system disk automatically."
@@ -136,7 +136,14 @@ select_target_disk_interactive() {
     exit 1
   fi
 
-  while IFS='|' read -r disk_path size model; do
+  while IFS= read -r line; do
+    [[ -n "$line" ]] || continue
+    unset NAME SIZE TYPE MODEL name size type model
+    eval "$line"
+    [[ "${TYPE:-}" == "disk" ]] || continue
+    disk_path="/dev/${NAME}"
+    size="${SIZE:-unknown}"
+    model="${MODEL:-unknown}"
     [[ -z "$disk_path" ]] && continue
     disk_name="$(basename "$disk_path")"
     if [[ -n "$ROOT_DISK" && "$disk_name" == "$ROOT_DISK" ]]; then
@@ -152,7 +159,7 @@ select_target_disk_interactive() {
     candidate_models+=("${model:-unknown}")
     candidate_mounts+=("$mounts")
     candidate_parts+=("$part_count")
-  done < <(lsblk -dnpo NAME,SIZE,MODEL,TYPE 2>/dev/null | awk -F'|' '{gsub(/[[:space:]]+$/, "", $3)} $4 == "disk" {print $1 "|" $2 "|" $3}' OFS='|')
+  done < <(lsblk -dn -o NAME,SIZE,TYPE,MODEL -P 2>/dev/null)
 
   if [[ "${#candidate_paths[@]}" -eq 0 ]]; then
     err "No candidate storage disks were found."
