@@ -363,6 +363,13 @@ if [[ "$TARGET_MODE" == "partition" ]]; then
     TARGET_MOUNT_PATHS+=("$EXISTING_TARGET_MOUNT")
   fi
 else
+  if append_unique "$TARGET_DISK_PATH" "${TARGET_EXISTING_PARTITIONS[@]}"; then
+    TARGET_EXISTING_PARTITIONS+=("$TARGET_DISK_PATH")
+  fi
+  disk_mount="$(findmnt -rn -S "$TARGET_DISK_PATH" -o TARGET 2>/dev/null | head -n1 || true)"
+  if [[ -n "$disk_mount" ]] && append_unique "$disk_mount" "${TARGET_MOUNT_PATHS[@]}"; then
+    TARGET_MOUNT_PATHS+=("$disk_mount")
+  fi
   while IFS= read -r child_name; do
     [[ -z "$child_name" ]] && continue
     if append_unique "$child_name" "${TARGET_EXISTING_PARTITIONS[@]}"; then
