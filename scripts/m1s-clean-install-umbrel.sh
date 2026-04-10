@@ -927,11 +927,65 @@ if [[ "$DRY_RUN" -eq 0 ]]; then
   fi
 fi
 
+info "Setting up umbrel.local mDNS alias"
+if ! command -v avahi-publish >/dev/null 2>&1; then
+  info "Installing avahi-daemon and avahi-utils..."
+  if [[ "$DRY_RUN" -eq 0 ]]; then
+    DEBIAN_FRONTEND=noninteractive apt-get install -y avahi-daemon avahi-utils libnss-mdns >/dev/null 2>&1 || true
+  else
+    run_shell 'DEBIAN_FRONTEND=noninteractive apt-get install -y avahi-daemon avahi-utils libnss-mdns'
+  fi
+fi
+
+AVAHI_ALIAS_SCRIPT="/usr/local/bin/avahi-publish-umbrel"
+AVAHI_ALIAS_SERVICE="/etc/systemd/system/avahi-alias-umbrel.service"
+
+if [[ "$DRY_RUN" -eq 1 ]]; then
+  echo "[DRY-RUN] write $AVAHI_ALIAS_SCRIPT"
+  echo "[DRY-RUN] write $AVAHI_ALIAS_SERVICE"
+  echo "[DRY-RUN] systemctl enable --now avahi-alias-umbrel.service"
+else
+  cat > "$AVAHI_ALIAS_SCRIPT" <<'ALIASSCRIPT'
+#!/usr/bin/env bash
+set -eu
+while true; do
+  IP="$(ip -4 addr show scope global | awk '/inet / {print $2}' | cut -d/ -f1 | head -n1)"
+  if [[ -n "$IP" ]]; then
+    avahi-publish-address -R umbrel.local "$IP"
+  fi
+  sleep 5
+done
+ALIASSCRIPT
+  chmod +x "$AVAHI_ALIAS_SCRIPT"
+
+  cat > "$AVAHI_ALIAS_SERVICE" <<'SERVICEUNIT'
+[Unit]
+Description=Publish umbrel.local mDNS alias
+After=avahi-daemon.service network-online.target
+Requires=avahi-daemon.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/avahi-publish-umbrel
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+SERVICEUNIT
+
+  systemctl daemon-reload
+  systemctl enable avahi-alias-umbrel.service
+  systemctl start avahi-alias-umbrel.service
+  info "umbrel.local mDNS alias is now active."
+fi
+
 info "Done."
 cat <<EOF
 
 Umbrel container has been started.
-Open: http://<device-ip>
+Open: http://umbrel.local  or  http://<device-ip>
 Image: $IMAGE
 Data directory: $DATA_DIR
 
