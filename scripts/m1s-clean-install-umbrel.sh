@@ -15,6 +15,13 @@ EXISTING_TARGET_MOUNT=""
 TARGET_EXISTING_PARTITIONS=()
 TARGET_MOUNT_PATHS=()
 TARGET_SWAP_PATHS=()
+PRESERVED_PATHS=(
+  /var/lib/fullnode-mount-guard
+  /usr/local/sbin/fullnode-mount-guard.sh
+  /etc/systemd/system/fullnode-mount-guard.service
+  /etc/systemd/system/fullnode-mount-guard.timer
+  /etc/systemd/system/docker.service.d/require-fullnode.conf
+)
 
 log() {
   printf '[%s] %s\n' "$1" "$2"
@@ -67,12 +74,26 @@ append_unique() {
   return 0
 }
 
+is_preserved_path() {
+  local path="$1"
+  local preserved
+  for preserved in "${PRESERVED_PATHS[@]}"; do
+    [[ "$path" == "$preserved" ]] && return 0
+    [[ "$path" == "$preserved"/* ]] && return 0
+  done
+  return 1
+}
+
 user_exists() {
   id "$1" >/dev/null 2>&1
 }
 
 remove_path() {
   local path="$1"
+  if is_preserved_path "$path"; then
+    warn "Skipping preserved path: $path"
+    return 0
+  fi
   if [[ -e "$path" || -L "$path" ]]; then
     run_cmd rm -rf -- "$path"
   fi
@@ -885,6 +906,54 @@ if [[ "$DRY_RUN" -eq 0 && "$CURRENT_DATA_SOURCE" != "$TARGET_PARTITION" ]]; then
   exit 1
 fi
 
+info "Configuring conservative NVMe power policy for future boots"
+FLASH_KERNEL_DEFAULTS="/etc/default/flash-kernel"
+if [[ "$DRY_RUN" -eq 1 ]]; then
+  echo "[DRY-RUN] backup $FLASH_KERNEL_DEFAULTS"
+  echo "[DRY-RUN] append nvme_core.default_ps_max_latency_us=0 pcie_aspm=off pcie_port_pm=off to LINUX_KERNEL_CMDLINE"
+  echo "[DRY-RUN] flash-kernel"
+elif [[ -f "$FLASH_KERNEL_DEFAULTS" ]]; then
+  run_cmd cp "$FLASH_KERNEL_DEFAULTS" "$FLASH_KERNEL_DEFAULTS.bak.$(date +%s)"
+  run_shell "FLASH_KERNEL_FILE=${FLASH_KERNEL_DEFAULTS@Q} python3 - <<'PY'
+from pathlib import Path
+import os
+
+path = Path(os.environ['FLASH_KERNEL_FILE'])
+needles = [
+    'nvme_core.default_ps_max_latency_us=0',
+    'pcie_aspm=off',
+    'pcie_port_pm=off',
+]
+lines = path.read_text().splitlines()
+out = []
+found = False
+for line in lines:
+    if line.startswith('LINUX_KERNEL_CMDLINE='):
+        found = True
+        prefix = 'LINUX_KERNEL_CMDLINE=\"'
+        if line.startswith(prefix) and line.endswith('\"'):
+            body = line[len(prefix):-1]
+        else:
+            body = line.split('=', 1)[1].strip().strip('\"')
+        parts = body.split()
+        for needle in needles:
+            if needle not in parts:
+                parts.append(needle)
+        line = prefix + ' '.join(parts) + '\"'
+    out.append(line)
+if not found:
+    out.append('LINUX_KERNEL_CMDLINE="' + needle + '"')
+path.write_text('\n'.join(out) + '\n')
+PY"
+  if command -v flash-kernel >/dev/null 2>&1; then
+    run_cmd flash-kernel
+  else
+    warn "flash-kernel not found. APST-off kernel parameter was recorded but boot script was not regenerated."
+  fi
+else
+  warn "$FLASH_KERNEL_DEFAULTS not found. Skipping APST-off kernel parameter setup."
+fi
+
 info "Installing fresh Docker"
 if [[ "$DRY_RUN" -eq 0 ]]; then
   if ! curl -fsSL https://get.docker.com | sh; then
@@ -899,6 +968,154 @@ if [[ "$DRY_RUN" -eq 0 ]]; then
 else
   run_shell 'curl -fsSL https://get.docker.com | sh'
 fi
+
+info "Installing self-heal guard for fullnode mount"
+DOCKER_DROPIN_DIR="/etc/systemd/system/docker.service.d"
+DOCKER_DROPIN_FILE="$DOCKER_DROPIN_DIR/require-fullnode.conf"
+GUARD_SCRIPT="/usr/local/sbin/fullnode-mount-guard.sh"
+GUARD_SERVICE="/etc/systemd/system/fullnode-mount-guard.service"
+GUARD_TIMER="/etc/systemd/system/fullnode-mount-guard.timer"
+if [[ "$DRY_RUN" -eq 1 ]]; then
+  echo "[DRY-RUN] create $DOCKER_DROPIN_FILE"
+  echo "[DRY-RUN] create $GUARD_SCRIPT"
+  echo "[DRY-RUN] create $GUARD_SERVICE"
+  echo "[DRY-RUN] create $GUARD_TIMER"
+  echo "[DRY-RUN] systemctl daemon-reload"
+  echo "[DRY-RUN] systemctl enable --now fullnode-mount-guard.timer"
+else
+  run_cmd mkdir -p "$DOCKER_DROPIN_DIR"
+  cat > "$DOCKER_DROPIN_FILE" <<EOF
+[Unit]
+RequiresMountsFor=$DATA_DIR
+EOF
+  cat > "$GUARD_SCRIPT" <<EOF
+#!/bin/bash
+set -euo pipefail
+MOUNTPOINT="$DATA_DIR"
+EXPECTED_SOURCE="$TARGET_PARTITION"
+STATE_DIR="/var/lib/fullnode-mount-guard"
+REBOOT_FLAG="\$STATE_DIR/reboot-attempted"
+SNAPSHOT_DIR="\$STATE_DIR/snapshots"
+mkdir -p "\$STATE_DIR"
+mkdir -p "\$SNAPSHOT_DIR"
+
+log() {
+  logger -t fullnode-mount-guard "\$1"
+}
+
+capture_snapshot() {
+  local reason="\$1"
+  local ts snapshot
+  ts="\$(date +%Y%m%d-%H%M%S)"
+  snapshot="\$SNAPSHOT_DIR/\${ts}-\${reason}"
+  mkdir -p "\$snapshot"
+  {
+    echo "timestamp=\$(date -Is)"
+    echo "reason=\$reason"
+    echo "mountpoint=\$MOUNTPOINT"
+    echo "expected_source=\$EXPECTED_SOURCE"
+    echo "current_source=\$(current_source)"
+  } > "\$snapshot/meta.txt"
+  cat /proc/cmdline > "\$snapshot/cmdline.txt" 2>/dev/null || true
+  findmnt "\$MOUNTPOINT" > "\$snapshot/findmnt.txt" 2>&1 || true
+  lsblk -f > "\$snapshot/lsblk.txt" 2>&1 || true
+  journalctl -k -b --no-pager | grep -Ei 'nvme|EXT4-fs error|timeout|I/O error|blk_update_request|Buffer I/O' > "\$snapshot/kernel-storage.log" 2>&1 || true
+  lspci -vv -s 01:00.0 > "\$snapshot/lspci-01_00_0.txt" 2>&1 || true
+  smartctl -a /dev/nvme0 > "\$snapshot/smartctl.txt" 2>&1 || true
+  nvme smart-log /dev/nvme0 > "\$snapshot/nvme-smart-log.txt" 2>&1 || true
+}
+
+stop_docker() {
+  systemctl stop docker.service docker.socket >/dev/null 2>&1 || true
+}
+
+start_docker() {
+  systemctl start docker.socket docker.service >/dev/null 2>&1 || true
+}
+
+clear_reboot_flag() {
+  rm -f "\$REBOOT_FLAG"
+}
+
+current_source() {
+  findmnt -n -o SOURCE --target "\$MOUNTPOINT" 2>/dev/null || true
+}
+
+mount_is_healthy() {
+  mountpoint -q "\$MOUNTPOINT" && [ "\$(current_source)" = "\$EXPECTED_SOURCE" ]
+}
+
+recover_mount() {
+  if [ ! -b "\$EXPECTED_SOURCE" ]; then
+    return 1
+  fi
+  if mountpoint -q "\$MOUNTPOINT"; then
+    umount "\$MOUNTPOINT" >/dev/null 2>&1 || true
+  fi
+  mount "\$MOUNTPOINT" >/dev/null 2>&1 || true
+  sleep 2
+  mount_is_healthy
+}
+
+if mount_is_healthy; then
+  clear_reboot_flag
+  exit 0
+fi
+
+if mountpoint -q "\$MOUNTPOINT"; then
+  log "\$MOUNTPOINT source is \$(current_source); expected \$EXPECTED_SOURCE; stopping docker and attempting remount"
+  capture_snapshot wrong-source
+else
+  log "\$MOUNTPOINT is not mounted; stopping docker and attempting recovery"
+  capture_snapshot not-mounted
+fi
+
+stop_docker
+
+if recover_mount; then
+  log "Recovered \$MOUNTPOINT with \$EXPECTED_SOURCE; restarting docker"
+  clear_reboot_flag
+  start_docker
+  exit 0
+fi
+
+if [ ! -e "\$REBOOT_FLAG" ]; then
+  date -Is > "\$REBOOT_FLAG"
+  log "Recovery failed; rebooting once to restore \$EXPECTED_SOURCE"
+  systemctl reboot
+  exit 0
+fi
+
+log "Recovery failed after one reboot attempt; keeping docker stopped to prevent root spillover"
+exit 0
+EOF
+  run_cmd chmod 0755 "$GUARD_SCRIPT"
+  cat > "$GUARD_SERVICE" <<EOF
+[Unit]
+Description=Auto-heal fullnode mount and protect Docker
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=$GUARD_SCRIPT
+EOF
+  cat > "$GUARD_TIMER" <<EOF
+[Unit]
+Description=Periodic fullnode mount auto-heal guard
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=15s
+AccuracySec=5s
+Unit=fullnode-mount-guard.service
+
+[Install]
+WantedBy=timers.target
+EOF
+  run_cmd systemctl daemon-reload
+  run_cmd systemctl enable --now fullnode-mount-guard.timer
+fi
+
 run_cmd systemctl enable docker
 run_cmd systemctl start docker
 
