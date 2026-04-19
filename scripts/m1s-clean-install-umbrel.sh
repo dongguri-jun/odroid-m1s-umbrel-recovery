@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+SCRIPT_VERSION="0.3.0"
+INSTALL_STATE_DIR="/etc/umbrel-recovery"
+INSTALL_STATE_FILE="$INSTALL_STATE_DIR/installed.json"
+
 DRY_RUN=0
 RELEASE_MODE=0
 IMAGE="dockurr/umbrel"
@@ -49,6 +53,54 @@ run_shell() {
     return 0
   fi
   bash -lc "$1"
+}
+
+# Wait for apt/dpkg locks to be released. Freshly installed Ubuntu Server
+# runs unattended-upgrades in the background right after first boot, which
+# holds /var/lib/dpkg/lock-frontend and causes `apt-get`-based installers
+# (including docker get.docker.com) to fail with lock errors.
+#
+# This helper polls the common locks for up to 15 minutes. On timeout it
+# warns and asks the user to continue or abort.
+wait_for_apt_locks() {
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    echo "[DRY-RUN] wait for apt/dpkg locks to be released"
+    return 0
+  fi
+  local locks=(/var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock)
+  local max_wait=900   # 15 minutes
+  local waited=0
+  local printed_notice=0
+  while (( waited < max_wait )); do
+    local holder=""
+    for lock in "${locks[@]}"; do
+      [[ -e "$lock" ]] || continue
+      local pids
+      pids="$(fuser "$lock" 2>/dev/null | tr -s ' ' | sed 's/^ //; s/ $//')"
+      if [[ -n "$pids" ]]; then
+        holder="$pids"
+        break
+      fi
+    done
+    if [[ -z "$holder" ]]; then
+      return 0
+    fi
+    if [[ "$printed_notice" -eq 0 ]]; then
+      warn "Another process is holding apt/dpkg locks (likely unattended-upgrades)."
+      warn "Waiting up to 15 minutes for it to finish before continuing..."
+      printed_notice=1
+    fi
+    sleep 5
+    waited=$((waited + 5))
+    if (( waited % 60 == 0 )); then
+      info "Still waiting for apt/dpkg locks ($((waited / 60)) min elapsed, holder PID: $holder)"
+    fi
+  done
+  err "apt/dpkg locks were still held after 15 minutes."
+  err "The most common cause is unattended-upgrades running a long upgrade."
+  err "You can check with:  ps -ef | grep -i unattended"
+  err "Rerun this script after the update finishes, or stop the upgrade manually."
+  exit 1
 }
 
 service_exists() {
@@ -236,6 +288,7 @@ Options:
   --data-dir PATH            Umbrel data directory (default: /mnt/fullnode)
   --target-partition PATH    Target SSD disk or partition to initialize
   --remove-tailscale         Alias for --release
+  --version                  Print script version and exit
   -h, --help                 Show this help
 
 Examples:
@@ -283,6 +336,10 @@ while [[ $# -gt 0 ]]; do
     --remove-tailscale)
       RELEASE_MODE=1
       PRESERVE_TAILSCALE=0
+      ;;
+    --version)
+      printf '%s\n' "$SCRIPT_VERSION"
+      exit 0
       ;;
     -h|--help)
       usage
@@ -515,6 +572,11 @@ if [[ "$DRY_RUN" -eq 0 ]]; then
     exit 1
   fi
 fi
+
+# Make sure unattended-upgrades or any other apt consumer is not holding the
+# dpkg lock. If we continue while the lock is held, the Docker install step
+# (which shells out to `apt-get`) will fail midway.
+wait_for_apt_locks
 
 PRESERVED_SERVICES=(
   ssh.service
@@ -1154,6 +1216,37 @@ if ! command -v avahi-publish >/dev/null 2>&1; then
   fi
 fi
 
+# Restrict avahi-daemon to eth0 so Docker veth interfaces do not pollute
+# mDNS responses (umbrel.local must not resolve to a veth IPv6 address).
+AVAHI_CONF="/etc/avahi/avahi-daemon.conf"
+if [[ "$DRY_RUN" -eq 1 ]]; then
+  echo "[DRY-RUN] set allow-interfaces=eth0 in $AVAHI_CONF"
+  echo "[DRY-RUN] systemctl restart avahi-daemon"
+elif [[ -f "$AVAHI_CONF" ]]; then
+  if ! grep -qE '^allow-interfaces=' "$AVAHI_CONF"; then
+    cp "$AVAHI_CONF" "$AVAHI_CONF.bak.$(date +%s)"
+    sed -i 's/^#allow-interfaces=.*/allow-interfaces=eth0/' "$AVAHI_CONF"
+    if ! grep -qE '^allow-interfaces=' "$AVAHI_CONF"; then
+      # Fallback: template did not have a commented line. Append to [server].
+      python3 - "$AVAHI_CONF" <<'PY'
+import sys, re
+from pathlib import Path
+p = Path(sys.argv[1])
+text = p.read_text()
+if re.search(r'^allow-interfaces=', text, flags=re.M):
+    sys.exit(0)
+# Insert after [server]
+text = re.sub(r'(\[server\]\n)', r'\1allow-interfaces=eth0\n', text, count=1)
+p.write_text(text)
+PY
+    fi
+    systemctl restart avahi-daemon || warn "Failed to restart avahi-daemon (continuing)"
+    info "avahi-daemon restricted to eth0"
+  else
+    info "avahi-daemon allow-interfaces already set; leaving as is"
+  fi
+fi
+
 AVAHI_ALIAS_SCRIPT="/usr/local/bin/avahi-publish-umbrel"
 AVAHI_ALIAS_SERVICE="/etc/systemd/system/avahi-alias-umbrel.service"
 
@@ -1198,6 +1291,34 @@ SERVICEUNIT
   info "umbrel.local mDNS alias is now active."
 fi
 
+info "Recording install state"
+if [[ "$DRY_RUN" -eq 1 ]]; then
+  echo "[DRY-RUN] write $INSTALL_STATE_FILE (version=$SCRIPT_VERSION)"
+else
+  mkdir -p "$INSTALL_STATE_DIR"
+  INSTALL_TIMESTAMP="$(date -Is)"
+  python3 - "$INSTALL_STATE_FILE" "$SCRIPT_VERSION" "$INSTALL_TIMESTAMP" "$IMAGE" "$DATA_DIR" "$TARGET_PARTITION" <<'PY'
+import json, os, sys, tempfile
+path, version, ts, image, data_dir, target = sys.argv[1:7]
+payload = {
+    "version": version,
+    "installed_at": ts,
+    "installed_by": "m1s-clean-install-umbrel.sh",
+    "image": image,
+    "data_dir": data_dir,
+    "target_partition": target,
+}
+d = os.path.dirname(path)
+fd, tmp = tempfile.mkstemp(dir=d, prefix="installed.tmp.")
+with os.fdopen(fd, "w") as f:
+    json.dump(payload, f, indent=2)
+    f.write("\n")
+os.chmod(tmp, 0o644)
+os.rename(tmp, path)
+PY
+  info "Install state written to $INSTALL_STATE_FILE (version=$SCRIPT_VERSION)"
+fi
+
 info "Done."
 cat <<EOF
 
@@ -1205,6 +1326,7 @@ Umbrel container has been started.
 Open: http://umbrel.local  or  http://<device-ip>
 Image: $IMAGE
 Data directory: $DATA_DIR
+Script version: $SCRIPT_VERSION
 
 If you used --dry-run, no changes were made.
 If Docker group membership was updated for your user, log out and back in before using docker without sudo.
