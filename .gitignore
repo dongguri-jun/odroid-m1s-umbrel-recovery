@@ -10,3 +10,6 @@
 *.swp
 *.swo
 .gstack/
+
+# Local one-off helper scripts created during sessions
+.tmp_*

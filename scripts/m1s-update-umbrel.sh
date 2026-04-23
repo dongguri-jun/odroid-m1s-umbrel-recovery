@@ -16,7 +16,7 @@ set -Eeuo pipefail
 #   --version      Print script version and exit.
 #   -h, --help     Show this help.
 
-SCRIPT_VERSION="0.3.0"
+SCRIPT_VERSION="0.4.0"
 INSTALL_STATE_DIR="/etc/umbrel-recovery"
 INSTALL_STATE_FILE="$INSTALL_STATE_DIR/installed.json"
 
@@ -211,6 +211,223 @@ PY
   info "[0.3.0] avahi-daemon is now bound to eth0 only"
 }
 
+detect_lan_interface() {
+  local iface=""
+  iface="$(ip route show default 2>/dev/null | awk '/default/ {print $5; exit}' || true)"
+  if [[ -n "$iface" && "$iface" != lo && "$iface" != docker* && "$iface" != br-* && "$iface" != veth* && "$iface" != tailscale* && "$iface" != virbr* && "$iface" != zt* ]]; then
+    printf '%s\n' "$iface"
+    return 0
+  fi
+  iface="$(ip -o link show 2>/dev/null | awk -F': ' '$2 !~ /^(lo|docker.*|br-.*|veth.*|tailscale.*|virbr.*|zt.*)$/ {print $2; exit}' || true)"
+  printf '%s\n' "$iface"
+}
+
+patch_to_0_4_0() {
+  local conf="/etc/avahi/avahi-daemon.conf"
+  local alias_script="/usr/local/bin/avahi-publish-umbrel"
+  local alias_service="/etc/systemd/system/avahi-alias-umbrel.service"
+  local extlinux_conf="/boot/extlinux/extlinux.conf"
+  local lan_interface
+  local umbrel_hostname="umbrel"
+  local current_hostname
+
+  current_hostname="$(hostnamectl --static 2>/dev/null || hostname)"
+  if [[ "$current_hostname" != "$umbrel_hostname" ]]; then
+    if [[ "$DRY_RUN" -eq 1 ]]; then
+      echo "[DRY-RUN] hostnamectl set-hostname $umbrel_hostname (was: $current_hostname)"
+      echo "[DRY-RUN] update /etc/hosts 127.0.1.1 line to $umbrel_hostname"
+    else
+      hostnamectl set-hostname "$umbrel_hostname" || warn "[0.4.0] hostnamectl set-hostname failed (continuing)"
+      if grep -qE '^127\.0\.1\.1[[:space:]]' /etc/hosts; then
+        sed -i "s/^127\.0\.1\.1[[:space:]].*/127.0.1.1\t$umbrel_hostname/" /etc/hosts
+      else
+        printf '127.0.1.1\t%s\n' "$umbrel_hostname" >> /etc/hosts
+      fi
+      info "[0.4.0] Hostname changed to $umbrel_hostname (was: $current_hostname) for native umbrel.local mDNS"
+    fi
+  else
+    info "[0.4.0] Hostname already $umbrel_hostname; skipping rename"
+  fi
+
+  lan_interface="$(detect_lan_interface)"
+  [[ -n "$lan_interface" ]] || lan_interface="eth0"
+  info "[0.4.0] Hardening avahi-daemon and umbrel.local alias on $lan_interface"
+
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    echo "[DRY-RUN] set allow-interfaces=$lan_interface in $conf"
+    echo "[DRY-RUN] rewrite $alias_script"
+    echo "[DRY-RUN] rewrite $alias_service"
+    echo "[DRY-RUN] systemctl enable --now avahi-daemon avahi-alias-umbrel.service"
+    return 0
+  fi
+
+  if [[ -f "$conf" ]]; then
+    cp "$conf" "$conf.bak.$(date +%s)"
+    python3 - "$conf" "$lan_interface" <<'PY'
+import re
+import sys
+from pathlib import Path
+path = Path(sys.argv[1])
+iface = sys.argv[2]
+text = path.read_text()
+if re.search(r'^allow-interfaces=', text, flags=re.M):
+    text = re.sub(r'^allow-interfaces=.*$', f'allow-interfaces={iface}', text, flags=re.M)
+elif re.search(r'^#allow-interfaces=', text, flags=re.M):
+    text = re.sub(r'^#allow-interfaces=.*$', f'allow-interfaces={iface}', text, flags=re.M)
+else:
+    text = re.sub(r'(\[server\]\n)', rf'\1allow-interfaces={iface}\n', text, count=1)
+path.write_text(text)
+PY
+  fi
+
+  cat > "$alias_script" <<'ALIASSCRIPT'
+#!/usr/bin/env bash
+set -eu
+while true; do
+  IFACE="$(ip route show default 2>/dev/null | awk '/default/ {print $5; exit}' || true)"
+  if [[ -z "$IFACE" ]]; then
+    sleep 5
+    continue
+  fi
+  IP="$(ip -4 -o addr show dev "$IFACE" scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1)"
+  if [[ -n "$IP" ]]; then
+    exec avahi-publish-address -R umbrel.local "$IP"
+  fi
+  sleep 5
+done
+ALIASSCRIPT
+  chmod 0755 "$alias_script"
+
+  cat > "$alias_service" <<'SERVICEUNIT'
+[Unit]
+Description=Publish umbrel.local mDNS alias
+After=avahi-daemon.service network-online.target
+Requires=avahi-daemon.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/avahi-publish-umbrel
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+SERVICEUNIT
+
+  systemctl daemon-reload
+  systemctl enable --now avahi-daemon >/dev/null 2>&1 || warn "[0.4.0] Failed to enable/start avahi-daemon"
+  systemctl restart avahi-daemon || warn "[0.4.0] Failed to restart avahi-daemon"
+  systemctl enable --now avahi-alias-umbrel.service >/dev/null 2>&1 || warn "[0.4.0] Failed to enable/start avahi-alias-umbrel.service"
+
+  # On ODROID M1S the u-boot loader reads /boot/extlinux/extlinux.conf directly
+  # for the kernel cmdline, so NVMe/PCIe hardening parameters in
+  # /etc/default/flash-kernel are not applied on the next boot. Patch the
+  # extlinux append line so the hardening actually takes effect.
+  if [[ -f "$extlinux_conf" ]]; then
+    cp "$extlinux_conf" "$extlinux_conf.bak.$(date +%s)"
+    python3 - "$extlinux_conf" <<'PY'
+import sys
+from pathlib import Path
+path = Path(sys.argv[1])
+needles = [
+    'nvme_core.default_ps_max_latency_us=0',
+    'pcie_aspm=off',
+    'pcie_port_pm=off',
+]
+lines = path.read_text().splitlines()
+changed = False
+for i, line in enumerate(lines):
+    stripped = line.lstrip()
+    if not stripped.startswith('append '):
+        continue
+    indent = line[:len(line) - len(stripped)]
+    parts = stripped.split()
+    for needle in needles:
+        if needle not in parts:
+            parts.append(needle)
+            changed = True
+    lines[i] = indent + ' '.join(parts)
+if changed:
+    path.write_text('\n'.join(lines) + '\n')
+PY
+    info "[0.4.0] Patched $extlinux_conf with NVMe/PCIe parameters"
+  else
+    warn "[0.4.0] $extlinux_conf not found; skipping extlinux cmdline patch"
+  fi
+
+  # Disable unattended-upgrades automatic reboot so the node never restarts on
+  # its own after a security upgrade pulls in a new kernel.
+  local apt_noreboot="/etc/apt/apt.conf.d/52m1s-no-auto-reboot"
+  if [[ ! -f "$apt_noreboot" ]] || ! grep -q 'Automatic-Reboot "false"' "$apt_noreboot"; then
+    cat > "$apt_noreboot" <<'APT_CONF'
+Unattended-Upgrade::Automatic-Reboot "false";
+Unattended-Upgrade::Automatic-Reboot-WithUsers "false";
+APT_CONF
+    chmod 0644 "$apt_noreboot"
+    info "[0.4.0] Wrote $apt_noreboot (automatic reboot disabled)"
+  else
+    info "[0.4.0] $apt_noreboot already disables automatic reboot"
+  fi
+
+  # Ensure Docker log rotation is configured so daemon json-file logs do not
+  # grow unbounded on long-running nodes.
+  local docker_json="/etc/docker/daemon.json"
+  local docker_needs_rewrite=1
+  if [[ -f "$docker_json" ]] && grep -q 'max-size' "$docker_json" && grep -q 'max-file' "$docker_json"; then
+    docker_needs_rewrite=0
+  fi
+  if [[ "$docker_needs_rewrite" -eq 1 ]]; then
+    mkdir -p /etc/docker
+    if [[ -f "$docker_json" ]]; then
+      cp "$docker_json" "$docker_json.bak.$(date +%s)"
+    fi
+    cat > "$docker_json" <<'DOCKER_JSON'
+{
+  "log-driver": "json-file",
+  "log-opts": {
+    "max-size": "10m",
+    "max-file": "5"
+  }
+}
+DOCKER_JSON
+    chmod 0644 "$docker_json"
+    if systemctl is-active docker >/dev/null 2>&1; then
+      systemctl restart docker || warn "[0.4.0] Failed to restart docker after $docker_json update"
+    fi
+    info "[0.4.0] Wrote $docker_json with log rotation"
+  else
+    info "[0.4.0] $docker_json already has log rotation"
+  fi
+
+  # Create a 4G swapfile on the Umbrel data mount so Bitcoin IBD and similar
+  # memory-heavy workloads do not OOM the Umbrel containers on 8GB boards.
+  local swapfile="/mnt/fullnode/swapfile"
+  local swap_size_mb=4096
+  if [[ -d /mnt/fullnode ]]; then
+    if swapon --noheadings --raw --output=NAME 2>/dev/null | grep -qx "$swapfile"; then
+      info "[0.4.0] Swapfile $swapfile already active; skipping"
+    else
+      if [[ ! -f "$swapfile" ]]; then
+        if command -v fallocate >/dev/null 2>&1; then
+          fallocate -l "${swap_size_mb}M" "$swapfile"
+        else
+          dd if=/dev/zero of="$swapfile" bs=1M count="$swap_size_mb" status=none
+        fi
+      fi
+      chmod 600 "$swapfile"
+      mkswap "$swapfile" >/dev/null || warn "[0.4.0] mkswap $swapfile failed (continuing)"
+      swapon "$swapfile" || warn "[0.4.0] swapon $swapfile failed (continuing)"
+      if ! grep -qE "^$swapfile[[:space:]]" /etc/fstab; then
+        printf '%s\tnone\tswap\tsw,nofail\t0\t0\n' "$swapfile" >> /etc/fstab
+        info "[0.4.0] Added $swapfile to /etc/fstab"
+      fi
+    fi
+  else
+    warn "[0.4.0] /mnt/fullnode not present; skipping swapfile creation"
+  fi
+}
+
 # ---------------------------------------------------------------------------
 # Record the new version in the install state file.
 # ---------------------------------------------------------------------------
@@ -286,6 +503,9 @@ PLANNED_PATCHES=()
 if version_lt "$CURRENT_VERSION" "0.3.0"; then
   PLANNED_PATCHES+=("0.3.0")
 fi
+if version_lt "$CURRENT_VERSION" "0.4.0"; then
+  PLANNED_PATCHES+=("0.4.0")
+fi
 
 if [[ "${#PLANNED_PATCHES[@]}" -eq 0 ]]; then
   echo "No patches needed. Host is already at $CURRENT_VERSION (>= $TARGET_VERSION)."
@@ -307,6 +527,9 @@ for patch in "${PLANNED_PATCHES[@]}"; do
   case "$patch" in
     0.3.0)
       patch_to_0_3_0
+      ;;
+    0.4.0)
+      patch_to_0_4_0
       ;;
     *)
       warn "No handler for patch target '$patch'; skipping"

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SCRIPT_VERSION="0.3.0"
+SCRIPT_VERSION="0.4.0"
 INSTALL_STATE_DIR="/etc/umbrel-recovery"
 INSTALL_STATE_FILE="$INSTALL_STATE_DIR/installed.json"
 
@@ -192,6 +192,88 @@ guess_parent_disk_path() {
     printf '%s\n' "${BASH_REMATCH[1]}"
   else
     printf '%s\n' ""
+  fi
+}
+
+detect_lan_interface() {
+  local iface=""
+  iface="$(ip route show default 2>/dev/null | awk '/default/ {print $5; exit}' || true)"
+  if [[ -n "$iface" && "$iface" != lo && "$iface" != docker* && "$iface" != br-* && "$iface" != veth* && "$iface" != tailscale* && "$iface" != virbr* && "$iface" != zt* ]]; then
+    printf '%s\n' "$iface"
+    return 0
+  fi
+
+  iface="$(ip -o link show 2>/dev/null | awk -F': ' '$2 !~ /^(lo|docker.*|br-.*|veth.*|tailscale.*|virbr.*|zt.*)$/ {print $2; exit}' || true)"
+  printf '%s\n' "$iface"
+}
+
+interface_ipv4() {
+  local iface="$1"
+  [[ -n "$iface" ]] || return 1
+  ip -4 -o addr show dev "$iface" scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1
+}
+
+report_install_health() {
+  local lan_iface="${1:-}"
+  local lan_ip="${2:-}"
+  local current_data_source docker_state avahi_state alias_state container_state local_resolve_state ip_http_state local_http_state
+
+  current_data_source="$(findmnt -n -o SOURCE --target "$DATA_DIR" 2>/dev/null || true)"
+  docker_state="$(systemctl is-active docker 2>/dev/null || true)"
+  avahi_state="$(systemctl is-active avahi-daemon 2>/dev/null || true)"
+  alias_state="$(systemctl is-active avahi-alias-umbrel.service 2>/dev/null || true)"
+  container_state="$(docker inspect --format='{{.State.Status}}' umbrel 2>/dev/null || true)"
+
+  if getent hosts umbrel.local >/dev/null 2>&1; then
+    local_resolve_state="ok"
+  else
+    local_resolve_state="failed"
+  fi
+
+  if [[ -n "$lan_ip" ]] && curl -fsS --max-time 10 "http://$lan_ip" >/dev/null 2>&1; then
+    ip_http_state="ok"
+  else
+    ip_http_state="failed"
+  fi
+
+  if curl -fsS --max-time 10 http://umbrel.local >/dev/null 2>&1; then
+    local_http_state="ok"
+  else
+    local_http_state="failed"
+  fi
+
+  info "Install health summary"
+  info "- LAN interface: ${lan_iface:-unknown}"
+  info "- LAN IP: ${lan_ip:-unknown}"
+  info "- Data mount: ${current_data_source:-NOT_MOUNTED} -> $DATA_DIR"
+  info "- Docker service: ${docker_state:-unknown}"
+  info "- Umbrel container: ${container_state:-unknown}"
+  info "- avahi-daemon: ${avahi_state:-unknown}"
+  info "- avahi alias service: ${alias_state:-unknown}"
+  info "- umbrel.local host resolve: ${local_resolve_state:-unknown}"
+  info "- HTTP by device IP: ${ip_http_state:-unknown}"
+  info "- HTTP by umbrel.local: ${local_http_state:-unknown}"
+
+  if [[ "$current_data_source" != "$TARGET_PARTITION" ]]; then
+    err "Health check failed: expected $TARGET_PARTITION mounted at $DATA_DIR, got ${current_data_source:-NOT_MOUNTED}."
+    exit 1
+  fi
+  if [[ "$docker_state" != "active" ]]; then
+    err "Health check failed: docker.service is not active."
+    exit 1
+  fi
+  if [[ "$container_state" != "running" ]]; then
+    err "Health check failed: Umbrel container is not running."
+    exit 1
+  fi
+  if [[ "$avahi_state" != "active" ]]; then
+    warn "avahi-daemon is not active. umbrel.local may fail; use http://${lan_ip:-<device-ip>} instead."
+  fi
+  if [[ "$alias_state" != "active" ]]; then
+    warn "avahi-alias-umbrel.service is not active. umbrel.local may fail; use http://${lan_ip:-<device-ip>} instead."
+  fi
+  if [[ "$local_http_state" != "ok" ]]; then
+    warn "umbrel.local did not answer from this host. Client devices may need to use http://${lan_ip:-<device-ip>} instead."
   fi
 }
 
@@ -801,6 +883,8 @@ for line in lines:
         continue
     if data_dir and mountpoint == data_dir:
         continue
+    if mountpoint == '/mnt/ssd':
+        continue
     if source in target_swaps:
         continue
     if source in target_devices:
@@ -934,7 +1018,7 @@ import os, tempfile
 fstab = Path('/etc/fstab')
 uuid_val = os.environ['FSTAB_UUID']
 mount_val = os.environ['FSTAB_MOUNT']
-entry = 'UUID={}\t{}\text4\tdefaults,auto,exec,rw\t0\t0'.format(uuid_val, mount_val)
+entry = 'UUID={}\t{}\text4\tdefaults,auto,exec,rw,nofail,x-systemd.device-timeout=10s\t0\t0'.format(uuid_val, mount_val)
 text = fstab.read_text()
 lines = text.splitlines()
 # Remove any existing entries for the same UUID or mountpoint to prevent duplicates
@@ -1016,6 +1100,84 @@ else
   warn "$FLASH_KERNEL_DEFAULTS not found. Skipping APST-off kernel parameter setup."
 fi
 
+# On ODROID M1S the u-boot loader reads /boot/extlinux/extlinux.conf directly,
+# so flash-kernel's boot.scr regeneration is NOT the authoritative cmdline
+# source. We patch the extlinux append line as well so the NVMe/PCIe hardening
+# parameters actually apply on the next boot.
+EXTLINUX_CONF="/boot/extlinux/extlinux.conf"
+if [[ "$DRY_RUN" -eq 1 ]]; then
+  echo "[DRY-RUN] append nvme_core.default_ps_max_latency_us=0 pcie_aspm=off pcie_port_pm=off to $EXTLINUX_CONF"
+elif [[ -f "$EXTLINUX_CONF" ]]; then
+  cp "$EXTLINUX_CONF" "$EXTLINUX_CONF.bak.$(date +%s)"
+  python3 - "$EXTLINUX_CONF" <<'PY'
+import sys
+from pathlib import Path
+path = Path(sys.argv[1])
+needles = [
+    'nvme_core.default_ps_max_latency_us=0',
+    'pcie_aspm=off',
+    'pcie_port_pm=off',
+]
+lines = path.read_text().splitlines()
+changed = False
+for i, line in enumerate(lines):
+    stripped = line.lstrip()
+    if not stripped.startswith('append '):
+        continue
+    indent = line[:len(line) - len(stripped)]
+    parts = stripped.split()
+    for needle in needles:
+        if needle not in parts:
+            parts.append(needle)
+            changed = True
+    lines[i] = indent + ' '.join(parts)
+if changed:
+    path.write_text('\n'.join(lines) + '\n')
+PY
+  info "Patched $EXTLINUX_CONF with NVMe/PCIe parameters"
+else
+  warn "$EXTLINUX_CONF not found. Skipping extlinux cmdline patch."
+fi
+
+info "Disabling automatic reboot from unattended-upgrades"
+APT_NOREBOOT_FILE="/etc/apt/apt.conf.d/52m1s-no-auto-reboot"
+if [[ "$DRY_RUN" -eq 1 ]]; then
+  echo "[DRY-RUN] write $APT_NOREBOOT_FILE"
+else
+  cat > "$APT_NOREBOOT_FILE" <<'APT_CONF'
+Unattended-Upgrade::Automatic-Reboot "false";
+Unattended-Upgrade::Automatic-Reboot-WithUsers "false";
+APT_CONF
+  chmod 0644 "$APT_NOREBOOT_FILE"
+  info "Wrote $APT_NOREBOOT_FILE (automatic reboot is now disabled)"
+fi
+
+info "Ensuring a swapfile exists on $DATA_DIR"
+SWAPFILE="$DATA_DIR/swapfile"
+SWAP_SIZE_MB=4096
+if [[ "$DRY_RUN" -eq 1 ]]; then
+  echo "[DRY-RUN] create $SWAPFILE (${SWAP_SIZE_MB}MB), mkswap, swapon, add to /etc/fstab"
+else
+  if swapon --noheadings --raw --output=NAME 2>/dev/null | grep -qx "$SWAPFILE"; then
+    info "Swapfile $SWAPFILE already active; skipping"
+  else
+    if [[ ! -f "$SWAPFILE" ]]; then
+      if command -v fallocate >/dev/null 2>&1; then
+        fallocate -l "${SWAP_SIZE_MB}M" "$SWAPFILE"
+      else
+        dd if=/dev/zero of="$SWAPFILE" bs=1M count="$SWAP_SIZE_MB" status=none
+      fi
+    fi
+    chmod 600 "$SWAPFILE"
+    mkswap "$SWAPFILE" >/dev/null || warn "mkswap $SWAPFILE failed (continuing)"
+    swapon "$SWAPFILE" || warn "swapon $SWAPFILE failed (continuing)"
+    if ! grep -qE "^$SWAPFILE[[:space:]]" /etc/fstab; then
+      printf '%s\tnone\tswap\tsw,nofail\t0\t0\n' "$SWAPFILE" >> /etc/fstab
+      info "Added $SWAPFILE to /etc/fstab"
+    fi
+  fi
+fi
+
 info "Installing fresh Docker"
 if [[ "$DRY_RUN" -eq 0 ]]; then
   if ! curl -fsSL https://get.docker.com | sh; then
@@ -1029,6 +1191,30 @@ if [[ "$DRY_RUN" -eq 0 ]]; then
   fi
 else
   run_shell 'curl -fsSL https://get.docker.com | sh'
+fi
+
+info "Configuring Docker log rotation"
+DOCKER_DAEMON_JSON="/etc/docker/daemon.json"
+if [[ "$DRY_RUN" -eq 1 ]]; then
+  echo "[DRY-RUN] write $DOCKER_DAEMON_JSON with log-driver json-file, max-size=10m, max-file=5"
+  echo "[DRY-RUN] systemctl restart docker"
+else
+  mkdir -p /etc/docker
+  if [[ -f "$DOCKER_DAEMON_JSON" ]]; then
+    cp "$DOCKER_DAEMON_JSON" "$DOCKER_DAEMON_JSON.bak.$(date +%s)"
+  fi
+  cat > "$DOCKER_DAEMON_JSON" <<'DOCKER_JSON'
+{
+  "log-driver": "json-file",
+  "log-opts": {
+    "max-size": "10m",
+    "max-file": "5"
+  }
+}
+DOCKER_JSON
+  chmod 0644 "$DOCKER_DAEMON_JSON"
+  systemctl restart docker || warn "Failed to restart docker after $DOCKER_DAEMON_JSON update"
+  info "Wrote $DOCKER_DAEMON_JSON and restarted docker"
 fi
 
 info "Installing self-heal guard for fullnode mount"
@@ -1206,7 +1392,33 @@ if [[ "$DRY_RUN" -eq 0 ]]; then
   fi
 fi
 
+info "Setting host hostname to umbrel (for native mDNS stability)"
+UMBREL_HOSTNAME="umbrel"
+if [[ "$DRY_RUN" -eq 1 ]]; then
+  echo "[DRY-RUN] hostnamectl set-hostname $UMBREL_HOSTNAME"
+  echo "[DRY-RUN] update /etc/hosts 127.0.1.1 line to $UMBREL_HOSTNAME"
+else
+  CURRENT_HN="$(hostnamectl --static 2>/dev/null || hostname)"
+  if [[ "$CURRENT_HN" != "$UMBREL_HOSTNAME" ]]; then
+    hostnamectl set-hostname "$UMBREL_HOSTNAME" || warn "hostnamectl set-hostname failed (continuing)"
+    if grep -qE '^127\.0\.1\.1[[:space:]]' /etc/hosts; then
+      sed -i "s/^127\.0\.1\.1[[:space:]].*/127.0.1.1\t$UMBREL_HOSTNAME/" /etc/hosts
+    else
+      printf '127.0.1.1\t%s\n' "$UMBREL_HOSTNAME" >> /etc/hosts
+    fi
+    info "Hostname set to $UMBREL_HOSTNAME (was: $CURRENT_HN)"
+  else
+    info "Hostname already $UMBREL_HOSTNAME; skipping"
+  fi
+fi
+
 info "Setting up umbrel.local mDNS alias"
+LAN_INTERFACE="$(detect_lan_interface || true)"
+if [[ -z "$LAN_INTERFACE" ]]; then
+  LAN_INTERFACE="eth0"
+fi
+LAN_IP="$(interface_ipv4 "$LAN_INTERFACE" || true)"
+
 if ! command -v avahi-publish >/dev/null 2>&1; then
   info "Installing avahi-daemon and avahi-utils..."
   if [[ "$DRY_RUN" -eq 0 ]]; then
@@ -1216,35 +1428,31 @@ if ! command -v avahi-publish >/dev/null 2>&1; then
   fi
 fi
 
-# Restrict avahi-daemon to eth0 so Docker veth interfaces do not pollute
-# mDNS responses (umbrel.local must not resolve to a veth IPv6 address).
 AVAHI_CONF="/etc/avahi/avahi-daemon.conf"
 if [[ "$DRY_RUN" -eq 1 ]]; then
-  echo "[DRY-RUN] set allow-interfaces=eth0 in $AVAHI_CONF"
+  echo "[DRY-RUN] set allow-interfaces=$LAN_INTERFACE in $AVAHI_CONF"
+  echo "[DRY-RUN] systemctl enable --now avahi-daemon"
   echo "[DRY-RUN] systemctl restart avahi-daemon"
 elif [[ -f "$AVAHI_CONF" ]]; then
-  if ! grep -qE '^allow-interfaces=' "$AVAHI_CONF"; then
-    cp "$AVAHI_CONF" "$AVAHI_CONF.bak.$(date +%s)"
-    sed -i 's/^#allow-interfaces=.*/allow-interfaces=eth0/' "$AVAHI_CONF"
-    if ! grep -qE '^allow-interfaces=' "$AVAHI_CONF"; then
-      # Fallback: template did not have a commented line. Append to [server].
-      python3 - "$AVAHI_CONF" <<'PY'
-import sys, re
+  cp "$AVAHI_CONF" "$AVAHI_CONF.bak.$(date +%s)"
+  python3 - "$AVAHI_CONF" "$LAN_INTERFACE" <<'PY'
+import re
+import sys
 from pathlib import Path
-p = Path(sys.argv[1])
-text = p.read_text()
+path = Path(sys.argv[1])
+iface = sys.argv[2]
+text = path.read_text()
 if re.search(r'^allow-interfaces=', text, flags=re.M):
-    sys.exit(0)
-# Insert after [server]
-text = re.sub(r'(\[server\]\n)', r'\1allow-interfaces=eth0\n', text, count=1)
-p.write_text(text)
+    text = re.sub(r'^allow-interfaces=.*$', f'allow-interfaces={iface}', text, flags=re.M)
+elif re.search(r'^#allow-interfaces=', text, flags=re.M):
+    text = re.sub(r'^#allow-interfaces=.*$', f'allow-interfaces={iface}', text, flags=re.M)
+else:
+    text = re.sub(r'(\[server\]\n)', rf'\1allow-interfaces={iface}\n', text, count=1)
+path.write_text(text)
 PY
-    fi
-    systemctl restart avahi-daemon || warn "Failed to restart avahi-daemon (continuing)"
-    info "avahi-daemon restricted to eth0"
-  else
-    info "avahi-daemon allow-interfaces already set; leaving as is"
-  fi
+  systemctl enable --now avahi-daemon >/dev/null 2>&1 || warn "Failed to enable/start avahi-daemon (continuing)"
+  systemctl restart avahi-daemon || warn "Failed to restart avahi-daemon (continuing)"
+  info "avahi-daemon restricted to $LAN_INTERFACE"
 fi
 
 AVAHI_ALIAS_SCRIPT="/usr/local/bin/avahi-publish-umbrel"
@@ -1259,9 +1467,14 @@ else
 #!/usr/bin/env bash
 set -eu
 while true; do
-  IP="$(ip -4 addr show scope global | awk '/inet / {print $2}' | cut -d/ -f1 | head -n1)"
+  IFACE="$(ip route show default 2>/dev/null | awk '/default/ {print $5; exit}' || true)"
+  if [[ -z "$IFACE" ]]; then
+    sleep 5
+    continue
+  fi
+  IP="$(ip -4 -o addr show dev "$IFACE" scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1)"
   if [[ -n "$IP" ]]; then
-    avahi-publish-address -R umbrel.local "$IP"
+    exec avahi-publish-address -R umbrel.local "$IP"
   fi
   sleep 5
 done
@@ -1289,6 +1502,7 @@ SERVICEUNIT
   systemctl enable avahi-alias-umbrel.service
   systemctl start avahi-alias-umbrel.service
   info "umbrel.local mDNS alias is now active."
+  report_install_health "$LAN_INTERFACE" "$LAN_IP"
 fi
 
 info "Recording install state"
@@ -1323,9 +1537,11 @@ info "Done."
 cat <<EOF
 
 Umbrel container has been started.
-Open: http://umbrel.local  or  http://<device-ip>
+Open: http://umbrel.local  or  http://${LAN_IP:-<device-ip>}
 Image: $IMAGE
 Data directory: $DATA_DIR
+LAN interface: ${LAN_INTERFACE:-unknown}
+LAN IP: ${LAN_IP:-unknown}
 Script version: $SCRIPT_VERSION
 
 If you used --dry-run, no changes were made.

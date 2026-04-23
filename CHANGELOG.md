@@ -3,7 +3,17 @@
 ## 0.4.0
 
 - Fix a false failure in `wait_for_apt_locks()`. The installer previously exited early on healthy systems because `fuser` returns status `1` when no process is holding the apt/dpkg lock, which interacted badly with `set -euo pipefail`.
-- Verify the installer end-to-end on a real ODROID M1S again, including SSD format, `/mnt/fullnode` mount, fresh Docker install, and Umbrel startup.
+- Patch `/boot/extlinux/extlinux.conf` in addition to `flash-kernel` defaults so the NVMe/PCIe stability parameters (`nvme_core.default_ps_max_latency_us=0`, `pcie_aspm=off`, `pcie_port_pm=off`) actually reach the running kernel on ODROID M1S images whose u-boot reads extlinux.conf as the authoritative cmdline source.
+- Detect the real LAN interface via the default route and bind `avahi-daemon`'s `allow-interfaces` to it dynamically instead of hard-coding `eth0`. The `avahi-publish-umbrel` alias publisher now picks its IP from the same LAN interface and re-registers it via `exec` to avoid a stale child after IP changes.
+- Rewrite `allow-interfaces` if it is already present but points at the wrong interface, instead of silently leaving drift in place.
+- Enforce hostname `umbrel` during install and update. This makes `umbrel.local` an Avahi-native announcement (much stronger than the alias-only path), which noticeably reduces intermittent `umbrel.local` resolution failures. The update path rewrites the `/etc/hosts` `127.0.1.1` line so it matches the new hostname.
+- Add a post-install health summary that reports LAN interface, LAN IP, data-mount state, Docker service, Umbrel container, Avahi state, the `umbrel.local` resolver result, and HTTP reachability by both hostname and IP. Hard-fail on missing mount, inactive Docker, or missing Umbrel container; warn on soft failures such as `umbrel.local` not answering locally.
+- Drop stale `/mnt/ssd` fstab entries that historically caused emergency-mode boots, and register the Umbrel data mount with `nofail,x-systemd.device-timeout=10s` so a transient SSD stall no longer blocks boot.
+- Add `/etc/apt/apt.conf.d/52m1s-no-auto-reboot` to disable `unattended-upgrades` automatic reboot and automatic-reboot-with-users. Security updates still install, but the node will not silently reboot itself.
+- Configure Docker JSON-file log rotation via `/etc/docker/daemon.json` (`max-size=10m`, `max-file=5`) so long-running containers do not fill the root or data disk with log history.
+- Create a 4G swapfile at `/mnt/fullnode/swapfile` (with `nofail` fstab entry) to reduce OOM risk on 8GB boards during Bitcoin IBD and similar memory-heavy workloads.
+- Bring `scripts/m1s-update-umbrel.sh` to parity with the installer so existing installs moving from `0.2.0`/`0.3.0` to `0.4.0` receive the same avahi/extlinux/hostname/no-auto-reboot/Docker log rotation/swapfile changes idempotently.
+- Verify the installer end-to-end on a real ODROID M1S (clean install flow) and the updater end-to-end on two separate M1S devices, including one running a live Bitcoin node with ~868 GB of block data. The bitcoin stack was stopped with a long graceful-timeout before the updater restarted Docker, and the chainstate/blocks directories were confirmed intact after the run.
 
 ## 0.3.0
 

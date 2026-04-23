@@ -210,6 +210,7 @@ sudo bash scripts/m1s-clean-install-umbrel.sh --release
 4. `/etc/fstab` 등록
 5. Docker 설치
 6. Umbrel 실행
+7. `umbrel.local` 과 장비 IP 기준 기본 health check 출력
 
 중간에 삭제 경고가 나오면, 화면에 보이는 확인 문구를 그대로 입력하면 됩니다.
 
@@ -265,11 +266,20 @@ http://umbrel.local
 
 대부분의 경우 이 주소로 바로 접속됩니다.
 
+설치가 끝난 직후 터미널 마지막 부분에는 보통 아래 정보가 함께 표시됩니다.
+
+- LAN interface
+- LAN IP
+- `http://umbrel.local`
+- `http://<장비 IP>`
+
+즉, `umbrel.local` 이 열리지 않더라도 터미널에 표시된 **장비 IP 주소로 바로 접속**하면 됩니다.
+
 중요:
 - 접속하는 기기(휴대폰, 컴퓨터)에서 **Tailscale이나 다른 VPN이 켜져 있다면 먼저 끄는 것을 권장합니다.**
 - 이런 프로그램이 켜져 있으면 `umbrel.local` 주소가 제대로 열리지 않거나, 엉뚱한 주소로 연결될 수 있습니다.
 
-만약 `umbrel.local` 이 열리지 않으면, 그때는 **Fing 앱에서 IP 주소를 확인한 뒤 브라우저 주소창에 입력**합니다.
+만약 `umbrel.local` 이 열리지 않으면, 그때는 **터미널 마지막에 표시된 장비 IP를 먼저 시도**하고, 그래도 확인이 필요하면 **Fing 앱에서 IP 주소를 확인한 뒤 브라우저 주소창에 입력**합니다.
 
 Fing 앱은 **구글 플레이스토어**와 **애플 앱스토어**에서 무료로 다운로드할 수 있습니다.
 
