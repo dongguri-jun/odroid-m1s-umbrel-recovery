@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.0
+
+- Fix a false failure in `wait_for_apt_locks()`. The installer previously exited early on healthy systems because `fuser` returns status `1` when no process is holding the apt/dpkg lock, which interacted badly with `set -euo pipefail`.
+- Verify the installer end-to-end on a real ODROID M1S again, including SSD format, `/mnt/fullnode` mount, fresh Docker install, and Umbrel startup.
+
 ## 0.3.0
 
 - Fix intermittent `umbrel.local` connectivity caused by avahi-daemon advertising Docker veth interfaces. The installer now sets `allow-interfaces=eth0` in `/etc/avahi/avahi-daemon.conf`, so mDNS only responds on the real LAN interface.
