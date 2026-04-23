@@ -76,7 +76,7 @@ wait_for_apt_locks() {
     for lock in "${locks[@]}"; do
       [[ -e "$lock" ]] || continue
       local pids
-      pids="$(fuser "$lock" 2>/dev/null | tr -s ' ' | sed 's/^ //; s/ $//')"
+      pids="$({ fuser "$lock" 2>/dev/null || true; } | tr -s ' ' | sed 's/^ //; s/ $//')"
       if [[ -n "$pids" ]]; then
         holder="$pids"
         break
