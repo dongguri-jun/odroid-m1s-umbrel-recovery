@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SCRIPT_VERSION="0.4.0"
+SCRIPT_VERSION="0.4.2"
 INSTALL_STATE_DIR="/etc/umbrel-recovery"
 INSTALL_STATE_FILE="$INSTALL_STATE_DIR/installed.json"
+PREINSTALL_RESUME_STATE_FILE="$INSTALL_STATE_DIR/preinstall-resume.json"
+PREINSTALL_RESUME_SERVICE="/etc/systemd/system/m1s-preinstall-resume.service"
 
 DRY_RUN=0
 RELEASE_MODE=0
+AUTO_RESUME_INSTALL="${AUTO_RESUME_INSTALL:-0}"
 IMAGE="dockurr/umbrel"
 DATA_DIR="/mnt/fullnode"
 PRESERVE_TAILSCALE=1
@@ -25,7 +28,13 @@ PRESERVED_PATHS=(
   /etc/systemd/system/fullnode-mount-guard.service
   /etc/systemd/system/fullnode-mount-guard.timer
   /etc/systemd/system/docker.service.d/require-fullnode.conf
+  /var/lib/nvme-timeout-snapshot
+  /usr/local/sbin/nvme-timeout-snapshot.sh
+  /etc/systemd/system/nvme-timeout-snapshot.service
+  /etc/systemd/system/nvme-timeout-snapshot.timer
 )
+ORIGINAL_ARGS=("$@")
+SCRIPT_PATH_ABS=""
 
 log() {
   printf '[%s] %s\n' "$1" "$2"
@@ -193,6 +202,382 @@ guess_parent_disk_path() {
   else
     printf '%s\n' ""
   fi
+}
+
+nvme_disk_visible() {
+  lsblk -dn -o NAME,TYPE 2>/dev/null | awk '$2 == "disk" && $1 ~ /^nvme/ {found=1} END {exit found ? 0 : 1}'
+}
+
+target_input_looks_like_nvme() {
+  local input="${1:-}"
+  local parent=""
+  local base=""
+  [[ -n "$input" ]] || return 1
+  parent="$(guess_parent_disk_path "$input")"
+  if [[ -n "$parent" ]]; then
+    base="$(basename "$parent")"
+  else
+    base="$(basename "$input")"
+  fi
+  [[ "$base" == "nvme0n1" ]]
+}
+
+preinstall_resume_attempted() {
+  [[ -f "$PREINSTALL_RESUME_STATE_FILE" ]] || return 1
+  python3 - "$PREINSTALL_RESUME_STATE_FILE" <<'PY'
+import json, sys
+try:
+    with open(sys.argv[1], 'r', encoding='utf-8') as f:
+        data = json.load(f)
+except Exception:
+    raise SystemExit(1)
+raise SystemExit(0 if data.get('attempted_reboot_recovery') else 1)
+PY
+}
+
+clear_preinstall_resume_state() {
+  local unit_name
+  unit_name="$(basename "$PREINSTALL_RESUME_SERVICE")"
+  if [[ ! -f "$PREINSTALL_RESUME_SERVICE" && ! -f "$PREINSTALL_RESUME_STATE_FILE" ]]; then
+    return 0
+  fi
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    echo "[DRY-RUN] disable $unit_name"
+    echo "[DRY-RUN] remove $PREINSTALL_RESUME_SERVICE"
+    echo "[DRY-RUN] remove $PREINSTALL_RESUME_STATE_FILE"
+    echo "[DRY-RUN] systemctl daemon-reload"
+    return 0
+  fi
+  systemctl disable "$unit_name" >/dev/null 2>&1 || true
+  rm -f "$PREINSTALL_RESUME_SERVICE" "$PREINSTALL_RESUME_STATE_FILE"
+  systemctl daemon-reload >/dev/null 2>&1 || true
+}
+
+build_resume_command() {
+  local cmd arg
+  cmd="exec /bin/bash $(printf '%q' "$SCRIPT_PATH_ABS")"
+  for arg in "${ORIGINAL_ARGS[@]}"; do
+    cmd+=" $(printf '%q' "$arg")"
+  done
+  printf '%s\n' "$cmd"
+}
+
+write_preinstall_resume_state() {
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    echo "[DRY-RUN] write $PREINSTALL_RESUME_STATE_FILE"
+    return 0
+  fi
+  mkdir -p "$INSTALL_STATE_DIR"
+  python3 - "$PREINSTALL_RESUME_STATE_FILE" "$SCRIPT_PATH_ABS" "$(date -Is)" "${ORIGINAL_ARGS[@]}" <<'PY'
+import json, os, sys, tempfile
+path = sys.argv[1]
+script_path = sys.argv[2]
+created_at = sys.argv[3]
+args = sys.argv[4:]
+payload = {
+    'script_path': script_path,
+    'args': args,
+    'attempted_reboot_recovery': True,
+    'created_at': created_at,
+}
+d = os.path.dirname(path)
+fd, tmp = tempfile.mkstemp(dir=d, prefix='preinstall-resume.tmp.')
+with os.fdopen(fd, 'w', encoding='utf-8') as f:
+    json.dump(payload, f, indent=2)
+    f.write('\n')
+os.chmod(tmp, 0o644)
+os.rename(tmp, path)
+PY
+}
+
+install_preinstall_resume_unit() {
+  local resume_cmd unit_name
+  unit_name="$(basename "$PREINSTALL_RESUME_SERVICE")"
+  resume_cmd="$(build_resume_command)"
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    echo "[DRY-RUN] write $PREINSTALL_RESUME_SERVICE"
+    echo "[DRY-RUN] systemctl daemon-reload"
+    echo "[DRY-RUN] systemctl enable $unit_name"
+    return 0
+  fi
+  cat > "$PREINSTALL_RESUME_SERVICE" <<EOF
+[Unit]
+Description=Resume ODROID M1S Umbrel install after NVMe recovery reboot
+After=multi-user.target
+ConditionPathExists=$PREINSTALL_RESUME_STATE_FILE
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/env AUTO_RESUME_INSTALL=1 /bin/bash -lc '$resume_cmd'
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  systemctl daemon-reload
+  systemctl enable "$unit_name"
+}
+
+nvme_rescan_runtime() {
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    echo "[DRY-RUN] echo 1 > /sys/bus/pci/rescan"
+    echo "[DRY-RUN] udevadm settle"
+    return 0
+  fi
+  [[ -w /sys/bus/pci/rescan ]] || return 1
+  printf '1\n' > /sys/bus/pci/rescan
+  command -v udevadm >/dev/null 2>&1 && udevadm settle || true
+  sleep 3
+  return 0
+}
+
+nvme_target_missing_preflight() {
+  local parent=""
+  if [[ -n "$TARGET_INPUT" ]]; then
+    target_input_looks_like_nvme "$TARGET_INPUT" || return 1
+    [[ -b "$TARGET_INPUT" ]] && return 1
+    parent="$(guess_parent_disk_path "$TARGET_INPUT")"
+    if [[ -n "$parent" && -b "$parent" ]]; then
+      return 1
+    fi
+    return 0
+  fi
+  nvme_disk_visible && return 1
+  return 0
+}
+
+nvme_cmdline_patch_flash_kernel_defaults() {
+  local flash_kernel_defaults="/etc/default/flash-kernel"
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    echo "[DRY-RUN] backup $flash_kernel_defaults"
+    echo "[DRY-RUN] append nvme_core.default_ps_max_latency_us=0 pcie_aspm=off pcie_port_pm=off to LINUX_KERNEL_CMDLINE"
+    echo "[DRY-RUN] flash-kernel"
+  elif [[ -f "$flash_kernel_defaults" ]]; then
+    run_cmd cp "$flash_kernel_defaults" "$flash_kernel_defaults.bak.$(date +%s)"
+    run_shell "FLASH_KERNEL_FILE=${flash_kernel_defaults@Q} python3 - <<'PY'
+from pathlib import Path
+import os
+
+path = Path(os.environ['FLASH_KERNEL_FILE'])
+needles = [
+    'nvme_core.default_ps_max_latency_us=0',
+    'pcie_aspm=off',
+    'pcie_port_pm=off',
+]
+lines = path.read_text().splitlines()
+out = []
+found = False
+for line in lines:
+    if line.startswith('LINUX_KERNEL_CMDLINE='):
+        found = True
+        prefix = 'LINUX_KERNEL_CMDLINE=\"'
+        if line.startswith(prefix) and line.endswith('\"'):
+            body = line[len(prefix):-1]
+        else:
+            body = line.split('=', 1)[1].strip().strip('\"')
+        parts = body.split()
+        for needle in needles:
+            if needle not in parts:
+                parts.append(needle)
+        line = prefix + ' '.join(parts) + '\"'
+    out.append(line)
+if not found:
+    out.append('LINUX_KERNEL_CMDLINE="' + ' '.join(needles) + '"')
+path.write_text('\n'.join(out) + '\n')
+PY"
+    if command -v flash-kernel >/dev/null 2>&1; then
+      run_cmd flash-kernel
+    else
+      warn "flash-kernel not found. APST-off kernel parameter was recorded but boot script was not regenerated."
+    fi
+  else
+    warn "$flash_kernel_defaults not found. Skipping APST-off kernel parameter setup."
+  fi
+}
+
+nvme_cmdline_patch_extlinux() {
+  local extlinux_conf="/boot/extlinux/extlinux.conf"
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    echo "[DRY-RUN] append nvme_core.default_ps_max_latency_us=0 pcie_aspm=off pcie_port_pm=off to $extlinux_conf"
+  elif [[ -f "$extlinux_conf" ]]; then
+    cp "$extlinux_conf" "$extlinux_conf.bak.$(date +%s)"
+    python3 - "$extlinux_conf" <<'PY'
+import sys
+from pathlib import Path
+path = Path(sys.argv[1])
+needles = [
+    'nvme_core.default_ps_max_latency_us=0',
+    'pcie_aspm=off',
+    'pcie_port_pm=off',
+]
+lines = path.read_text().splitlines()
+changed = False
+for i, line in enumerate(lines):
+    stripped = line.lstrip()
+    if not stripped.startswith('append '):
+        continue
+    indent = line[:len(line) - len(stripped)]
+    parts = stripped.split()
+    for needle in needles:
+        if needle not in parts:
+            parts.append(needle)
+            changed = True
+    lines[i] = indent + ' '.join(parts)
+if changed:
+    path.write_text('\n'.join(lines) + '\n')
+PY
+    info "Patched $extlinux_conf with NVMe/PCIe parameters"
+  fi
+}
+
+apply_nvme_boot_mitigation() {
+  info "Configuring conservative NVMe power policy for future boots"
+  nvme_cmdline_patch_flash_kernel_defaults
+  nvme_cmdline_patch_extlinux
+}
+
+ensure_nvme_diagnostic_tools() {
+  local missing=()
+  command -v lspci >/dev/null 2>&1 || missing+=(pciutils)
+  command -v nvme >/dev/null 2>&1 || missing+=(nvme-cli)
+  command -v smartctl >/dev/null 2>&1 || missing+=(smartmontools)
+  [[ "${#missing[@]}" -gt 0 ]] || return 0
+
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    echo "[DRY-RUN] apt-get install -y ${missing[*]}"
+    return 0
+  fi
+
+  DEBIAN_FRONTEND=noninteractive apt-get install -y "${missing[@]}" >/dev/null 2>&1 || warn "Failed to install NVMe diagnostic tools (${missing[*]}); snapshotter will capture available commands only"
+}
+
+install_nvme_timeout_snapshotter() {
+  local snapshot_script="/usr/local/sbin/nvme-timeout-snapshot.sh"
+  local snapshot_service="/etc/systemd/system/nvme-timeout-snapshot.service"
+  local snapshot_timer="/etc/systemd/system/nvme-timeout-snapshot.timer"
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    echo "[DRY-RUN] create $snapshot_script"
+    echo "[DRY-RUN] create $snapshot_service"
+    echo "[DRY-RUN] create $snapshot_timer"
+    echo "[DRY-RUN] systemctl enable --now nvme-timeout-snapshot.timer"
+    return 0
+  fi
+
+  cat > "$snapshot_script" <<'EOF'
+#!/bin/bash
+set -euo pipefail
+STATE_DIR="/var/lib/nvme-timeout-snapshot"
+SNAPSHOT_DIR="$STATE_DIR/snapshots"
+BOOT_ID="$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || echo unknown-boot)"
+BOOT_FLAG="$STATE_DIR/captured-$BOOT_ID"
+mkdir -p "$SNAPSHOT_DIR"
+
+if [ -e "$BOOT_FLAG" ]; then
+  exit 0
+fi
+
+if ! journalctl -k -b --no-pager 2>/dev/null | grep -Eiq 'nvme.*timeout|EXT4-fs error|I/O error|blk_update_request|Buffer I/O|aborted journal|read-only filesystem'; then
+  exit 0
+fi
+
+ts="$(date +%Y%m%d-%H%M%S)"
+snapshot="$SNAPSHOT_DIR/$ts-nvme-timeout"
+mkdir -p "$snapshot"
+{
+  echo "timestamp=$(date -Is)"
+  echo "boot_id=$BOOT_ID"
+  echo "reason=kernel-storage-warning"
+} > "$snapshot/meta.txt"
+cat /proc/cmdline > "$snapshot/cmdline.txt" 2>/dev/null || true
+findmnt /mnt/fullnode > "$snapshot/findmnt-fullnode.txt" 2>&1 || true
+lsblk -o NAME,SIZE,TYPE,MODEL,FSTYPE,MOUNTPOINT,UUID > "$snapshot/lsblk.txt" 2>&1 || true
+journalctl -k -b --no-pager | grep -Ei 'nvme|EXT4-fs error|timeout|I/O error|blk_update_request|Buffer I/O|aborted journal|read-only filesystem' > "$snapshot/kernel-storage.log" 2>&1 || true
+lspci -vv > "$snapshot/lspci-vv.txt" 2>&1 || true
+if command -v nvme >/dev/null 2>&1; then
+  nvme list > "$snapshot/nvme-list.txt" 2>&1 || true
+  nvme id-ctrl /dev/nvme0 > "$snapshot/nvme-id-ctrl.txt" 2>&1 || true
+  nvme smart-log /dev/nvme0 > "$snapshot/nvme-smart-log.txt" 2>&1 || true
+fi
+if command -v smartctl >/dev/null 2>&1; then
+  smartctl -a /dev/nvme0 > "$snapshot/smartctl.txt" 2>&1 || true
+fi
+date -Is > "$BOOT_FLAG"
+EOF
+  chmod 0755 "$snapshot_script"
+
+  cat > "$snapshot_service" <<EOF
+[Unit]
+Description=Capture NVMe timeout diagnostics when kernel storage warnings appear
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=$snapshot_script
+EOF
+
+  cat > "$snapshot_timer" <<'EOF'
+[Unit]
+Description=Periodic passive NVMe timeout diagnostic capture
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+AccuracySec=30s
+Unit=nvme-timeout-snapshot.service
+
+[Install]
+WantedBy=timers.target
+EOF
+
+  systemctl daemon-reload
+  systemctl enable --now nvme-timeout-snapshot.timer >/dev/null 2>&1 || warn "Failed to enable NVMe timeout diagnostic snapshot timer"
+  info "Installed passive NVMe timeout diagnostic snapshot timer"
+}
+
+maybe_recover_missing_nvme() {
+  if [[ -z "$TARGET_INPUT" ]]; then
+    if nvme_disk_visible; then
+      return 0
+    fi
+    warn "No NVMe disk is currently visible. Attempting runtime PCI rescan before interactive disk selection."
+    nvme_rescan_runtime || true
+    if nvme_disk_visible; then
+      info "Recovered NVMe visibility via runtime PCI rescan. Continuing installation."
+    else
+      warn "NVMe is still not visible. Automatic reboot recovery is skipped until an explicit /dev/nvme0n1 target is supplied."
+    fi
+    return 0
+  fi
+
+  if ! nvme_target_missing_preflight; then
+    return 0
+  fi
+
+  warn "NVMe target is not visible before installation. Attempting runtime PCI rescan."
+  nvme_rescan_runtime || true
+  if ! nvme_target_missing_preflight; then
+    info "Recovered NVMe visibility via runtime PCI rescan. Continuing installation."
+    return 0
+  fi
+
+  if preinstall_resume_attempted; then
+    clear_preinstall_resume_state
+    err "NVMe target is still missing after one automatic recovery reboot."
+    err "Please inspect SSD seating, power, or firmware manually and rerun the installer."
+    exit 1
+  fi
+
+  warn "Runtime PCI rescan did not restore NVMe visibility. Applying boot-time NVMe mitigation and rebooting once."
+  apply_nvme_boot_mitigation
+  write_preinstall_resume_state
+  install_preinstall_resume_unit
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    echo "[DRY-RUN] systemctl reboot"
+    exit 0
+  fi
+  info "Rebooting once to resume installation after NVMe recovery."
+  sync
+  systemctl reboot
+  exit 0
 }
 
 detect_lan_interface() {
@@ -471,6 +856,8 @@ for required_cmd in python3 curl blkid mkfs.ext4 lsblk findmnt; do
   fi
 done
 
+SCRIPT_PATH_ABS="$(resolve_block_path "$0")"
+
 MODEL="unknown"
 if [[ -r /proc/device-tree/model ]]; then
   MODEL="$(tr -d '\0' </proc/device-tree/model)"
@@ -493,15 +880,19 @@ if [[ -z "$ROOT_DISK" ]]; then
   if [[ -n "$TARGET_INPUT" ]]; then
     warn "Root disk detection failed. Proceeding with explicit target: $TARGET_INPUT"
     warn "Please verify this is NOT your system disk."
-    if [[ "$DRY_RUN" -eq 0 ]]; then
+    if [[ "$DRY_RUN" -eq 0 && "$AUTO_RESUME_INSTALL" -ne 1 ]]; then
       read -r -p "Type CONFIRM-TARGET to continue anyway: " ROOT_CONFIRM
       if [[ "$ROOT_CONFIRM" != "CONFIRM-TARGET" ]]; then
         err "Aborted by user."
         exit 1
       fi
+    elif [[ "$AUTO_RESUME_INSTALL" -eq 1 ]]; then
+      info "Resume mode: skipping root-disk confirmation prompt after prior recovery reboot."
     fi
   fi
 fi
+
+maybe_recover_missing_nvme
 
 if [[ -z "$TARGET_INPUT" ]]; then
   select_target_disk_interactive
@@ -648,12 +1039,18 @@ if [[ "$DRY_RUN" -eq 0 ]]; then
   else
     warn "This will also format $TARGET_PARTITION and erase all existing SSD data on that partition."
   fi
-  read -r -p "Type ERASE-EMMC-AND-FORMAT-SSD-AND-INSTALL-UMBREL to continue: " CONFIRM
-  if [[ "$CONFIRM" != "ERASE-EMMC-AND-FORMAT-SSD-AND-INSTALL-UMBREL" ]]; then
-    err "Confirmation text mismatch. Aborting."
-    exit 1
+  if [[ "$AUTO_RESUME_INSTALL" -ne 1 ]]; then
+    read -r -p "Type ERASE-EMMC-AND-FORMAT-SSD-AND-INSTALL-UMBREL to continue: " CONFIRM
+    if [[ "$CONFIRM" != "ERASE-EMMC-AND-FORMAT-SSD-AND-INSTALL-UMBREL" ]]; then
+      err "Confirmation text mismatch. Aborting."
+      exit 1
+    fi
+  else
+    info "Resume mode: skipping destructive confirmation prompt after prior recovery reboot."
   fi
 fi
+
+clear_preinstall_resume_state
 
 # Make sure unattended-upgrades or any other apt consumer is not holding the
 # dpkg lock. If we continue while the lock is held, the Docker install step
@@ -1052,92 +1449,9 @@ if [[ "$DRY_RUN" -eq 0 && "$CURRENT_DATA_SOURCE" != "$TARGET_PARTITION" ]]; then
   exit 1
 fi
 
-info "Configuring conservative NVMe power policy for future boots"
-FLASH_KERNEL_DEFAULTS="/etc/default/flash-kernel"
-if [[ "$DRY_RUN" -eq 1 ]]; then
-  echo "[DRY-RUN] backup $FLASH_KERNEL_DEFAULTS"
-  echo "[DRY-RUN] append nvme_core.default_ps_max_latency_us=0 pcie_aspm=off pcie_port_pm=off to LINUX_KERNEL_CMDLINE"
-  echo "[DRY-RUN] flash-kernel"
-elif [[ -f "$FLASH_KERNEL_DEFAULTS" ]]; then
-  run_cmd cp "$FLASH_KERNEL_DEFAULTS" "$FLASH_KERNEL_DEFAULTS.bak.$(date +%s)"
-  run_shell "FLASH_KERNEL_FILE=${FLASH_KERNEL_DEFAULTS@Q} python3 - <<'PY'
-from pathlib import Path
-import os
-
-path = Path(os.environ['FLASH_KERNEL_FILE'])
-needles = [
-    'nvme_core.default_ps_max_latency_us=0',
-    'pcie_aspm=off',
-    'pcie_port_pm=off',
-]
-lines = path.read_text().splitlines()
-out = []
-found = False
-for line in lines:
-    if line.startswith('LINUX_KERNEL_CMDLINE='):
-        found = True
-        prefix = 'LINUX_KERNEL_CMDLINE=\"'
-        if line.startswith(prefix) and line.endswith('\"'):
-            body = line[len(prefix):-1]
-        else:
-            body = line.split('=', 1)[1].strip().strip('\"')
-        parts = body.split()
-        for needle in needles:
-            if needle not in parts:
-                parts.append(needle)
-        line = prefix + ' '.join(parts) + '\"'
-    out.append(line)
-if not found:
-    out.append('LINUX_KERNEL_CMDLINE="' + needle + '"')
-path.write_text('\n'.join(out) + '\n')
-PY"
-  if command -v flash-kernel >/dev/null 2>&1; then
-    run_cmd flash-kernel
-  else
-    warn "flash-kernel not found. APST-off kernel parameter was recorded but boot script was not regenerated."
-  fi
-else
-  warn "$FLASH_KERNEL_DEFAULTS not found. Skipping APST-off kernel parameter setup."
-fi
-
-# On ODROID M1S the u-boot loader reads /boot/extlinux/extlinux.conf directly,
-# so flash-kernel's boot.scr regeneration is NOT the authoritative cmdline
-# source. We patch the extlinux append line as well so the NVMe/PCIe hardening
-# parameters actually apply on the next boot.
-EXTLINUX_CONF="/boot/extlinux/extlinux.conf"
-if [[ "$DRY_RUN" -eq 1 ]]; then
-  echo "[DRY-RUN] append nvme_core.default_ps_max_latency_us=0 pcie_aspm=off pcie_port_pm=off to $EXTLINUX_CONF"
-elif [[ -f "$EXTLINUX_CONF" ]]; then
-  cp "$EXTLINUX_CONF" "$EXTLINUX_CONF.bak.$(date +%s)"
-  python3 - "$EXTLINUX_CONF" <<'PY'
-import sys
-from pathlib import Path
-path = Path(sys.argv[1])
-needles = [
-    'nvme_core.default_ps_max_latency_us=0',
-    'pcie_aspm=off',
-    'pcie_port_pm=off',
-]
-lines = path.read_text().splitlines()
-changed = False
-for i, line in enumerate(lines):
-    stripped = line.lstrip()
-    if not stripped.startswith('append '):
-        continue
-    indent = line[:len(line) - len(stripped)]
-    parts = stripped.split()
-    for needle in needles:
-        if needle not in parts:
-            parts.append(needle)
-            changed = True
-    lines[i] = indent + ' '.join(parts)
-if changed:
-    path.write_text('\n'.join(lines) + '\n')
-PY
-  info "Patched $EXTLINUX_CONF with NVMe/PCIe parameters"
-else
-  warn "$EXTLINUX_CONF not found. Skipping extlinux cmdline patch."
-fi
+apply_nvme_boot_mitigation
+ensure_nvme_diagnostic_tools
+install_nvme_timeout_snapshotter
 
 info "Disabling automatic reboot from unattended-upgrades"
 APT_NOREBOOT_FILE="/etc/apt/apt.conf.d/52m1s-no-auto-reboot"
@@ -1171,7 +1485,7 @@ else
     chmod 600 "$SWAPFILE"
     mkswap "$SWAPFILE" >/dev/null || warn "mkswap $SWAPFILE failed (continuing)"
     swapon "$SWAPFILE" || warn "swapon $SWAPFILE failed (continuing)"
-    if ! grep -qE "^$SWAPFILE[[:space:]]" /etc/fstab; then
+    if ! grep -qE "^${SWAPFILE}[[:space:]]" /etc/fstab; then
       printf '%s\tnone\tswap\tsw,nofail\t0\t0\n' "$SWAPFILE" >> /etc/fstab
       info "Added $SWAPFILE to /etc/fstab"
     fi

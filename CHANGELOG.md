@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.2
+
+- Ensure `pciutils`, `nvme-cli`, and `smartmontools` are installed when enabling the passive NVMe timeout snapshotter, so captured evidence includes PCIe details, NVMe controller identity, NVMe SMART, and SMART data when available.
+- Bring the updater to `0.4.2` so devices that already received `0.4.1` can add the diagnostic tools without reinstalling.
+
+## 0.4.1
+
+- Add a passive NVMe timeout diagnostic snapshotter. It runs silently via a systemd timer and only captures evidence when kernel storage warnings appear, storing `/proc/cmdline`, mount state, `lsblk`, `lspci`, `nvme`/SMART data, and filtered kernel logs under `/var/lib/nvme-timeout-snapshot/snapshots/`.
+- Bring the updater to `0.4.1` so existing `0.4.0` installs can receive the same passive diagnostic collector without reinstalling or interrupting non-developer users.
+
 ## 0.4.0
 
 - Fix a false failure in `wait_for_apt_locks()`. The installer previously exited early on healthy systems because `fuser` returns status `1` when no process is holding the apt/dpkg lock, which interacted badly with `set -euo pipefail`.

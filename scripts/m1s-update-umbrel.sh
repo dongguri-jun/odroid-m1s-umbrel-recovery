@@ -16,7 +16,7 @@ set -Eeuo pipefail
 #   --version      Print script version and exit.
 #   -h, --help     Show this help.
 
-SCRIPT_VERSION="0.4.0"
+SCRIPT_VERSION="0.4.2"
 INSTALL_STATE_DIR="/etc/umbrel-recovery"
 INSTALL_STATE_FILE="$INSTALL_STATE_DIR/installed.json"
 
@@ -220,6 +220,104 @@ detect_lan_interface() {
   fi
   iface="$(ip -o link show 2>/dev/null | awk -F': ' '$2 !~ /^(lo|docker.*|br-.*|veth.*|tailscale.*|virbr.*|zt.*)$/ {print $2; exit}' || true)"
   printf '%s\n' "$iface"
+}
+
+ensure_nvme_diagnostic_tools() {
+  local missing=()
+  command -v lspci >/dev/null 2>&1 || missing+=(pciutils)
+  command -v nvme >/dev/null 2>&1 || missing+=(nvme-cli)
+  command -v smartctl >/dev/null 2>&1 || missing+=(smartmontools)
+  [[ "${#missing[@]}" -gt 0 ]] || return 0
+
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    echo "[DRY-RUN] apt-get install -y ${missing[*]}"
+    return 0
+  fi
+
+  DEBIAN_FRONTEND=noninteractive apt-get install -y "${missing[@]}" >/dev/null 2>&1 || warn "Failed to install NVMe diagnostic tools (${missing[*]}); snapshotter will capture available commands only"
+}
+
+install_nvme_timeout_snapshotter() {
+  local snapshot_script="/usr/local/sbin/nvme-timeout-snapshot.sh"
+  local snapshot_service="/etc/systemd/system/nvme-timeout-snapshot.service"
+  local snapshot_timer="/etc/systemd/system/nvme-timeout-snapshot.timer"
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    echo "[DRY-RUN] create $snapshot_script"
+    echo "[DRY-RUN] create $snapshot_service"
+    echo "[DRY-RUN] create $snapshot_timer"
+    echo "[DRY-RUN] systemctl enable --now nvme-timeout-snapshot.timer"
+    return 0
+  fi
+
+  cat > "$snapshot_script" <<'EOF'
+#!/bin/bash
+set -euo pipefail
+STATE_DIR="/var/lib/nvme-timeout-snapshot"
+SNAPSHOT_DIR="$STATE_DIR/snapshots"
+BOOT_ID="$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || echo unknown-boot)"
+BOOT_FLAG="$STATE_DIR/captured-$BOOT_ID"
+mkdir -p "$SNAPSHOT_DIR"
+
+if [ -e "$BOOT_FLAG" ]; then
+  exit 0
+fi
+
+if ! journalctl -k -b --no-pager 2>/dev/null | grep -Eiq 'nvme.*timeout|EXT4-fs error|I/O error|blk_update_request|Buffer I/O|aborted journal|read-only filesystem'; then
+  exit 0
+fi
+
+ts="$(date +%Y%m%d-%H%M%S)"
+snapshot="$SNAPSHOT_DIR/$ts-nvme-timeout"
+mkdir -p "$snapshot"
+{
+  echo "timestamp=$(date -Is)"
+  echo "boot_id=$BOOT_ID"
+  echo "reason=kernel-storage-warning"
+} > "$snapshot/meta.txt"
+cat /proc/cmdline > "$snapshot/cmdline.txt" 2>/dev/null || true
+findmnt /mnt/fullnode > "$snapshot/findmnt-fullnode.txt" 2>&1 || true
+lsblk -o NAME,SIZE,TYPE,MODEL,FSTYPE,MOUNTPOINT,UUID > "$snapshot/lsblk.txt" 2>&1 || true
+journalctl -k -b --no-pager | grep -Ei 'nvme|EXT4-fs error|timeout|I/O error|blk_update_request|Buffer I/O|aborted journal|read-only filesystem' > "$snapshot/kernel-storage.log" 2>&1 || true
+lspci -vv > "$snapshot/lspci-vv.txt" 2>&1 || true
+if command -v nvme >/dev/null 2>&1; then
+  nvme list > "$snapshot/nvme-list.txt" 2>&1 || true
+  nvme id-ctrl /dev/nvme0 > "$snapshot/nvme-id-ctrl.txt" 2>&1 || true
+  nvme smart-log /dev/nvme0 > "$snapshot/nvme-smart-log.txt" 2>&1 || true
+fi
+if command -v smartctl >/dev/null 2>&1; then
+  smartctl -a /dev/nvme0 > "$snapshot/smartctl.txt" 2>&1 || true
+fi
+date -Is > "$BOOT_FLAG"
+EOF
+  chmod 0755 "$snapshot_script"
+
+  cat > "$snapshot_service" <<EOF
+[Unit]
+Description=Capture NVMe timeout diagnostics when kernel storage warnings appear
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=$snapshot_script
+EOF
+
+  cat > "$snapshot_timer" <<'EOF'
+[Unit]
+Description=Periodic passive NVMe timeout diagnostic capture
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+AccuracySec=30s
+Unit=nvme-timeout-snapshot.service
+
+[Install]
+WantedBy=timers.target
+EOF
+
+  systemctl daemon-reload
+  systemctl enable --now nvme-timeout-snapshot.timer >/dev/null 2>&1 || warn "Failed to enable NVMe timeout diagnostic snapshot timer"
+  info "Installed passive NVMe timeout diagnostic snapshot timer"
 }
 
 patch_to_0_4_0() {
@@ -428,6 +526,17 @@ DOCKER_JSON
   fi
 }
 
+patch_to_0_4_1() {
+  info "[0.4.1] Installing passive NVMe timeout diagnostic snapshotter"
+  install_nvme_timeout_snapshotter
+}
+
+patch_to_0_4_2() {
+  info "[0.4.2] Ensuring NVMe diagnostic tools are available"
+  ensure_nvme_diagnostic_tools
+  install_nvme_timeout_snapshotter
+}
+
 # ---------------------------------------------------------------------------
 # Record the new version in the install state file.
 # ---------------------------------------------------------------------------
@@ -506,6 +615,12 @@ fi
 if version_lt "$CURRENT_VERSION" "0.4.0"; then
   PLANNED_PATCHES+=("0.4.0")
 fi
+if version_lt "$CURRENT_VERSION" "0.4.1"; then
+  PLANNED_PATCHES+=("0.4.1")
+fi
+if version_lt "$CURRENT_VERSION" "0.4.2"; then
+  PLANNED_PATCHES+=("0.4.2")
+fi
 
 if [[ "${#PLANNED_PATCHES[@]}" -eq 0 ]]; then
   echo "No patches needed. Host is already at $CURRENT_VERSION (>= $TARGET_VERSION)."
@@ -530,6 +645,12 @@ for patch in "${PLANNED_PATCHES[@]}"; do
       ;;
     0.4.0)
       patch_to_0_4_0
+      ;;
+    0.4.1)
+      patch_to_0_4_1
+      ;;
+    0.4.2)
+      patch_to_0_4_2
       ;;
     *)
       warn "No handler for patch target '$patch'; skipping"
