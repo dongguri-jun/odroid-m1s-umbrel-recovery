@@ -1,0 +1,20 @@
+name: Verify scripts
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  verify-scripts:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install ShellCheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+
+      - name: Run strict script verification
+        run: bash scripts/verify-scripts.sh
