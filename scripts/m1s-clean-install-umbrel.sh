@@ -325,7 +325,9 @@ nvme_rescan_runtime() {
   fi
   [[ -w /sys/bus/pci/rescan ]] || return 1
   printf '1\n' > /sys/bus/pci/rescan
-  command -v udevadm >/dev/null 2>&1 && udevadm settle || true
+  if command -v udevadm >/dev/null 2>&1; then
+    udevadm settle || true
+  fi
   sleep 3
   return 0
 }
