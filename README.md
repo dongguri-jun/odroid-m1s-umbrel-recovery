@@ -58,6 +58,36 @@ SSD 데이터를 지우면 안 되는 경우에는 진행하지 마세요.
 - 설치 중 반드시 **유선 네트워크 연결(랜선, 이더넷 케이블)** 을 사용해야 합니다.
 - **ODROID M1S는 Wi‑Fi 연결이 불가능하므로**, 반드시 유선 네트워크 환경에서 진행해야 합니다.
 
+### SSD 선택 시 주의
+
+ODROID M1S는 NVMe SSD를 사용할 수 있습니다.
+
+대부분의 NVMe SSD는 사용할 수 있지만, 일부 SSD는 ODROID M1S에서 인식되지 않거나 재부팅 후 사라지는 사례가 보고되어 있습니다.  
+이 저장소의 설치 스크립트는 이런 SSD 인식 문제를 줄이기 위한 안정화 설정을 자동으로 적용합니다.
+
+가능하면 아래처럼 동작이 확인된 SSD를 사용하는 것을 권장합니다.
+
+- Crucial P3 / P3 Plus
+- Kingston NV1
+- PNY CS1031
+- Samsung PM9A1
+- Samsung 970 EVO
+- Samsung 970 EVO Plus 1TB
+- Western Digital SN550
+
+아래 SSD는 ODROID M1S에서 문제가 보고된 적이 있어, 가능하면 피하는 것을 권장합니다.
+
+- Silicon Power NVMe SSD
+- Samsung 970 EVO Plus 2TB
+- WD Green WDS480G3G0B
+
+추천 SSD를 구하기 어렵다면 너무 걱정하지 않아도 됩니다.  
+제품명에 **NVMe**라고 적힌 SSD를 고르면 대부분 사용할 수 있습니다.
+
+단, `M.2 SATA` SSD는 방식이 달라 사용할 수 없습니다.
+
+Bitcoin 노드 용도라면 **2TB 이상 SSD**를 권장합니다.
+
 ---
 
 ## 2. 장비 연결

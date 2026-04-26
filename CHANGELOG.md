@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.3
+
+- Add a plain-language SSD selection guide to the README, including known-good NVMe examples, models with reported ODROID M1S issues, and a warning that M.2 SATA SSDs are not supported.
+
 ## 0.4.2
 
 - Ensure `pciutils`, `nvme-cli`, and `smartmontools` are installed when enabling the passive NVMe timeout snapshotter, so captured evidence includes PCIe details, NVMe controller identity, NVMe SMART, and SMART data when available.
