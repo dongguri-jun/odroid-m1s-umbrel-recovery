@@ -166,9 +166,9 @@ sudo bash scripts/m1s-update-umbrel.sh --check
 
 ## Verification
 
-- Latest GitHub Actions `{workflow}` workflow passed for this release commit.
+- Latest GitHub Actions `Verify scripts` workflow passed for this release commit.
 - `bash scripts/verify-scripts.sh` checks bash syntax, ShellCheck, version consistency, heredoc safety, installer invariants, updater safety, and workflow presence.
-'''.replace('{workflow}', 'Verify scripts'))
+''')
 PY
 )"
 
