@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.4
+
+- Fix installer heredoc quoting in the NVMe boot-parameter and fstab update paths, preventing dry-run-only validation from missing real execution failures.
+- Add a strict script verification gate with `bash -n`, ShellCheck, version consistency checks, unsafe heredoc wrapper detection, installer safety invariants, updater destructive-command bans, and GitHub Actions integration.
+
 ## 0.4.3
 
 - Add a plain-language SSD selection guide to the README, including known-good NVMe examples, models with reported ODROID M1S issues, and a warning that M.2 SATA SSDs are not supported.
