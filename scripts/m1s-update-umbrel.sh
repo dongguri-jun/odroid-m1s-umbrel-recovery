@@ -16,9 +16,11 @@ set -Eeuo pipefail
 #   --version      Print script version and exit.
 #   -h, --help     Show this help.
 
-SCRIPT_VERSION="0.4.4"
+SCRIPT_VERSION="0.4.5"
 INSTALL_STATE_DIR="/etc/umbrel-recovery"
 INSTALL_STATE_FILE="$INSTALL_STATE_DIR/installed.json"
+DATA_DIR="/mnt/fullnode"
+UMBREL_IMAGE="dockurr/umbrel:latest"
 
 DRY_RUN=0
 CHECK_ONLY=0
@@ -58,9 +60,9 @@ Options:
 
 Notes:
   - Run this on a host that was already set up with m1s-clean-install-umbrel.sh.
-  - The updater never formats disks, never deletes user data, and never
-    recreates the Umbrel container. It only applies targeted patches such as
-    configuration fixes.
+  - The updater never formats disks and never deletes user data. It may refresh
+    the Umbrel system container only after validating that /data is backed by
+    the existing /mnt/fullnode data mount.
   - Safe to run repeatedly (idempotent).
 EOF
 }
@@ -538,6 +540,142 @@ patch_to_0_4_2() {
 }
 
 # ---------------------------------------------------------------------------
+# Patch: 0.4.5 — refresh the Umbrel system container image while preserving
+# /mnt/fullnode data. This intentionally updates only the top-level Umbrel
+# container; app containers and all data under /mnt/fullnode are left untouched.
+# ---------------------------------------------------------------------------
+
+inspect_umbrel_mount_source() {
+  local destination="$1"
+  docker inspect umbrel --format "{{range .Mounts}}{{if eq .Destination \"$destination\"}}{{.Source}}{{end}}{{end}}" 2>/dev/null || true
+}
+
+assert_fullnode_data_mount_safe() {
+  local mount_source
+  local umbrel_data_source
+  local docker_sock_source
+
+  command -v docker >/dev/null 2>&1 || {
+    err "[0.4.5] Docker is not installed; cannot refresh Umbrel safely."
+    return 1
+  }
+
+  docker inspect umbrel >/dev/null 2>&1 || {
+    err "[0.4.5] Existing umbrel container not found; refusing to create a new one here."
+    return 1
+  }
+
+  if ! findmnt --target "$DATA_DIR" >/dev/null 2>&1; then
+    err "[0.4.5] $DATA_DIR is not mounted; refusing to touch the Umbrel container."
+    err "[0.4.5] This prevents accidentally starting Umbrel with empty data on the root disk."
+    return 1
+  fi
+
+  mount_source="$(findmnt --noheadings --output SOURCE --target "$DATA_DIR" | head -n1 | xargs || true)"
+  if [[ "$mount_source" != /dev/nvme* ]]; then
+    err "[0.4.5] $DATA_DIR is mounted from ${mount_source:-unknown}, not an NVMe partition; refusing to continue."
+    return 1
+  fi
+
+  umbrel_data_source="$(inspect_umbrel_mount_source /data)"
+  if [[ "$umbrel_data_source" != "$DATA_DIR" ]]; then
+    err "[0.4.5] Existing umbrel /data mount is ${umbrel_data_source:-missing}, expected $DATA_DIR."
+    err "[0.4.5] Refusing to refresh because user data preservation cannot be proven."
+    return 1
+  fi
+
+  docker_sock_source="$(inspect_umbrel_mount_source /var/run/docker.sock)"
+  if [[ "$docker_sock_source" != "/var/run/docker.sock" ]]; then
+    err "[0.4.5] Existing umbrel docker.sock mount is ${docker_sock_source:-missing}; refusing to refresh."
+    return 1
+  fi
+}
+
+umbrel_image_id() {
+  local image_ref="$1"
+  docker image inspect "$image_ref" --format '{{.Id}}' 2>/dev/null || true
+}
+
+run_umbrel_container() {
+  local image_ref="$1"
+  run_cmd docker run -d --name umbrel --restart always -p 80:80 -v "$DATA_DIR:/data" -v /var/run/docker.sock:/var/run/docker.sock --stop-timeout 60 --pid=host --privileged "$image_ref"
+}
+
+rollback_umbrel_container() {
+  local old_image_id="$1"
+  warn "[0.4.5] New Umbrel container did not stabilize; rolling back to previous image."
+  docker rm -f umbrel >/dev/null 2>&1 || true
+  if docker run -d --name umbrel --restart always -p 80:80 -v "$DATA_DIR:/data" -v /var/run/docker.sock:/var/run/docker.sock --stop-timeout 60 --pid=host --privileged "$old_image_id" >/dev/null; then
+    warn "[0.4.5] Rollback container started with previous image."
+  else
+    err "[0.4.5] Rollback failed. Data remains at $DATA_DIR; inspect with: docker logs umbrel"
+    return 1
+  fi
+}
+
+wait_for_umbrel_container() {
+  local state
+  for _ in {1..30}; do
+    state="$(docker inspect --format='{{.State.Status}}' umbrel 2>/dev/null || true)"
+    if [[ "$state" == "running" ]]; then
+      return 0
+    fi
+    sleep 2
+  done
+  return 1
+}
+
+refresh_umbrel_system_container() {
+  local old_image_id
+  local new_image_id
+
+  info "[0.4.5] Checking Umbrel system container image"
+  assert_fullnode_data_mount_safe
+
+  old_image_id="$(docker inspect umbrel --format '{{.Image}}')"
+
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    echo "[DRY-RUN] docker pull $UMBREL_IMAGE"
+    echo "[DRY-RUN] if image changed: stop and recreate umbrel with $DATA_DIR:/data preserved"
+    return 0
+  fi
+
+  info "[0.4.5] Updating Umbrel system image if needed; apps and data stay in $DATA_DIR"
+  docker pull "$UMBREL_IMAGE" >/dev/null
+  new_image_id="$(umbrel_image_id "$UMBREL_IMAGE")"
+
+  if [[ -z "$new_image_id" ]]; then
+    err "[0.4.5] Could not resolve pulled image ID for $UMBREL_IMAGE"
+    return 1
+  fi
+
+  if [[ "$old_image_id" == "$new_image_id" ]]; then
+    info "[0.4.5] Umbrel system container image is already current"
+    return 0
+  fi
+
+  info "[0.4.5] Applying Umbrel system container update; web UI may be unavailable briefly"
+  docker stop umbrel >/dev/null
+  docker rm umbrel >/dev/null
+  run_umbrel_container "$UMBREL_IMAGE" >/dev/null
+
+  if ! wait_for_umbrel_container; then
+    rollback_umbrel_container "$old_image_id"
+    return 1
+  fi
+
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsS --max-time 10 http://127.0.0.1/ >/dev/null 2>&1 || warn "[0.4.5] Umbrel container is running, but HTTP is not ready yet"
+  fi
+
+  info "[0.4.5] Umbrel system container updated; existing apps and data were preserved"
+}
+
+patch_to_0_4_5() {
+  refresh_umbrel_system_container
+}
+
+# ---------------------------------------------------------------------------
 # Record the new version in the install state file.
 # ---------------------------------------------------------------------------
 
@@ -621,6 +759,9 @@ fi
 if version_lt "$CURRENT_VERSION" "0.4.2"; then
   PLANNED_PATCHES+=("0.4.2")
 fi
+if version_lt "$CURRENT_VERSION" "0.4.5"; then
+  PLANNED_PATCHES+=("0.4.5")
+fi
 
 if [[ "${#PLANNED_PATCHES[@]}" -eq 0 ]]; then
   echo "No patches needed. Host is already at $CURRENT_VERSION (>= $TARGET_VERSION)."
@@ -651,6 +792,9 @@ for patch in "${PLANNED_PATCHES[@]}"; do
       ;;
     0.4.2)
       patch_to_0_4_2
+      ;;
+    0.4.5)
+      patch_to_0_4_5
       ;;
     *)
       warn "No handler for patch target '$patch'; skipping"

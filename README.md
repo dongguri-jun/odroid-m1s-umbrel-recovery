@@ -379,7 +379,9 @@ sudo bash scripts/m1s-update-umbrel.sh --check
 sudo bash scripts/m1s-update-umbrel.sh
 ```
 
-이미 있는 데이터(지갑, 노드 데이터 등)는 건드리지 않고, 여러 번 실행해도 안전합니다.
+업데이트 중에는 Umbrel 화면이 잠시 열리지 않을 수 있습니다. 스크립트는 SSD가 `/mnt/fullnode`에 정상 연결되어 있는지 먼저 확인한 뒤, 기존 데이터 위치를 그대로 유지한 상태에서 필요한 부분만 갱신합니다.
+
+이미 있는 비밀번호, 앱 데이터, Bitcoin 노드 데이터는 건드리지 않고, 여러 번 실행해도 안전합니다.
 
 ---
 

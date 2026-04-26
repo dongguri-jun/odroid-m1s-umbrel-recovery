@@ -128,7 +128,7 @@ printf '[verify] updater safety invariants\n'
 python3 - <<'PY'
 from pathlib import Path
 text = Path('scripts/m1s-update-umbrel.sh').read_text(encoding='utf-8')
-for forbidden in ['mkfs.', 'sfdisk', 'parted', 'wipefs']:
+for forbidden in ['mkfs.', 'sfdisk', 'parted', 'wipefs', 'sgdisk', 'gdisk', 'blkdiscard', 'shred']:
     if forbidden in text:
         raise SystemExit(f'Updater must never contain destructive disk command: {forbidden}')
 required = [
@@ -137,6 +137,16 @@ required = [
     '--dry-run',
     'CURRENT_VERSION',
     'TARGET_VERSION',
+    'DATA_DIR="/mnt/fullnode"',
+    'UMBREL_IMAGE="dockurr/umbrel:latest"',
+    'assert_fullnode_data_mount_safe',
+    'findmnt --target "$DATA_DIR"',
+    'inspect_umbrel_mount_source /data',
+    'inspect_umbrel_mount_source /var/run/docker.sock',
+    'docker pull "$UMBREL_IMAGE"',
+    'docker stop umbrel',
+    'docker rm umbrel',
+    'docker run -d --name umbrel --restart always -p 80:80 -v "$DATA_DIR:/data" -v /var/run/docker.sock:/var/run/docker.sock --stop-timeout 60 --pid=host --privileged',
 ]
 missing = [needle for needle in required if needle not in text]
 if missing:
@@ -144,7 +154,27 @@ if missing:
     for needle in missing:
         print(f'  {needle}')
     raise SystemExit(1)
-print('  ok updater has no disk-format commands and keeps check/dry-run path')
+
+def pos(needle: str, haystack: str = text) -> int:
+    idx = haystack.find(needle)
+    if idx == -1:
+        raise SystemExit(f'Missing text for order invariant: {needle}')
+    return idx
+
+if pos('if [[ "$CHECK_ONLY" -eq 1 ]]') > pos('for patch in "${PLANNED_PATCHES[@]}"'):
+    raise SystemExit('--check must exit before patch handlers can run')
+if pos('if [[ "$CHECK_ONLY" -eq 1 ]]') > pos('write_install_state "$TARGET_VERSION" "$CURRENT_VERSION"'):
+    raise SystemExit('--check must exit before install state can be written')
+
+refresh = text[pos('refresh_umbrel_system_container()'):]
+if pos('assert_fullnode_data_mount_safe', refresh) > pos('docker pull "$UMBREL_IMAGE"', refresh):
+    raise SystemExit('Umbrel data mount safety check must happen before docker pull')
+for mutator in ['docker stop umbrel', 'docker rm umbrel', 'run_umbrel_container "$UMBREL_IMAGE"']:
+    if pos('assert_fullnode_data_mount_safe', refresh) > pos(mutator, refresh):
+        raise SystemExit(f'Umbrel data mount safety check must happen before {mutator}')
+if pos('if [[ "$DRY_RUN" -eq 1 ]]', refresh) > pos('docker pull "$UMBREL_IMAGE"', refresh):
+    raise SystemExit('Dry-run branch must return before docker pull mutates image cache')
+print('  ok updater preserves data-mount gates, check/dry-run path, and canonical Umbrel refresh flags')
 PY
 
 printf '[verify] workflow presence\n'

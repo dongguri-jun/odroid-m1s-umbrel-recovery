@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.5
+
+- Add a data-preserving Umbrel system container refresh to the updater. Existing installs now pull `dockurr/umbrel:latest` and recreate only the top-level `umbrel` container when the image changes, while preserving `/mnt/fullnode:/data`, app data, and Bitcoin data.
+- Harden the refresh path with preflight checks for the live `/mnt/fullnode` NVMe mount, the existing `umbrel` container's `/data` bind mount, and the Docker socket bind mount before any container stop/remove operation is allowed.
+- Extend script verification with updater-specific invariants for the new refresh path, including canonical Docker run flags and mount-safety ordering.
+
 ## 0.4.4
 
 - Fix installer heredoc quoting in the NVMe boot-parameter and fstab update paths, preventing dry-run-only validation from missing real execution failures.
