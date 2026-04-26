@@ -16,7 +16,7 @@ set -Eeuo pipefail
 #   --version      Print script version and exit.
 #   -h, --help     Show this help.
 
-SCRIPT_VERSION="0.4.2"
+SCRIPT_VERSION="0.4.4"
 INSTALL_STATE_DIR="/etc/umbrel-recovery"
 INSTALL_STATE_FILE="$INSTALL_STATE_DIR/installed.json"
 
@@ -516,7 +516,7 @@ DOCKER_JSON
       chmod 600 "$swapfile"
       mkswap "$swapfile" >/dev/null || warn "[0.4.0] mkswap $swapfile failed (continuing)"
       swapon "$swapfile" || warn "[0.4.0] swapon $swapfile failed (continuing)"
-      if ! grep -qE "^$swapfile[[:space:]]" /etc/fstab; then
+      if ! grep -qE "^${swapfile}[[:space:]]" /etc/fstab; then
         printf '%s\tnone\tswap\tsw,nofail\t0\t0\n' "$swapfile" >> /etc/fstab
         info "[0.4.0] Added $swapfile to /etc/fstab"
       fi

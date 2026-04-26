@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SCRIPT_VERSION="0.4.2"
+SCRIPT_VERSION="0.4.4"
 INSTALL_STATE_DIR="/etc/umbrel-recovery"
 INSTALL_STATE_FILE="$INSTALL_STATE_DIR/installed.json"
 PREINSTALL_RESUME_STATE_FILE="$INSTALL_STATE_DIR/preinstall-resume.json"
@@ -353,7 +353,7 @@ nvme_cmdline_patch_flash_kernel_defaults() {
     echo "[DRY-RUN] flash-kernel"
   elif [[ -f "$flash_kernel_defaults" ]]; then
     run_cmd cp "$flash_kernel_defaults" "$flash_kernel_defaults.bak.$(date +%s)"
-    run_shell "FLASH_KERNEL_FILE=${flash_kernel_defaults@Q} python3 - <<'PY'
+    FLASH_KERNEL_FILE="$flash_kernel_defaults" python3 - <<'PY'
 from pathlib import Path
 import os
 
@@ -369,21 +369,21 @@ found = False
 for line in lines:
     if line.startswith('LINUX_KERNEL_CMDLINE='):
         found = True
-        prefix = 'LINUX_KERNEL_CMDLINE=\"'
-        if line.startswith(prefix) and line.endswith('\"'):
+        prefix = 'LINUX_KERNEL_CMDLINE="'
+        if line.startswith(prefix) and line.endswith('"'):
             body = line[len(prefix):-1]
         else:
-            body = line.split('=', 1)[1].strip().strip('\"')
+            body = line.split('=', 1)[1].strip().strip('"')
         parts = body.split()
         for needle in needles:
             if needle not in parts:
                 parts.append(needle)
-        line = prefix + ' '.join(parts) + '\"'
+        line = prefix + ' '.join(parts) + '"'
     out.append(line)
 if not found:
     out.append('LINUX_KERNEL_CMDLINE="' + ' '.join(needles) + '"')
 path.write_text('\n'.join(out) + '\n')
-PY"
+PY
     if command -v flash-kernel >/dev/null 2>&1; then
       run_cmd flash-kernel
     else
@@ -668,7 +668,7 @@ select_target_disk_interactive() {
   local candidate_models=()
   local candidate_mounts=()
   local candidate_parts=()
-  local disk_path size model mounts part_count disk_name choice index line name type
+  local disk_path size model mounts part_count disk_name choice index line
 
   if [[ -z "$ROOT_DISK" ]]; then
     err "Could not determine the current root/system disk automatically."
@@ -678,9 +678,10 @@ select_target_disk_interactive() {
 
   while IFS= read -r line; do
     [[ -n "$line" ]] || continue
-    unset NAME SIZE TYPE MODEL name size type model
+    unset NAME SIZE TYPE MODEL
     eval "$line"
     [[ "${TYPE:-}" == "disk" ]] || continue
+    # shellcheck disable=SC2153 # NAME is assigned by eval from lsblk -P output.
     disk_path="/dev/${NAME}"
     size="${SIZE:-unknown}"
     model="${MODEL:-unknown}"
@@ -828,6 +829,7 @@ if [[ "${EUID}" -ne 0 ]]; then
   exit 1
 fi
 
+# shellcheck disable=SC1091
 source /etc/os-release
 if [[ "${ID:-}" != "ubuntu" ]]; then
   err "This script supports Ubuntu only. Detected: ${ID:-unknown}"
@@ -1253,7 +1255,14 @@ info "Cleaning fstab entries that belong to RaspiBlitz eMMC setup"
 TARGET_SWAP_PATHS_STR="${TARGET_SWAP_PATHS[*]}"
 TARGET_MOUNT_PATHS_STR="${TARGET_MOUNT_PATHS[*]}"
 TARGET_EXISTING_PARTITIONS_STR="${TARGET_EXISTING_PARTITIONS[*]}"
-run_shell "TARGET_MOUNT_PATHS_STR=${TARGET_MOUNT_PATHS_STR@Q} DATA_DIR_VALUE=${DATA_DIR@Q} TARGET_SWAP_PATHS_STR=${TARGET_SWAP_PATHS_STR@Q} TARGET_EXISTING_PARTITIONS_STR=${TARGET_EXISTING_PARTITIONS_STR@Q} python3 - <<'PY'
+if [[ "$DRY_RUN" -eq 1 ]]; then
+  run_shell "TARGET_MOUNT_PATHS_STR=${TARGET_MOUNT_PATHS_STR@Q} DATA_DIR_VALUE=${DATA_DIR@Q} TARGET_SWAP_PATHS_STR=${TARGET_SWAP_PATHS_STR@Q} TARGET_EXISTING_PARTITIONS_STR=${TARGET_EXISTING_PARTITIONS_STR@Q} python3 <clean-fstab-script>"
+else
+  TARGET_MOUNT_PATHS_STR="$TARGET_MOUNT_PATHS_STR" \
+  DATA_DIR_VALUE="$DATA_DIR" \
+  TARGET_SWAP_PATHS_STR="$TARGET_SWAP_PATHS_STR" \
+  TARGET_EXISTING_PARTITIONS_STR="$TARGET_EXISTING_PARTITIONS_STR" \
+  python3 - <<'PY'
 from pathlib import Path
 import os, tempfile
 fstab = Path('/etc/fstab')
@@ -1295,7 +1304,8 @@ if new != text:
     os.close(fd)
     os.chmod(tmp, 0o644)
     os.rename(tmp, str(fstab))
-PY"
+PY
+fi
 
 info "Formatting and mounting SSD for Umbrel data"
 run_cmd mkdir -p "$DATA_DIR"
@@ -1409,7 +1419,10 @@ fi
 run_cmd mount "$TARGET_PARTITION" "$DATA_DIR"
 run_cmd chown -R root:root "$DATA_DIR"
 
-run_shell "FSTAB_UUID=${TARGET_UUID@Q} FSTAB_MOUNT=${DATA_DIR@Q} python3 - <<'PY'
+if [[ "$DRY_RUN" -eq 1 ]]; then
+  run_shell "FSTAB_UUID=${TARGET_UUID@Q} FSTAB_MOUNT=${DATA_DIR@Q} python3 <write-fullnode-fstab-script>"
+else
+  FSTAB_UUID="$TARGET_UUID" FSTAB_MOUNT="$DATA_DIR" python3 - <<'PY'
 from pathlib import Path
 import os, tempfile
 fstab = Path('/etc/fstab')
@@ -1441,7 +1454,8 @@ os.fsync(fd)
 os.close(fd)
 os.chmod(tmp, 0o644)
 os.rename(tmp, str(fstab))
-PY"
+PY
+fi
 
 CURRENT_DATA_SOURCE="$(findmnt -n -o SOURCE --target "$DATA_DIR" 2>/dev/null || true)"
 if [[ "$DRY_RUN" -eq 0 && "$CURRENT_DATA_SOURCE" != "$TARGET_PARTITION" ]]; then
