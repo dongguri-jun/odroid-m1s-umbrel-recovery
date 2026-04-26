@@ -155,6 +155,7 @@ if not workflow.exists():
     raise SystemExit('.github/workflows/verify.yml is missing')
 text = workflow.read_text(encoding='utf-8')
 required = [
+    'actions/checkout@v5',
     'shellcheck',
     'bash scripts/verify-scripts.sh',
     'pull_request:',
@@ -167,6 +168,30 @@ if missing:
         print(f'  {needle}')
     raise SystemExit(1)
 print('  ok GitHub workflow runs the verifier with shellcheck available')
+PY
+
+printf '[verify] release gate\n'
+python3 - <<'PY'
+from pathlib import Path
+release = Path('scripts/release.sh')
+if not release.exists():
+    raise SystemExit('scripts/release.sh is missing')
+text = release.read_text(encoding='utf-8')
+required = [
+    'gh run list --workflow "$workflow_name" --branch main --commit "$head_sha"',
+    "run.get('status') != 'completed' or run.get('conclusion') != 'success'",
+    'Local HEAD must match origin/main before releasing.',
+    'Remote tag already exists',
+    'GitHub Release already exists',
+    'CHANGELOG.md is missing section',
+]
+missing = [needle for needle in required if needle not in text]
+if missing:
+    print('Release gate is missing expected safety checks:')
+    for needle in missing:
+        print(f'  {needle}')
+    raise SystemExit(1)
+print('  ok release script gates tags/releases on clean tree, pushed HEAD, changelog, and successful CI')
 PY
 
 printf '[verify] complete\n'
