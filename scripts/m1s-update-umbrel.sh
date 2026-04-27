@@ -16,14 +16,33 @@ set -Eeuo pipefail
 #   --version      Print script version and exit.
 #   -h, --help     Show this help.
 
-SCRIPT_VERSION="0.4.5"
+SCRIPT_VERSION="0.4.12"
 INSTALL_STATE_DIR="/etc/umbrel-recovery"
 INSTALL_STATE_FILE="$INSTALL_STATE_DIR/installed.json"
 DATA_DIR="/mnt/fullnode"
-UMBREL_IMAGE="dockurr/umbrel:latest"
+UMBREL_IMAGE="dockurr/umbrel:1.5.0@sha256:4631e3da4ede19f0d6fc21f304d9994db5adba4ed3df786f9d249ee26733381a"
+SAFE_SHUTDOWN_SERVICE="/etc/systemd/system/m1s-umbrel-autostart.service"
 
 DRY_RUN=0
 CHECK_ONLY=0
+
+MIGRATIONS=(
+  "0.1.0_to_0.2.0"
+  "0.2.0_to_0.3.0"
+  "0.3.0_to_0.4.0"
+  "0.4.0_to_0.4.1"
+  "0.4.1_to_0.4.2"
+  "0.4.2_to_0.4.3"
+  "0.4.3_to_0.4.4"
+  "0.4.4_to_0.4.5"
+  "0.4.5_to_0.4.6"
+  "0.4.6_to_0.4.7"
+  "0.4.7_to_0.4.8"
+  "0.4.8_to_0.4.9"
+  "0.4.9_to_0.4.10"
+  "0.4.10_to_0.4.11"
+  "0.4.11_to_0.4.12"
+)
 
 log() {
   printf '[%s] %s\n' "$1" "$2"
@@ -43,6 +62,47 @@ run_cmd() {
     return 0
   fi
   "$@"
+}
+
+wait_for_apt_locks() {
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    echo "[DRY-RUN] wait for apt/dpkg locks to be released"
+    return 0
+  fi
+
+  local locks=(/var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock)
+  local max_wait=900
+  local waited=0
+  local printed_notice=0
+
+  while (( waited < max_wait )); do
+    local holder=""
+    for lock in "${locks[@]}"; do
+      [[ -e "$lock" ]] || continue
+      local pids
+      pids="$({ fuser "$lock" 2>/dev/null || true; } | tr -s ' ' | sed 's/^ //; s/ $//')"
+      if [[ -n "$pids" ]]; then
+        holder="$pids"
+        break
+      fi
+    done
+    if [[ -z "$holder" ]]; then
+      return 0
+    fi
+    if [[ "$printed_notice" -eq 0 ]]; then
+      warn "Another process is holding apt/dpkg locks (likely unattended-upgrades)."
+      warn "Waiting up to 15 minutes for it to finish before continuing..."
+      printed_notice=1
+    fi
+    sleep 5
+    waited=$((waited + 5))
+    if (( waited % 60 == 0 )); then
+      info "Still waiting for apt/dpkg locks ($((waited / 60)) min elapsed, holder PID: $holder)"
+    fi
+  done
+
+  err "apt/dpkg locks were still held after 15 minutes. Rerun this script after the update finishes."
+  return 1
 }
 
 usage() {
@@ -67,35 +127,39 @@ Notes:
 EOF
 }
 
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --check)
-      CHECK_ONLY=1
-      ;;
-    --dry-run)
-      DRY_RUN=1
-      ;;
-    --version)
-      printf '%s\n' "$SCRIPT_VERSION"
-      exit 0
-      ;;
-    -h|--help)
-      usage
-      exit 0
-      ;;
-    *)
-      err "Unknown argument: $1"
-      usage
-      exit 1
-      ;;
-  esac
-  shift
-done
+parse_args() {
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --check)
+        CHECK_ONLY=1
+        ;;
+      --dry-run)
+        DRY_RUN=1
+        ;;
+      --version)
+        printf '%s\n' "$SCRIPT_VERSION"
+        exit 0
+        ;;
+      -h|--help)
+        usage
+        exit 0
+        ;;
+      *)
+        err "Unknown argument: $1"
+        usage
+        exit 1
+        ;;
+    esac
+    shift
+  done
+}
 
-if [[ "${EUID}" -ne 0 ]]; then
-  err "Run this script with sudo or as root."
-  exit 1
-fi
+require_root() {
+  if [[ "${EUID}" -ne 0 ]]; then
+    err "Run this script with sudo or as root."
+    exit 1
+  fi
+}
 
 # ---------------------------------------------------------------------------
 # Version ordering helpers
@@ -120,11 +184,20 @@ import json, sys
 try:
     with open(sys.argv[1]) as f:
         data = json.load(f)
-    v = data.get("version")
-    if isinstance(v, str) and v:
-        print(v)
+    for key in ("host_version", "version"):
+        v = data.get(key)
+        if isinstance(v, str) and v:
+            print(v)
+            sys.exit(0)
+    steps = data.get("applied_steps")
+    if isinstance(steps, list) and steps:
+        last = steps[-1]
+        if isinstance(last, str) and "_to_" in last:
+            print(last.rsplit("_to_", 1)[1])
+            sys.exit(0)
 except Exception:
     sys.exit(1)
+sys.exit(1)
 PY
 }
 
@@ -153,6 +226,226 @@ detect_installed_version() {
     return 0
   fi
   heuristic_installed_version
+}
+
+nvme_cmdline_patch_flash_kernel_defaults() {
+  local flash_kernel_defaults="/etc/default/flash-kernel"
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    echo "[DRY-RUN] backup $flash_kernel_defaults"
+    echo "[DRY-RUN] append nvme_core.default_ps_max_latency_us=0 pcie_aspm=off pcie_port_pm=off to LINUX_KERNEL_CMDLINE"
+    echo "[DRY-RUN] flash-kernel"
+  elif [[ -f "$flash_kernel_defaults" ]]; then
+    run_cmd cp "$flash_kernel_defaults" "$flash_kernel_defaults.bak.$(date +%s)"
+    FLASH_KERNEL_FILE="$flash_kernel_defaults" python3 - <<'PY'
+from pathlib import Path
+import os
+
+path = Path(os.environ['FLASH_KERNEL_FILE'])
+needles = [
+    'nvme_core.default_ps_max_latency_us=0',
+    'pcie_aspm=off',
+    'pcie_port_pm=off',
+]
+lines = path.read_text().splitlines()
+out = []
+found = False
+for line in lines:
+    if line.startswith('LINUX_KERNEL_CMDLINE='):
+        found = True
+        prefix = 'LINUX_KERNEL_CMDLINE="'
+        if line.startswith(prefix) and line.endswith('"'):
+            body = line[len(prefix):-1]
+        else:
+            body = line.split('=', 1)[1].strip().strip('"')
+        parts = body.split()
+        for needle in needles:
+            if needle not in parts:
+                parts.append(needle)
+        line = prefix + ' '.join(parts) + '"'
+    out.append(line)
+if not found:
+    out.append('LINUX_KERNEL_CMDLINE="' + ' '.join(needles) + '"')
+path.write_text('\n'.join(out) + '\n')
+PY
+    if command -v flash-kernel >/dev/null 2>&1; then
+      run_cmd flash-kernel
+    else
+      warn "flash-kernel not found. NVMe kernel parameters were recorded but boot script was not regenerated."
+    fi
+  else
+    warn "$flash_kernel_defaults not found. Skipping flash-kernel cmdline setup."
+  fi
+}
+
+nvme_cmdline_patch_extlinux() {
+  local extlinux_conf="/boot/extlinux/extlinux.conf"
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    echo "[DRY-RUN] append nvme_core.default_ps_max_latency_us=0 pcie_aspm=off pcie_port_pm=off to $extlinux_conf"
+  elif [[ -f "$extlinux_conf" ]]; then
+    cp "$extlinux_conf" "$extlinux_conf.bak.$(date +%s)"
+    python3 - "$extlinux_conf" <<'PY'
+import sys
+from pathlib import Path
+path = Path(sys.argv[1])
+needles = [
+    'nvme_core.default_ps_max_latency_us=0',
+    'pcie_aspm=off',
+    'pcie_port_pm=off',
+]
+lines = path.read_text().splitlines()
+changed = False
+for i, line in enumerate(lines):
+    stripped = line.lstrip()
+    if not stripped.startswith('append '):
+        continue
+    indent = line[:len(line) - len(stripped)]
+    parts = stripped.split()
+    for needle in needles:
+        if needle not in parts:
+            parts.append(needle)
+            changed = True
+    lines[i] = indent + ' '.join(parts)
+if changed:
+    path.write_text('\n'.join(lines) + '\n')
+PY
+    info "Patched $extlinux_conf with NVMe/PCIe parameters"
+  else
+    warn "$extlinux_conf not found. Skipping extlinux cmdline setup."
+  fi
+}
+
+apply_nvme_boot_mitigation() {
+  info "Configuring conservative NVMe power policy for future boots"
+  nvme_cmdline_patch_flash_kernel_defaults
+  nvme_cmdline_patch_extlinux
+}
+
+install_fullnode_mount_guard() {
+  local expected_source="$1"
+  local docker_dropin_dir="/etc/systemd/system/docker.service.d"
+  local docker_dropin_file="$docker_dropin_dir/require-fullnode.conf"
+  local guard_script="/usr/local/sbin/fullnode-mount-guard.sh"
+  local guard_service="/etc/systemd/system/fullnode-mount-guard.service"
+  local guard_timer="/etc/systemd/system/fullnode-mount-guard.timer"
+
+  info "Installing self-heal guard for fullnode mount"
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    echo "[DRY-RUN] create $docker_dropin_file"
+    echo "[DRY-RUN] create $guard_script"
+    echo "[DRY-RUN] create $guard_service"
+    echo "[DRY-RUN] create $guard_timer"
+    echo "[DRY-RUN] systemctl daemon-reload"
+    echo "[DRY-RUN] systemctl enable --now fullnode-mount-guard.timer"
+    return 0
+  fi
+
+  mkdir -p "$docker_dropin_dir"
+  cat > "$docker_dropin_file" <<EOF
+[Unit]
+RequiresMountsFor=$DATA_DIR
+EOF
+
+  cat > "$guard_script" <<EOF
+#!/bin/bash
+set -euo pipefail
+MOUNTPOINT="$DATA_DIR"
+EXPECTED_SOURCE="$expected_source"
+STATE_DIR="/var/lib/fullnode-mount-guard"
+REBOOT_FLAG="\$STATE_DIR/reboot-attempted"
+SNAPSHOT_DIR="\$STATE_DIR/snapshots"
+mkdir -p "\$STATE_DIR" "\$SNAPSHOT_DIR"
+
+log() { logger -t fullnode-mount-guard "\$1"; }
+current_source() { findmnt -n -o SOURCE --target "\$MOUNTPOINT" 2>/dev/null || true; }
+mount_is_healthy() { mountpoint -q "\$MOUNTPOINT" && [ "\$(current_source)" = "\$EXPECTED_SOURCE" ]; }
+
+capture_snapshot() {
+  local reason="\$1" ts snapshot
+  ts="\$(date +%Y%m%d-%H%M%S)"
+  snapshot="\$SNAPSHOT_DIR/\${ts}-\${reason}"
+  mkdir -p "\$snapshot"
+  {
+    echo "timestamp=\$(date -Is)"
+    echo "reason=\$reason"
+    echo "mountpoint=\$MOUNTPOINT"
+    echo "expected_source=\$EXPECTED_SOURCE"
+    echo "current_source=\$(current_source)"
+  } > "\$snapshot/meta.txt"
+  cat /proc/cmdline > "\$snapshot/cmdline.txt" 2>/dev/null || true
+  findmnt "\$MOUNTPOINT" > "\$snapshot/findmnt.txt" 2>&1 || true
+  lsblk -f > "\$snapshot/lsblk.txt" 2>&1 || true
+  journalctl -k -b --no-pager | grep -Ei 'nvme|EXT4-fs error|timeout|I/O error|blk_update_request|Buffer I/O' > "\$snapshot/kernel-storage.log" 2>&1 || true
+}
+
+if mount_is_healthy; then
+  rm -f "\$REBOOT_FLAG"
+  exit 0
+fi
+
+if mountpoint -q "\$MOUNTPOINT"; then
+  log "\$MOUNTPOINT source is \$(current_source); expected \$EXPECTED_SOURCE; stopping docker and attempting remount"
+  capture_snapshot wrong-source
+else
+  log "\$MOUNTPOINT is not mounted; stopping docker and attempting recovery"
+  capture_snapshot not-mounted
+fi
+
+systemctl stop docker.service docker.socket >/dev/null 2>&1 || true
+if [ -b "\$EXPECTED_SOURCE" ]; then
+  if mountpoint -q "\$MOUNTPOINT"; then
+    umount "\$MOUNTPOINT" >/dev/null 2>&1 || true
+  fi
+  mount "\$MOUNTPOINT" >/dev/null 2>&1 || true
+  sleep 2
+fi
+
+if mount_is_healthy; then
+  log "Recovered \$MOUNTPOINT with \$EXPECTED_SOURCE; restarting docker"
+  rm -f "\$REBOOT_FLAG"
+  systemctl start docker.socket docker.service >/dev/null 2>&1 || true
+  exit 0
+fi
+
+if [ ! -e "\$REBOOT_FLAG" ]; then
+  date -Is > "\$REBOOT_FLAG"
+  log "Recovery failed; rebooting once to restore \$EXPECTED_SOURCE"
+  systemctl reboot
+  exit 0
+fi
+
+log "Recovery failed after one reboot attempt; keeping docker stopped to prevent root spillover"
+exit 0
+EOF
+  chmod 0755 "$guard_script"
+
+  cat > "$guard_service" <<EOF
+[Unit]
+Description=Auto-heal fullnode mount and protect Docker
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=$guard_script
+EOF
+
+  cat > "$guard_timer" <<'EOF'
+[Unit]
+Description=Periodic fullnode mount auto-heal guard
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=15s
+AccuracySec=5s
+Unit=fullnode-mount-guard.service
+
+[Install]
+WantedBy=timers.target
+EOF
+  systemctl daemon-reload
+  systemctl enable --now fullnode-mount-guard.timer >/dev/null 2>&1 || {
+    err "Failed to enable fullnode-mount-guard.timer"
+    return 1
+  }
 }
 
 # ---------------------------------------------------------------------------
@@ -625,6 +918,122 @@ wait_for_umbrel_container() {
   return 1
 }
 
+patch_umbrel_shutdown_source() {
+  docker exec -i umbrel python3 - <<'PY_INNER'
+from pathlib import Path
+path = Path('/opt/umbreld/source/modules/system/system.ts')
+text = path.read_text()
+needle = 'export async function shutdown(): Promise<boolean> {'
+start = text.index(needle)
+end = text.index('\n}\n', start) + 3
+replacement = """export async function shutdown(): Promise<boolean> {
+	await $`docker update --restart=no ${os.hostname()}`
+	await $`sh -lc ${'sleep 45; docker stop --time 15 "$(hostname)" >/dev/null 2>&1 &'}`
+
+	return true
+}
+"""
+current = text[start:end]
+if 'sleep 45; docker stop --time 15 "$(hostname)"' not in current:
+    text = text[:start] + replacement + text[end:]
+    path.write_text(text)
+PY_INNER
+}
+
+verify_umbrel_shutdown_source() {
+  docker exec umbrel grep -q 'docker update --restart=no' /opt/umbreld/source/modules/system/system.ts
+  docker exec umbrel grep -q 'sleep 45; docker stop --time 15 "$(hostname)"' /opt/umbreld/source/modules/system/system.ts
+}
+
+restore_umbrel_shutdown_ui() {
+  docker exec -i umbrel python3 - <<'PY_INNER'
+from pathlib import Path
+patched = 'd.useEffect(()=>{F==="shutting-down"&&!f&&(p(!0),setTimeout(()=>m(!0),90*Gl))},[f,F,n])'
+original = 'd.useEffect(()=>{F==="shutting-down"&&!f&&(I.isError||I.failureCount>0)&&(p(!0),setTimeout(()=>m(!0),30*Gl))},[f,F,I.failureCount,I.isError,n])'
+for path in Path('/opt/umbreld/ui/assets').glob('*.js'):
+    text = path.read_text(errors='ignore')
+    if patched in text:
+        path.write_text(text.replace(patched, original, 1))
+index = Path('/opt/umbreld/ui/index.html')
+html = index.read_text()
+html = html.replace('/assets/index-7c0be990.js?v=m1s-shutdown-0.4.10', '/assets/index-7c0be990.js')
+html = html.replace('/assets/index-7c0be990.js?v=m1s-shutdown-0.4.9', '/assets/index-7c0be990.js')
+index.write_text(html)
+PY_INNER
+}
+
+verify_umbrel_shutdown_ui_restored() {
+  docker exec umbrel grep -R -q 'I.isError||I.failureCount>0' /opt/umbreld/ui/assets
+  ! docker exec umbrel grep -q 'm1s-shutdown-0.4.10' /opt/umbreld/ui/index.html
+}
+
+
+install_umbrel_safe_shutdown() {
+  info "Installing safe-to-unplug Umbrel shutdown behavior"
+
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    echo "[DRY-RUN] create $SAFE_SHUTDOWN_SERVICE"
+    echo "[DRY-RUN] patch Umbrel shutdown() to disable Docker auto-restart and delay stopping the top-level umbrel container for the completion screen"
+    echo "[DRY-RUN] systemctl daemon-reload"
+    echo "[DRY-RUN] systemctl enable m1s-umbrel-autostart.service"
+    return 0
+  fi
+
+  command -v docker >/dev/null 2>&1 || { err "Docker is required for safe shutdown setup."; return 1; }
+  docker inspect umbrel >/dev/null 2>&1 || { err "umbrel container is required for safe shutdown setup."; return 1; }
+
+  cat > "$SAFE_SHUTDOWN_SERVICE" <<EOF
+[Unit]
+Description=Restore Umbrel Docker autostart after safe-to-unplug shutdown
+After=docker.service fullnode-mount-guard.service
+Requires=docker.service
+RequiresMountsFor=$DATA_DIR
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/docker update --restart=always umbrel
+ExecStart=/usr/bin/docker start umbrel
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  chmod 0644 "$SAFE_SHUTDOWN_SERVICE"
+
+  patch_umbrel_shutdown_source
+  verify_umbrel_shutdown_source || { err "Umbrel shutdown() safe-stop container patch could not be written"; return 1; }
+
+  systemctl daemon-reload
+  systemctl enable m1s-umbrel-autostart.service >/dev/null
+
+  # Restart once so the running umbreld process loads the patched shutdown()
+  # implementation. Existing apps are preserved and auto-start again normally.
+  docker update --restart=always umbrel >/dev/null
+  docker restart --time 60 umbrel >/dev/null
+  wait_for_umbrel_container || { err "Umbrel did not restart after safe shutdown container patch."; return 1; }
+
+  if ! verify_umbrel_shutdown_source; then
+    warn "Umbrel shutdown patch was not present after restart; retrying patch and restart once."
+    patch_umbrel_shutdown_source
+    verify_umbrel_shutdown_source || { err "Umbrel shutdown() safe-stop container patch is missing after retry write"; return 1; }
+    docker restart --time 60 umbrel >/dev/null
+    wait_for_umbrel_container || { err "Umbrel did not restart after retrying safe shutdown container patch."; return 1; }
+  fi
+}
+
+postcheck_umbrel_safe_shutdown() {
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    return 0
+  fi
+  [[ -f "$SAFE_SHUTDOWN_SERVICE" ]] || { err "m1s-umbrel-autostart.service is missing"; return 1; }
+  systemctl is-enabled m1s-umbrel-autostart.service >/dev/null 2>&1 || { err "m1s-umbrel-autostart.service is not enabled"; return 1; }
+  grep -q 'docker update --restart=always umbrel' "$SAFE_SHUTDOWN_SERVICE" || { err "m1s-umbrel-autostart.service does not restore restart policy"; return 1; }
+  grep -q 'docker start umbrel' "$SAFE_SHUTDOWN_SERVICE" || { err "m1s-umbrel-autostart.service does not start Umbrel"; return 1; }
+  verify_umbrel_shutdown_source || { err "Umbrel shutdown() safe-stop container patch is missing"; return 1; }
+  local restart_policy
+  restart_policy="$(docker inspect umbrel --format '{{.HostConfig.RestartPolicy.Name}}' 2>/dev/null || true)"
+  [[ "$restart_policy" == "always" ]] || { err "umbrel restart policy should be always during normal operation, got ${restart_policy:-unknown}"; return 1; }
+}
+
 refresh_umbrel_system_container() {
   local old_image_id
   local new_image_id
@@ -676,24 +1085,26 @@ patch_to_0_4_5() {
 }
 
 # ---------------------------------------------------------------------------
-# Record the new version in the install state file.
+# Durable migration state and step runner.
 # ---------------------------------------------------------------------------
 
-write_install_state() {
-  local new_version="$1"
-  local previous_version="$2"
+update_install_state() {
+  local action="$1"
+  local step="${2:-}"
+  local version="${3:-}"
+  local message="${4:-}"
   if [[ "$DRY_RUN" -eq 1 ]]; then
-    echo "[DRY-RUN] update $INSTALL_STATE_FILE (version=$new_version)"
+    echo "[DRY-RUN] update $INSTALL_STATE_FILE (action=$action step=${step:-none} version=${version:-unchanged})"
     return 0
   fi
+
   mkdir -p "$INSTALL_STATE_DIR"
   local ts
   ts="$(date -Is)"
-  python3 - "$INSTALL_STATE_FILE" "$new_version" "$ts" "$previous_version" <<'PY'
+  python3 - "$INSTALL_STATE_FILE" "$action" "$step" "$version" "$message" "$ts" "$SCRIPT_VERSION" "$DATA_DIR" "$UMBREL_IMAGE" <<'PY'
 import json, os, sys, tempfile
 
-path, new_version, ts, previous = sys.argv[1:5]
-
+path, action, step, version, message, ts, script_version, data_dir, image = sys.argv[1:10]
 base = {}
 if os.path.exists(path):
     try:
@@ -702,11 +1113,41 @@ if os.path.exists(path):
     except Exception:
         base = {}
 
-base["version"] = new_version
+steps = base.get("applied_steps")
+if not isinstance(steps, list):
+    steps = []
+base["applied_steps"] = steps
+base["script_version"] = script_version
+base["data_dir"] = base.get("data_dir") or data_dir
+base["image"] = image
 base["updated_at"] = ts
 base["updated_by"] = "m1s-update-umbrel.sh"
-if previous and previous != new_version:
-    base.setdefault("previous_version", previous)
+
+if action == "started":
+    base["in_progress_step"] = step
+    base["failed_step"] = None
+    base["last_error"] = None
+elif action == "completed":
+    if step and step not in steps:
+        steps.append(step)
+    if version:
+        base["last_completed_version"] = version
+    base["in_progress_step"] = None
+    base["failed_step"] = None
+    base["last_error"] = None
+elif action == "failed":
+    base["in_progress_step"] = None
+    base["failed_step"] = step
+    base["last_error"] = message or "migration step failed"
+elif action == "finalized":
+    if version:
+        base["version"] = version
+        base["host_version"] = version
+    base["in_progress_step"] = None
+    base["failed_step"] = None
+    base["last_error"] = None
+else:
+    raise SystemExit(f"unknown state action: {action}")
 
 d = os.path.dirname(path)
 fd, tmp = tempfile.mkstemp(dir=d, prefix="installed.tmp.")
@@ -718,14 +1159,215 @@ os.rename(tmp, path)
 PY
 }
 
+mark_step_started() { update_install_state started "$1" "" ""; }
+mark_step_completed() { update_install_state completed "$1" "$2" ""; }
+mark_step_failed() { update_install_state failed "$1" "" "$2"; }
+finalize_install_state() { update_install_state finalized "" "$1" ""; }
+
+is_step_applied() {
+  local step="$1"
+  [[ -f "$INSTALL_STATE_FILE" ]] || return 1
+  python3 - "$INSTALL_STATE_FILE" "$step" <<'PY' 2>/dev/null
+import json, sys
+try:
+    with open(sys.argv[1]) as f:
+        data = json.load(f)
+except Exception:
+    sys.exit(1)
+steps = data.get("applied_steps")
+if isinstance(steps, list) and sys.argv[2] in steps:
+    sys.exit(0)
+sys.exit(1)
+PY
+}
+
+step_from_version() { printf '%s\n' "${1%%_to_*}"; }
+step_to_version() { printf '%s\n' "${1##*_to_}"; }
+step_handler_name() { printf '%s\n' "${1//./_}"; }
+
+require_function() {
+  local name="$1"
+  declare -F "$name" >/dev/null 2>&1 || {
+    err "Missing updater function: $name"
+    return 1
+  }
+}
+
+global_preflight() {
+  command -v python3 >/dev/null 2>&1 || { err "python3 is required for safe state updates."; return 1; }
+  command -v docker >/dev/null 2>&1 || { err "Docker is not installed; refusing to update."; return 1; }
+  [[ -d "$DATA_DIR" ]] || { err "$DATA_DIR does not exist; refusing to update."; return 1; }
+  if [[ -f "$INSTALL_STATE_FILE" ]]; then
+    python3 -m json.tool "$INSTALL_STATE_FILE" >/dev/null || { err "$INSTALL_STATE_FILE is not valid JSON."; return 1; }
+  fi
+}
+
+build_migration_plan() {
+  local current="$1"
+  PLANNED_MIGRATIONS=()
+  for step in "${MIGRATIONS[@]}"; do
+    local to_version
+    to_version="$(step_to_version "$step")"
+    if version_lt "$current" "$to_version"; then
+      PLANNED_MIGRATIONS+=("$step")
+    fi
+  done
+}
+
+run_migration_step() {
+  local step="$1"
+  local from_version to_version handler precheck_fn apply_fn postcheck_fn
+  from_version="$(step_from_version "$step")"
+  to_version="$(step_to_version "$step")"
+  handler="$(step_handler_name "$step")"
+  precheck_fn="precheck_$handler"
+  apply_fn="apply_$handler"
+  postcheck_fn="postcheck_$handler"
+
+  if is_step_applied "$step"; then
+    info "[$step] Already recorded; skipping"
+    return 0
+  fi
+
+  require_function "$precheck_fn"
+  require_function "$apply_fn"
+  require_function "$postcheck_fn"
+
+  info "[$step] Precheck"
+  if ! "$precheck_fn"; then
+    mark_step_failed "$step" "precheck failed"
+    return 1
+  fi
+
+  mark_step_started "$step"
+  info "[$step] Applying migration ($from_version -> $to_version)"
+  if ! "$apply_fn"; then
+    mark_step_failed "$step" "apply failed"
+    return 1
+  fi
+
+  info "[$step] Postcheck"
+  if ! "$postcheck_fn"; then
+    mark_step_failed "$step" "postcheck failed"
+    return 1
+  fi
+
+  mark_step_completed "$step" "$to_version"
+  info "[$step] Completed"
+}
+
+precheck_common_canonical_install() {
+  command -v docker >/dev/null 2>&1 || { err "Docker is required."; return 1; }
+  docker inspect umbrel >/dev/null 2>&1 || { err "Existing umbrel container not found."; return 1; }
+  findmnt --target "$DATA_DIR" >/dev/null 2>&1 || { err "$DATA_DIR is not mounted."; return 1; }
+}
+
+precheck_0_1_0_to_0_2_0() { precheck_common_canonical_install; }
+apply_0_1_0_to_0_2_0() {
+  local mount_source
+  mount_source="$(findmnt --noheadings --output SOURCE --target "$DATA_DIR" | head -n1 | xargs || true)"
+  [[ -n "$mount_source" ]] || { err "Could not determine $DATA_DIR source."; return 1; }
+  apply_nvme_boot_mitigation
+  install_fullnode_mount_guard "$mount_source"
+}
+postcheck_0_1_0_to_0_2_0() {
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    return 0
+  fi
+  [[ -f /etc/systemd/system/fullnode-mount-guard.service ]] || { err "fullnode-mount-guard.service is missing"; return 1; }
+  [[ -f /etc/systemd/system/fullnode-mount-guard.timer ]] || { err "fullnode-mount-guard.timer is missing"; return 1; }
+  systemctl is-enabled fullnode-mount-guard.timer >/dev/null 2>&1 || { err "fullnode-mount-guard.timer is not enabled"; return 1; }
+  systemctl is-active fullnode-mount-guard.timer >/dev/null 2>&1 || { err "fullnode-mount-guard.timer is not active"; return 1; }
+  findmnt --target "$DATA_DIR" >/dev/null 2>&1 || { err "$DATA_DIR is not mounted after guard migration"; return 1; }
+}
+
+precheck_0_2_0_to_0_3_0() { precheck_common_canonical_install; }
+apply_0_2_0_to_0_3_0() {
+  wait_for_apt_locks
+  patch_to_0_3_0
+}
+postcheck_0_2_0_to_0_3_0() { [[ "$DRY_RUN" -eq 1 ]] || [[ -d "$INSTALL_STATE_DIR" ]] || mkdir -p "$INSTALL_STATE_DIR"; }
+
+precheck_0_3_0_to_0_4_0() { precheck_common_canonical_install; }
+apply_0_3_0_to_0_4_0() { patch_to_0_4_0; }
+postcheck_0_3_0_to_0_4_0() {
+  findmnt --target "$DATA_DIR" >/dev/null 2>&1 || { err "$DATA_DIR is not mounted after 0.4.0 migration"; return 1; }
+  command -v docker >/dev/null 2>&1 || { err "Docker command missing after 0.4.0 migration"; return 1; }
+}
+
+precheck_0_4_0_to_0_4_1() { precheck_common_canonical_install; }
+apply_0_4_0_to_0_4_1() { patch_to_0_4_1; }
+postcheck_0_4_0_to_0_4_1() { [[ "$DRY_RUN" -eq 1 ]] || [[ -f /etc/systemd/system/nvme-timeout-snapshot.timer ]]; }
+
+precheck_0_4_1_to_0_4_2() { precheck_common_canonical_install; }
+apply_0_4_1_to_0_4_2() {
+  wait_for_apt_locks
+  patch_to_0_4_2
+}
+postcheck_0_4_1_to_0_4_2() {
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    return 0
+  fi
+  command -v smartctl >/dev/null 2>&1 || { err "smartctl is required after 0.4.2 migration."; return 1; }
+  command -v lspci >/dev/null 2>&1 || warn "lspci is still unavailable after diagnostic migration"
+  command -v nvme >/dev/null 2>&1 || warn "nvme-cli is still unavailable after diagnostic migration"
+}
+
+precheck_0_4_2_to_0_4_3() { precheck_common_canonical_install; }
+apply_0_4_2_to_0_4_3() { info "[0.4.3] Documentation-only release; recording migration history"; }
+postcheck_0_4_2_to_0_4_3() { precheck_common_canonical_install; }
+
+precheck_0_4_3_to_0_4_4() { precheck_common_canonical_install; }
+apply_0_4_3_to_0_4_4() { info "[0.4.4] Verification-only release; recording migration history"; }
+postcheck_0_4_3_to_0_4_4() { precheck_common_canonical_install; }
+
+precheck_0_4_4_to_0_4_5() { assert_fullnode_data_mount_safe; }
+apply_0_4_4_to_0_4_5() { patch_to_0_4_5; }
+postcheck_0_4_4_to_0_4_5() {
+  assert_fullnode_data_mount_safe || return 1
+  wait_for_umbrel_container || { err "Umbrel container did not become running after 0.4.5 migration"; return 1; }
+}
+
+precheck_0_4_5_to_0_4_6() { precheck_common_canonical_install; }
+apply_0_4_5_to_0_4_6() { info "[0.4.6] Migration-runner release; recording migration history"; }
+postcheck_0_4_5_to_0_4_6() { precheck_common_canonical_install; }
+
+precheck_0_4_6_to_0_4_7() { precheck_common_canonical_install; }
+apply_0_4_6_to_0_4_7() { install_umbrel_safe_shutdown; }
+postcheck_0_4_6_to_0_4_7() { postcheck_umbrel_safe_shutdown; }
+
+precheck_0_4_7_to_0_4_8() { precheck_common_canonical_install; }
+apply_0_4_7_to_0_4_8() { install_umbrel_safe_shutdown; }
+postcheck_0_4_7_to_0_4_8() { postcheck_umbrel_safe_shutdown; }
+
+precheck_0_4_8_to_0_4_9() { precheck_common_canonical_install; }
+apply_0_4_8_to_0_4_9() { install_umbrel_safe_shutdown; }
+postcheck_0_4_8_to_0_4_9() { postcheck_umbrel_safe_shutdown; }
+
+precheck_0_4_9_to_0_4_10() { precheck_common_canonical_install; }
+apply_0_4_9_to_0_4_10() { install_umbrel_safe_shutdown; }
+postcheck_0_4_9_to_0_4_10() { postcheck_umbrel_safe_shutdown; }
+
+precheck_0_4_10_to_0_4_11() { precheck_common_canonical_install; }
+apply_0_4_10_to_0_4_11() { install_umbrel_safe_shutdown; restore_umbrel_shutdown_ui; }
+postcheck_0_4_10_to_0_4_11() { postcheck_umbrel_safe_shutdown; verify_umbrel_shutdown_ui_restored; }
+
+precheck_0_4_11_to_0_4_12() { precheck_common_canonical_install; }
+apply_0_4_11_to_0_4_12() { install_umbrel_safe_shutdown; }
+postcheck_0_4_11_to_0_4_12() { postcheck_umbrel_safe_shutdown; }
+
 # ---------------------------------------------------------------------------
 # Main flow
 # ---------------------------------------------------------------------------
 
-TARGET_VERSION="$SCRIPT_VERSION"
-CURRENT_VERSION="$(detect_installed_version)"
+main() {
+  parse_args "$@"
+  require_root
 
-echo
+  TARGET_VERSION="$SCRIPT_VERSION"
+  CURRENT_VERSION="$(detect_installed_version)"
+
+  echo
 echo "=== ODROID M1S Umbrel recovery updater ==="
 echo "Script version:     $SCRIPT_VERSION"
 echo "Installed version:  $CURRENT_VERSION"
@@ -745,32 +1387,16 @@ if [[ "$CURRENT_VERSION" == "unknown" ]]; then
   exit 1
 fi
 
-# Build the ordered list of patches that would apply from CURRENT to TARGET.
-PLANNED_PATCHES=()
-if version_lt "$CURRENT_VERSION" "0.3.0"; then
-  PLANNED_PATCHES+=("0.3.0")
-fi
-if version_lt "$CURRENT_VERSION" "0.4.0"; then
-  PLANNED_PATCHES+=("0.4.0")
-fi
-if version_lt "$CURRENT_VERSION" "0.4.1"; then
-  PLANNED_PATCHES+=("0.4.1")
-fi
-if version_lt "$CURRENT_VERSION" "0.4.2"; then
-  PLANNED_PATCHES+=("0.4.2")
-fi
-if version_lt "$CURRENT_VERSION" "0.4.5"; then
-  PLANNED_PATCHES+=("0.4.5")
-fi
+build_migration_plan "$CURRENT_VERSION"
 
-if [[ "${#PLANNED_PATCHES[@]}" -eq 0 ]]; then
-  echo "No patches needed. Host is already at $CURRENT_VERSION (>= $TARGET_VERSION)."
+if [[ "${#PLANNED_MIGRATIONS[@]}" -eq 0 ]]; then
+  echo "No migrations needed. Host is already at $CURRENT_VERSION (>= $TARGET_VERSION)."
   exit 0
 fi
 
-echo "Planned patches:"
-for p in "${PLANNED_PATCHES[@]}"; do
-  echo "  - $CURRENT_VERSION -> $p"
+echo "Planned migrations:"
+for step in "${PLANNED_MIGRATIONS[@]}"; do
+  echo "  - $step"
 done
 echo
 
@@ -779,30 +1405,17 @@ if [[ "$CHECK_ONLY" -eq 1 ]]; then
   exit 0
 fi
 
-for patch in "${PLANNED_PATCHES[@]}"; do
-  case "$patch" in
-    0.3.0)
-      patch_to_0_3_0
-      ;;
-    0.4.0)
-      patch_to_0_4_0
-      ;;
-    0.4.1)
-      patch_to_0_4_1
-      ;;
-    0.4.2)
-      patch_to_0_4_2
-      ;;
-    0.4.5)
-      patch_to_0_4_5
-      ;;
-    *)
-      warn "No handler for patch target '$patch'; skipping"
-      ;;
-  esac
+global_preflight
+
+for step in "${PLANNED_MIGRATIONS[@]}"; do
+  if ! run_migration_step "$step"; then
+    err "Migration failed at $step. Final version was not recorded as $TARGET_VERSION."
+    err "Fix the issue, then rerun this script; completed steps will be skipped."
+    exit 1
+  fi
 done
 
-write_install_state "$TARGET_VERSION" "$CURRENT_VERSION"
+finalize_install_state "$TARGET_VERSION"
 
 echo
 echo "==========================================="
@@ -810,6 +1423,11 @@ echo "  Update complete."
 echo "==========================================="
 echo "Host is now at version: $TARGET_VERSION"
 echo
-if [[ "$DRY_RUN" -eq 1 ]]; then
-  echo "[DRY-RUN] No changes were actually made."
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    echo "[DRY-RUN] No changes were actually made."
+  fi
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
 fi

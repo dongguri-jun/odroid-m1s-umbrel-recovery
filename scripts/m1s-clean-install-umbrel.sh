@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SCRIPT_VERSION="0.4.5"
+SCRIPT_VERSION="0.4.12"
 INSTALL_STATE_DIR="/etc/umbrel-recovery"
 INSTALL_STATE_FILE="$INSTALL_STATE_DIR/installed.json"
 PREINSTALL_RESUME_STATE_FILE="$INSTALL_STATE_DIR/preinstall-resume.json"
 PREINSTALL_RESUME_SERVICE="/etc/systemd/system/m1s-preinstall-resume.service"
+SAFE_SHUTDOWN_SERVICE="/etc/systemd/system/m1s-umbrel-autostart.service"
 
 DRY_RUN=0
 RELEASE_MODE=0
@@ -32,6 +33,7 @@ PRESERVED_PATHS=(
   /usr/local/sbin/nvme-timeout-snapshot.sh
   /etc/systemd/system/nvme-timeout-snapshot.service
   /etc/systemd/system/nvme-timeout-snapshot.timer
+  /etc/systemd/system/m1s-umbrel-autostart.service
 )
 ORIGINAL_ARGS=("$@")
 SCRIPT_PATH_ABS=""
@@ -661,6 +663,86 @@ report_install_health() {
   fi
   if [[ "$local_http_state" != "ok" ]]; then
     warn "umbrel.local did not answer from this host. Client devices may need to use http://${lan_ip:-<device-ip>} instead."
+  fi
+}
+
+patch_umbrel_shutdown_source() {
+  docker exec -i umbrel python3 - <<'PY_INNER'
+from pathlib import Path
+path = Path('/opt/umbreld/source/modules/system/system.ts')
+text = path.read_text()
+needle = 'export async function shutdown(): Promise<boolean> {'
+start = text.index(needle)
+end = text.index('\n}\n', start) + 3
+replacement = """export async function shutdown(): Promise<boolean> {
+	await $`docker update --restart=no ${os.hostname()}`
+	await $`sh -lc ${'sleep 45; docker stop --time 15 "$(hostname)" >/dev/null 2>&1 &'}`
+
+	return true
+}
+"""
+current = text[start:end]
+if 'sleep 45; docker stop --time 15 "$(hostname)"' not in current:
+    text = text[:start] + replacement + text[end:]
+    path.write_text(text)
+PY_INNER
+}
+
+verify_umbrel_shutdown_source() {
+  docker exec umbrel grep -q 'docker update --restart=no' /opt/umbreld/source/modules/system/system.ts
+  docker exec umbrel grep -q 'sleep 45; docker stop --time 15 "$(hostname)"' /opt/umbreld/source/modules/system/system.ts
+}
+
+
+install_umbrel_safe_shutdown() {
+  info "Installing safe-to-unplug Umbrel shutdown behavior"
+
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    echo "[DRY-RUN] create $SAFE_SHUTDOWN_SERVICE"
+    echo "[DRY-RUN] patch Umbrel shutdown() to disable Docker auto-restart and delay stopping the top-level umbrel container for the completion screen"
+    echo "[DRY-RUN] systemctl daemon-reload"
+    echo "[DRY-RUN] systemctl enable m1s-umbrel-autostart.service"
+    return 0
+  fi
+
+  command -v docker >/dev/null 2>&1 || { err "Docker is required for safe shutdown setup."; return 1; }
+  docker inspect umbrel >/dev/null 2>&1 || { err "umbrel container is required for safe shutdown setup."; return 1; }
+
+  cat > "$SAFE_SHUTDOWN_SERVICE" <<EOF
+[Unit]
+Description=Restore Umbrel Docker autostart after safe-to-unplug shutdown
+After=docker.service fullnode-mount-guard.service
+Requires=docker.service
+RequiresMountsFor=$DATA_DIR
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/docker update --restart=always umbrel
+ExecStart=/usr/bin/docker start umbrel
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  chmod 0644 "$SAFE_SHUTDOWN_SERVICE"
+
+  patch_umbrel_shutdown_source
+  verify_umbrel_shutdown_source || { err "Umbrel shutdown() safe-stop container patch could not be written"; return 1; }
+
+  systemctl daemon-reload
+  systemctl enable m1s-umbrel-autostart.service >/dev/null
+
+  # Restart once so the running umbreld process loads the patched shutdown()
+  # implementation. Existing apps are preserved and auto-start again normally.
+  docker update --restart=always umbrel >/dev/null
+  docker restart --time 60 umbrel >/dev/null
+  wait_for_umbrel_container || { err "Umbrel did not restart after safe shutdown container patch."; return 1; }
+
+  if ! verify_umbrel_shutdown_source; then
+    warn "Umbrel shutdown patch was not present after restart; retrying patch and restart once."
+    patch_umbrel_shutdown_source
+    verify_umbrel_shutdown_source || { err "Umbrel shutdown() safe-stop container patch is missing after retry write"; return 1; }
+    docker restart --time 60 umbrel >/dev/null
+    wait_for_umbrel_container || { err "Umbrel did not restart after retrying safe shutdown container patch."; return 1; }
   fi
 }
 
@@ -1719,7 +1801,10 @@ if [[ "$DRY_RUN" -eq 0 ]]; then
     warn "  docker rm -f umbrel; docker run -d --name umbrel --restart always -p 80:80 -v $DATA_DIR:/data -v /var/run/docker.sock:/var/run/docker.sock --stop-timeout 60 --pid=host --privileged $IMAGE"
   else
     info "Umbrel container is running."
+    install_umbrel_safe_shutdown
   fi
+else
+  install_umbrel_safe_shutdown
 fi
 
 info "Setting host hostname to umbrel (for native mDNS stability)"
@@ -1846,11 +1931,16 @@ import json, os, sys, tempfile
 path, version, ts, image, data_dir, target = sys.argv[1:7]
 payload = {
     "version": version,
+    "host_version": version,
     "installed_at": ts,
     "installed_by": "m1s-clean-install-umbrel.sh",
     "image": image,
     "data_dir": data_dir,
     "target_partition": target,
+    "applied_steps": [],
+    "in_progress_step": None,
+    "failed_step": None,
+    "last_error": None,
 }
 d = os.path.dirname(path)
 fd, tmp = tempfile.mkstemp(dir=d, prefix="installed.tmp.")
