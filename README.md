@@ -401,30 +401,77 @@ http://umbrel.local
 
 ## 12. 이미 설치한 분이 최신 버전으로 업데이트하기
 
-먼저 기존에 `git clone` 으로 받아둔 폴더로 이동해서 최신 스크립트를 받아옵니다.
+이미 한 번 설치된 ODROID M1S에서, 가장 최신 스크립트로 맞추고 업데이트하는 방법입니다. 아래 명령을 위에서부터 차례로 그대로 입력하면 됩니다.
 
 ```bash
-cd ~/odroid-m1s-umbrel-recovery
-git pull
-```
-
-그 다음 **현재 상태를 확인**합니다. 아래 명령은 아무것도 바꾸지 않고, 현재 설치된 버전 · 최신 버전 · 적용될 수정 목록만 보여줍니다.
-
-```bash
+cd /home/*/odroid-m1s-umbrel-recovery
+sudo git -c safe.directory='*' fetch origin
+sudo git -c safe.directory='*' reset --hard origin/main
 sudo bash scripts/m1s-update-umbrel.sh --check
-```
-
-이미 최신 상태라고 나오면 아무것도 하지 않아도 됩니다. 최신보다 낮은 버전이라서 업데이트가 필요하다고 나오면, 아래 명령으로 실제 적용합니다.
-
-```bash
 sudo bash scripts/m1s-update-umbrel.sh
 ```
 
+각 줄이 하는 일:
+
+1. `cd /home/*/odroid-m1s-umbrel-recovery` — 처음 설치할 때 받아 둔 저장소 폴더로 이동합니다. 별표(`*`)는 “어떤 사용자 이름이든 자동으로 찾기”를 의미하므로, 사용자 이름을 직접 입력할 필요가 없습니다.
+2. `sudo git ... fetch origin` + `sudo git ... reset --hard origin/main` — 저장소를 GitHub의 최신 상태와 똑같이 맞춥니다. 사용자가 손댄 적 없는 가이드 저장소이므로, 매번 “원본 그대로”로 동기화됩니다.
+3. `sudo bash scripts/m1s-update-umbrel.sh --check` — 아무것도 바꾸지 않고, **현재 설치된 버전 · 최신 버전 · 적용될 수정 목록**만 보여 줍니다. 이미 최신이면 “No migrations needed” 처럼 안내됩니다.
+4. `sudo bash scripts/m1s-update-umbrel.sh` — 실제로 업데이트를 적용합니다. 이미 최신이면 아무 작업 없이 끝납니다.
+
 업데이트 중에는 Umbrel 화면이 잠시 열리지 않을 수 있습니다. 스크립트는 SSD가 `/mnt/fullnode`에 정상 연결되어 있는지 먼저 확인한 뒤, 기존 데이터 위치를 그대로 유지한 상태에서 필요한 부분만 갱신합니다.
 
-내부적으로는 현재 설치 버전에서 최신 버전까지 필요한 단계를 순서대로 적용합니다. 사용자는 명령어 하나만 실행하면 되고, 중간에 실패하면 성공한 단계까지만 기록한 뒤 멈추므로 문제를 해결하고 다시 실행할 수 있습니다.
+내부적으로는 현재 설치 버전에서 최신 버전까지 필요한 단계를 순서대로 적용합니다. 중간에 실패하면 성공한 단계까지만 기록한 뒤 멈추므로, 문제를 해결한 뒤 같은 명령을 다시 실행하면 안전하게 이어집니다.
 
 이미 있는 비밀번호, 앱 데이터, Bitcoin 노드 데이터는 건드리지 않고, 여러 번 실행해도 안전합니다.
+
+### 12-1. (선택) Umbrel 웹 화면 안에서 같은 작업 하기 (고급)
+
+이 단계는 **선택 사항**입니다. 위 12번처럼 SSH로 진행하는 방식이 기본 경로이고, 그게 가장 단순합니다.
+
+다만 SSH 환경을 준비하기 어려운 경우(예: 휴대폰만 가지고 있거나, 별도의 터미널 앱을 깔기 어려운 경우)에는 **Umbrel 웹 화면 안에 들어 있는 터미널**을 이용해서 같은 작업을 진행할 수도 있습니다.
+
+순서는 다음과 같습니다.
+
+1. Umbrel 웹 화면에 로그인합니다.
+2. **Settings → Advanced settings → Terminal** 로 이동합니다. 한국어 화면에서는 **설정 → 고급 설정 → 터미널** 로 보일 수 있습니다.
+3. 터미널이 열리면, 가장 먼저 아래 한 줄을 입력합니다.
+
+```bash
+sudo nsenter -t 1 -m -u -i -n -p -- bash
+```
+
+이 명령은 **Umbrel 컨테이너 바깥(=ODROID M1S 호스트) 쉘**로 들어가는 명령입니다. 즉, SSH로 직접 접속한 것과 같은 위치에 들어간 셈이 됩니다.
+
+처음 한 번은 화면에 아래와 같이 비밀번호 입력 안내가 나옵니다.
+
+```text
+[sudo] password for umbrel:
+```
+
+여기에는 **Umbrel 웹 화면에 로그인할 때 사용하는 비밀번호**를 그대로 입력하면 됩니다. (입력 중에는 글자가 보이지 않는 것이 정상입니다.)
+
+비밀번호가 맞으면 프롬프트가 아래처럼 `root@umbrel:/#` 형태로 바뀝니다. 그러면 호스트 쉘로 들어간 상태입니다.
+
+```text
+root@umbrel:/#
+```
+
+이 상태에서는 **위 12번의 명령들을 그대로 입력**하면 됩니다. 사용자 이름이나 홈 디렉터리 위치를 따로 알 필요가 없도록 명령이 만들어져 있어서, 별다른 수정 없이 그대로 복사해서 붙여 넣으시면 됩니다.
+
+```bash
+cd /home/*/odroid-m1s-umbrel-recovery
+sudo git -c safe.directory='*' fetch origin
+sudo git -c safe.directory='*' reset --hard origin/main
+sudo bash scripts/m1s-update-umbrel.sh --check
+sudo bash scripts/m1s-update-umbrel.sh
+```
+
+작업이 끝나면 평소대로 터미널 창을 닫으면 됩니다. SSH로 진행할 때와 동일하게 데이터/비밀번호/앱은 그대로 유지됩니다.
+
+주의할 점은 다음과 같습니다.
+
+- 이 방법은 호스트 권한이 있는 쉘로 들어가는 명령이므로, **이 가이드 안에서 안내된 명령 외에 모르는 명령을 함부로 따라 입력하지 마세요.** 이건 SSH로 접속했을 때와 동일한 책임 범위입니다.
+- Umbrel/Docker 이미지의 향후 변경에 따라 이 방법이 동작하지 않을 수도 있습니다. 그런 경우에는 위 12번의 SSH 방식을 사용하면 됩니다.
 
 ---
 

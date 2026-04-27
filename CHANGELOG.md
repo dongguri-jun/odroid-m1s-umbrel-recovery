@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.13
+
+- README only. Unify the SSH update path (section 12) and the new Umbrel web UI terminal path (section 12-1) onto the same five-line command set so the user does not need to know their host username, home directory, or local clone state.
+- Replace `cd ~/odroid-m1s-umbrel-recovery` with `cd /home/*/odroid-m1s-umbrel-recovery`, removing the need for the user to type their host account name.
+- Replace `git pull` with `sudo git -c safe.directory='*' fetch origin` + `sudo git -c safe.directory='*' reset --hard origin/main` so that any prior local edits or stale files in the recovery clone do not block the update path. Update is run-from-scratch every time, against `origin/main` exactly.
+- Add an optional section 12-1 describing how to run the same five-line command set from inside Umbrel's built-in **Settings → Advanced settings → Terminal**, by entering the host shell with `sudo nsenter -t 1 -m -u -i -n -p -- bash` first. The procedure after that is identical to section 12. No script changes; this is a documentation-only release.
+
 ## 0.4.12
 
 - Change the safe shutdown patch to stop the top-level `umbrel` container after a delay instead of killing only the `umbreld` process. This keeps the native Umbrel frontend state machine untouched while making the final connection loss more browser-neutral.
