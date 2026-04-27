@@ -1,5 +1,48 @@
 # Changelog
 
+## 0.4.12
+
+- Change the safe shutdown patch to stop the top-level `umbrel` container after a delay instead of killing only the `umbreld` process. This keeps the native Umbrel frontend state machine untouched while making the final connection loss more browser-neutral.
+- Keep Docker autostart suppression and boot-time restore behavior unchanged: shutdown still flips `restart=no`, and the restore service still re-enables `restart=always` and starts the container on the next power-on.
+- Add a `0.4.11_to_0.4.12` migration and verifier/test updates for the new delayed container-stop shutdown path.
+
+## 0.4.11
+
+- Restore Umbrel's original frontend shutdown bundle behavior after the experimental deterministic completion timer caused the web UI to show an error page before login in some browsers.
+- Keep the backend safe shutdown patch only: Docker restart is disabled first, then `umbreld` is stopped after a delay, and boot restore re-enables normal autostart.
+- Add a `0.4.10_to_0.4.11` stabilization migration that removes the frontend cache-bust URL and restores the original shutdown UI condition if it was patched.
+
+## 0.4.10
+
+- Cache-bust Umbrel's patched frontend entrypoint in `index.html` so Safari loads the shutdown-completion UI patch instead of reusing the already cached `index-7c0be990.js` bundle.
+- Add a `0.4.9_to_0.4.10` migration and verifier checks for the cache-busted script URL.
+
+## 0.4.9
+
+- Patch Umbrel's bundled shutdown UI so the completion screen appears on a deterministic timer after `shutting-down` begins, instead of depending on Safari to report a failed backend poll. This fixes the observed Safari behavior where the screen stayed on **종료 중...** even after the container had safely exited.
+- Keep the backend safe shutdown behavior from `0.4.8`: Docker restart is disabled first, then `umbreld` is stopped after a delay, and boot restore still re-enables `restart=always`.
+- Add a `0.4.8_to_0.4.9` migration and verifier checks for the UI patch.
+
+## 0.4.8
+
+- Delay the final `umbreld` stop in the safe shutdown patch so Umbrel's own web UI has time to enter `shutting-down`, lose the server connection cleanly, and show the Korean completion screen: **종료 완료 / 이제 디바이스 전원을 분리해도 좋습니다.**
+- Add a `0.4.7_to_0.4.8` migration so devices that already received the first safe shutdown patch are upgraded instead of being skipped as current.
+- Strengthen shutdown patch verification to require both the Docker restart-policy disable step and the delayed `pkill` command.
+
+## 0.4.7
+
+- Make Umbrel's web UI shutdown path safe for Docker-based ODROID M1S installs. The installer and updater now patch Umbrel's `shutdown()` implementation so it disables the top-level `umbrel` container restart policy before stopping Umbrel, preventing Docker from immediately bringing the stack back up.
+- Add `m1s-umbrel-autostart.service`, a boot-time restore service that re-enables `restart=always` and starts the `umbrel` container after power is connected again. This keeps the user-facing flow simple: use **Settings → Shut down**, wait for Umbrel to stop, unplug power, then plug power back in later to start normally.
+- Extend updater postchecks and script verification to require the safe shutdown patch, restart-policy restore service, and correct ordering between disabling restart, stopping Umbrel, restoring restart, and starting Umbrel.
+
+## 0.4.6
+
+- Replace the updater's version-jump patch list with a durable step-by-step migration runner. Updates now record `applied_steps`, `in_progress_step`, `failed_step`, and `last_error` in `/etc/umbrel-recovery/installed.json`, so failed updates stop without falsely marking the host as current and reruns skip completed steps.
+- Add explicit migration steps from `0.1.0` through `0.4.6`, including no-op history steps for documentation/verification-only releases, while keeping the user-facing command unchanged.
+- Pin the updater's Umbrel system image refresh to the verified `dockurr/umbrel:1.5.0` digest instead of `latest` for reproducible updates.
+- Extend verification to enforce migration state fields, check/dry-run ordering, failure recording, and final-version recording only after the migration loop completes.
+- Add bash unit tests for migration planning, state transitions, failure recording, installed-version detection, step skipping, and CLI flag parsing; the strict verifier now runs these tests in CI.
+
 ## 0.4.5
 
 - Add a data-preserving Umbrel system container refresh to the updater. Existing installs now pull `dockurr/umbrel:latest` and recreate only the top-level `umbrel` container when the image changes, while preserving `/mnt/fullnode:/data`, app data, and Bitcoin data.
