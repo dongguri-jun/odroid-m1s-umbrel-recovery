@@ -5,19 +5,20 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
 scripts=(scripts/*.sh)
+test_scripts=(tests/*.sh)
 installer="scripts/m1s-clean-install-umbrel.sh"
 updater="scripts/m1s-update-umbrel.sh"
 
 printf '[verify] bash syntax\n'
-for script in "${scripts[@]}"; do
+for script in "${scripts[@]}" "${test_scripts[@]}"; do
   bash -n "$script"
   printf '  ok %s\n' "$script"
 done
 
 printf '[verify] shellcheck\n'
 if command -v shellcheck >/dev/null 2>&1; then
-  shellcheck "${scripts[@]}"
-  printf '  ok shellcheck %s\n' "${scripts[*]}"
+  shellcheck -x "${scripts[@]}" "${test_scripts[@]}"
+  printf '  ok shellcheck %s %s\n' "${scripts[*]}" "${test_scripts[*]}"
 else
   printf '  skip shellcheck not installed\n'
 fi
@@ -94,6 +95,13 @@ required = [
     'expected $TARGET_PARTITION mounted at $DATA_DIR',
     'RequiresMountsFor=$DATA_DIR',
     'docker run -d --name umbrel',
+    'install_umbrel_safe_shutdown',
+    'm1s-umbrel-autostart.service',
+    'docker update --restart=always umbrel',
+    'docker start umbrel',
+    'docker exec -i umbrel python3',
+    'docker update --restart=no',
+    'sleep 45; docker stop --time 15 "$(hostname)"',
     'Install health summary',
     'HTTP by device IP',
     'HTTP by umbrel.local',
@@ -138,7 +146,27 @@ required = [
     'CURRENT_VERSION',
     'TARGET_VERSION',
     'DATA_DIR="/mnt/fullnode"',
-    'UMBREL_IMAGE="dockurr/umbrel:latest"',
+    'UMBREL_IMAGE="dockurr/umbrel:1.5.0@sha256:',
+    'MIGRATIONS=(',
+    '"0.1.0_to_0.2.0"',
+    '"0.4.4_to_0.4.5"',
+    '"0.4.5_to_0.4.6"',
+    '"0.4.6_to_0.4.7"',
+    '"0.4.7_to_0.4.8"',
+    '"0.4.8_to_0.4.9"',
+    '"0.4.9_to_0.4.10"',
+    '"0.4.10_to_0.4.11"',
+    '"0.4.11_to_0.4.12"',
+    'applied_steps',
+    'in_progress_step',
+    'failed_step',
+    'last_error',
+    'last_completed_version',
+    'run_migration_step',
+    'mark_step_started',
+    'mark_step_completed',
+    'mark_step_failed',
+    'finalize_install_state',
     'assert_fullnode_data_mount_safe',
     'findmnt --target "$DATA_DIR"',
     'inspect_umbrel_mount_source /data',
@@ -147,6 +175,31 @@ required = [
     'docker stop umbrel',
     'docker rm umbrel',
     'docker run -d --name umbrel --restart always -p 80:80 -v "$DATA_DIR:/data" -v /var/run/docker.sock:/var/run/docker.sock --stop-timeout 60 --pid=host --privileged',
+    'SAFE_SHUTDOWN_SERVICE="/etc/systemd/system/m1s-umbrel-autostart.service"',
+    'install_umbrel_safe_shutdown',
+    'postcheck_umbrel_safe_shutdown',
+    'docker update --restart=always umbrel',
+    'docker start umbrel',
+    'docker exec -i umbrel python3',
+    'docker update --restart=no',
+    'sleep 45; docker stop --time 15 "$(hostname)"',
+    'precheck_0_4_7_to_0_4_8',
+    'apply_0_4_7_to_0_4_8',
+    'postcheck_0_4_7_to_0_4_8',
+    'precheck_0_4_8_to_0_4_9',
+    'apply_0_4_8_to_0_4_9',
+    'postcheck_0_4_8_to_0_4_9',
+    'precheck_0_4_9_to_0_4_10',
+    'apply_0_4_9_to_0_4_10',
+    'postcheck_0_4_9_to_0_4_10',
+    'restore_umbrel_shutdown_ui',
+    'verify_umbrel_shutdown_ui_restored',
+    'precheck_0_4_10_to_0_4_11',
+    'apply_0_4_10_to_0_4_11',
+    'postcheck_0_4_10_to_0_4_11',
+    'precheck_0_4_11_to_0_4_12',
+    'apply_0_4_11_to_0_4_12',
+    'postcheck_0_4_11_to_0_4_12',
 ]
 missing = [needle for needle in required if needle not in text]
 if missing:
@@ -161,10 +214,32 @@ def pos(needle: str, haystack: str = text) -> int:
         raise SystemExit(f'Missing text for order invariant: {needle}')
     return idx
 
-if pos('if [[ "$CHECK_ONLY" -eq 1 ]]') > pos('for patch in "${PLANNED_PATCHES[@]}"'):
-    raise SystemExit('--check must exit before patch handlers can run')
-if pos('if [[ "$CHECK_ONLY" -eq 1 ]]') > pos('write_install_state "$TARGET_VERSION" "$CURRENT_VERSION"'):
-    raise SystemExit('--check must exit before install state can be written')
+main = text[pos('TARGET_VERSION="$SCRIPT_VERSION"'):]
+if pos('if [[ "$CHECK_ONLY" -eq 1 ]]', main) > pos('global_preflight', main):
+    raise SystemExit('--check must exit before preflight can touch runtime state')
+if pos('if [[ "$CHECK_ONLY" -eq 1 ]]', main) > pos('if ! run_migration_step "$step"', main):
+    raise SystemExit('--check must exit before migration handlers can run')
+if pos('if [[ "$CHECK_ONLY" -eq 1 ]]', main) > pos('finalize_install_state "$TARGET_VERSION"', main):
+    raise SystemExit('--check must exit before final install state can be written')
+if pos('mark_step_started "$step"') > pos('if ! "$apply_fn"'):
+    raise SystemExit('migration step must be marked in-progress before apply')
+if pos('if ! "$apply_fn"') > pos('mark_step_failed "$step" "apply failed"'):
+    raise SystemExit('apply failure must be recorded before returning from step')
+if pos('if ! "$postcheck_fn"') > pos('mark_step_failed "$step" "postcheck failed"'):
+    raise SystemExit('postcheck failure must be recorded before returning from step')
+completed_block = text[pos('elif action == "completed":'):pos('elif action == "failed":')]
+if 'base["version"] = version' in completed_block or 'base["host_version"] = version' in completed_block:
+    raise SystemExit('completed migration steps must not write final version fields before finalize')
+if pos('run_migration_step "$step"', main) > pos('finalize_install_state "$TARGET_VERSION"', main):
+    raise SystemExit('final version must only be recorded after migration loop')
+
+safe = text[pos('patch_umbrel_shutdown_source()'):pos('refresh_umbrel_system_container()')]
+if pos('docker update --restart=no', safe) > pos('sleep 45; docker stop --time 15 "$(hostname)"', safe):
+    raise SystemExit('Umbrel shutdown patch must disable Docker restart before scheduling delayed top-level container stop')
+if pos('docker update --restart=always umbrel', safe) > pos('docker start umbrel', safe):
+    raise SystemExit('Boot restore service must restore restart policy before starting Umbrel')
+if pos('systemctl enable m1s-umbrel-autostart.service', safe) > pos('docker restart --time 60 umbrel', safe):
+    raise SystemExit('Boot restore service must be enabled before Umbrel is restarted into patched code')
 
 refresh = text[pos('refresh_umbrel_system_container()'):]
 if pos('assert_fullnode_data_mount_safe', refresh) > pos('docker pull "$UMBREL_IMAGE"', refresh):
@@ -176,6 +251,12 @@ if pos('if [[ "$DRY_RUN" -eq 1 ]]', refresh) > pos('docker pull "$UMBREL_IMAGE"'
     raise SystemExit('Dry-run branch must return before docker pull mutates image cache')
 print('  ok updater preserves data-mount gates, check/dry-run path, and canonical Umbrel refresh flags')
 PY
+
+printf '[verify] updater unit tests\n'
+for test_script in "${test_scripts[@]}"; do
+  bash "$test_script"
+  printf '  ok %s\n' "$test_script"
+done
 
 printf '[verify] workflow presence\n'
 python3 - <<'PY'
