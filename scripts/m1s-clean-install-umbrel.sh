@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SCRIPT_VERSION="0.4.13"
+SCRIPT_VERSION="0.4.14"
 INSTALL_STATE_DIR="/etc/umbrel-recovery"
 INSTALL_STATE_FILE="$INSTALL_STATE_DIR/installed.json"
 PREINSTALL_RESUME_STATE_FILE="$INSTALL_STATE_DIR/preinstall-resume.json"
@@ -45,6 +45,36 @@ log() {
 info() { log INFO "$1"; }
 warn() { log WARN "$1"; }
 err() { log ERROR "$1" >&2; }
+
+abort_by_user() {
+  err "Aborted by user."
+  exit 130
+}
+
+trap abort_by_user INT
+
+is_abort_input() {
+  local value="${1:-}"
+  local interrupt_char
+  interrupt_char="$(printf '\003')"
+  [[ "$value" == "$interrupt_char" || "$value" == "q" || "$value" == "Q" || "$value" == "quit" || "$value" == "exit" ]]
+}
+
+read_prompt_or_abort() {
+  local target_var="$1"
+  local prompt="$2"
+  local value=""
+
+  if ! IFS= read -r -p "$prompt" value; then
+    abort_by_user
+  fi
+
+  if is_abort_input "$value"; then
+    abort_by_user
+  fi
+
+  printf -v "$target_var" '%s' "$value"
+}
 
 run_cmd() {
   if [[ "$DRY_RUN" -eq 1 ]]; then
@@ -752,7 +782,7 @@ select_target_disk_interactive() {
   local candidate_models=()
   local candidate_mounts=()
   local candidate_parts=()
-  local disk_path size model mounts part_count disk_name choice index line
+  local disk_path size model mounts part_count disk_name choice index line non_nvme_confirm
 
   if [[ -z "$ROOT_DISK" ]]; then
     err "Could not determine the current root/system disk automatically."
@@ -804,7 +834,7 @@ select_target_disk_interactive() {
   done
 
   while true; do
-    read -r -p "Choose the storage disk to initialize [1-${#candidate_paths[@]}]: " choice
+    read_prompt_or_abort choice "Choose the storage disk to initialize [1-${#candidate_paths[@]}] (or q to quit): "
     if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#candidate_paths[@]} )); then
       local selected="${candidate_paths[$((choice - 1))]}"
       local selected_name
@@ -813,7 +843,7 @@ select_target_disk_interactive() {
         echo
         warn "WARNING: '$selected' is NOT an NVMe device."
         warn "This script is designed for NVMe SSD. Formatting a non-NVMe device may destroy important data."
-        read -r -p "Type YES-USE-THIS-DISK to proceed with this non-NVMe disk: " non_nvme_confirm
+        read_prompt_or_abort non_nvme_confirm "Type YES-USE-THIS-DISK to proceed with this non-NVMe disk, or q to quit: "
         if [[ "$non_nvme_confirm" != "YES-USE-THIS-DISK" ]]; then
           warn "Selection cancelled. Please choose again."
           continue
@@ -908,6 +938,11 @@ done
 
 TARGET_INPUT="$TARGET_PARTITION"
 
+if [[ "${M1S_INSTALLER_LIB_ONLY:-0}" == "1" ]]; then
+  # shellcheck disable=SC2317 # Used when the installer is sourced by unit tests.
+  return 0 2>/dev/null || exit 0
+fi
+
 if [[ "${EUID}" -ne 0 ]]; then
   err "Run this script with sudo or as root."
   exit 1
@@ -967,7 +1002,7 @@ if [[ -z "$ROOT_DISK" ]]; then
     warn "Root disk detection failed. Proceeding with explicit target: $TARGET_INPUT"
     warn "Please verify this is NOT your system disk."
     if [[ "$DRY_RUN" -eq 0 && "$AUTO_RESUME_INSTALL" -ne 1 ]]; then
-      read -r -p "Type CONFIRM-TARGET to continue anyway: " ROOT_CONFIRM
+      read_prompt_or_abort ROOT_CONFIRM "Type CONFIRM-TARGET to continue anyway, or q to quit: "
       if [[ "$ROOT_CONFIRM" != "CONFIRM-TARGET" ]]; then
         err "Aborted by user."
         exit 1
@@ -1126,7 +1161,7 @@ if [[ "$DRY_RUN" -eq 0 ]]; then
     warn "This will also format $TARGET_PARTITION and erase all existing SSD data on that partition."
   fi
   if [[ "$AUTO_RESUME_INSTALL" -ne 1 ]]; then
-    read -r -p "Type ERASE-EMMC-AND-FORMAT-SSD-AND-INSTALL-UMBREL to continue: " CONFIRM
+    read_prompt_or_abort CONFIRM "Type ERASE-EMMC-AND-FORMAT-SSD-AND-INSTALL-UMBREL to continue, or q to quit: "
     if [[ "$CONFIRM" != "ERASE-EMMC-AND-FORMAT-SSD-AND-INSTALL-UMBREL" ]]; then
       err "Confirmation text mismatch. Aborting."
       exit 1

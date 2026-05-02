@@ -16,7 +16,7 @@ set -Eeuo pipefail
 #   --version      Print script version and exit.
 #   -h, --help     Show this help.
 
-SCRIPT_VERSION="0.4.13"
+SCRIPT_VERSION="0.4.14"
 INSTALL_STATE_DIR="/etc/umbrel-recovery"
 INSTALL_STATE_FILE="$INSTALL_STATE_DIR/installed.json"
 DATA_DIR="/mnt/fullnode"
@@ -42,6 +42,8 @@ MIGRATIONS=(
   "0.4.9_to_0.4.10"
   "0.4.10_to_0.4.11"
   "0.4.11_to_0.4.12"
+  "0.4.12_to_0.4.13"
+  "0.4.13_to_0.4.14"
 )
 
 log() {
@@ -1355,6 +1357,14 @@ postcheck_0_4_10_to_0_4_11() { postcheck_umbrel_safe_shutdown; verify_umbrel_shu
 precheck_0_4_11_to_0_4_12() { precheck_common_canonical_install; }
 apply_0_4_11_to_0_4_12() { install_umbrel_safe_shutdown; }
 postcheck_0_4_11_to_0_4_12() { postcheck_umbrel_safe_shutdown; }
+
+precheck_0_4_12_to_0_4_13() { precheck_common_canonical_install; }
+apply_0_4_12_to_0_4_13() { info "[0.4.13] Documentation-only release; recording migration history"; }
+postcheck_0_4_12_to_0_4_13() { precheck_common_canonical_install; }
+
+precheck_0_4_13_to_0_4_14() { precheck_common_canonical_install; }
+apply_0_4_13_to_0_4_14() { info "[0.4.14] Fresh installer interactive abort fix; recording migration history"; }
+postcheck_0_4_13_to_0_4_14() { precheck_common_canonical_install; }
 
 # ---------------------------------------------------------------------------
 # Main flow

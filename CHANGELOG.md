@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.14
+
+- Fix the fresh installer's interactive storage selection prompts so user aborts are handled consistently. A normal terminal `Ctrl-C` now exits through a SIGINT trap with status 130, and web-terminal style `Ctrl-C` input (`0x03`) is no longer treated as an invalid menu choice.
+- Add explicit `q` / `quit` / `exit` escape handling to destructive confirmation prompts, including the NVMe selector, non-NVMe override prompt, root-disk fallback confirmation, and final erase confirmation.
+- Add an installer regression test that stubs `lsblk` and verifies both Ctrl-C control-character input and `q` exit the NVMe selector without printing `Invalid selection`.
+- Bring updater migration history to 0.4.14 with no data mutation for already-installed hosts; this release changes fresh installer behavior only.
+
 ## 0.4.13
 
 - README only. Unify the SSH update path (section 12) and the new Umbrel web UI terminal path (section 12-1) onto the same five-line command set so the user does not need to know their host username, home directory, or local clone state.
