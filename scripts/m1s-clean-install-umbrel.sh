@@ -909,8 +909,8 @@ report_install_health() {
 }
 
 wait_for_umbrel_container() {
-  local attempts="${1:-30}"
-  local delay="${2:-2}"
+  local attempts=30
+  local delay=2
   local state=""
   local i
 
