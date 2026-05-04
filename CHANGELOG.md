@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.0
+
+- Ship an ODROID M1S `fstrim.service` compatibility drop-in through both the fresh installer and the in-place updater so Ubuntu 22.04 aarch64 hosts stop losing weekly TRIM to the upstream `SystemCallFilter=` / `SIGSYS` failure mode.
+- Keep the change tightly scoped to the affected host class: the new helper installs the drop-in only on Ubuntu 22.04 and treats a one-shot `systemctl start fstrim.service` failure as a warning instead of turning SSD housekeeping into an installer hard-fail.
+- Add a `0.4.18_to_0.5.0` updater history step and extend verifier / migration tests so the new TRIM compatibility path is tracked, checked, and kept idempotent for existing installs.
+
 ## 0.4.18
 
 - Follow up on the `0.4.17` installer release with CI-only compatibility fixes that do not change the intended installer flow on ODROID M1S hardware.
