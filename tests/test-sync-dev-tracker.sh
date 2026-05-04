@@ -42,7 +42,7 @@ expected_branch_line="Branch: \`${current_branch}\`"
 assert_contains "$tracker_text" '## Current branch' 'Tracker heading should remain present'
 assert_contains "$tracker_text" "$expected_branch_line" 'Tracker should reflect the current branch'
 # shellcheck disable=SC2016
-assert_contains "$tracker_text" 'Working version: `0.4.18`' 'Tracker should reflect VERSION'
+assert_contains "$tracker_text" 'Working version: `0.5.0`' 'Tracker should reflect VERSION'
 assert_contains "$tracker_text" 'scripts/sync-dev-tracker.sh' 'Tracker status should mention tracker automation when script itself is modified'
 assert_contains "$tracker_text" 'Non-destructive preview on target ODROID M1S' 'Pending device tests should include the standard checklist'
 cp "$sync_script_backup" scripts/sync-dev-tracker.sh
@@ -75,7 +75,7 @@ config = json.loads(source.read_text(encoding='utf-8'))
 config['include_globs'] = ['VERSION']
 target.write_text(json.dumps(config, indent=2) + '\n', encoding='utf-8')
 PY
-printf '0.4.18-test\n' > VERSION
+printf '0.5.0-test\n' > VERSION
 DEV_TRACKER_PATH="$tracker_copy" TRACKER_SYNC_CONFIG_PATH="$config_copy" bash scripts/sync-dev-tracker.sh
 tracker_text="$(python3 - "$tracker_copy" <<'PY'
 from pathlib import Path
@@ -84,7 +84,7 @@ print(Path(sys.argv[1]).read_text(encoding='utf-8'))
 PY
 )"
 # shellcheck disable=SC2016
-assert_contains "$tracker_text" '- `VERSION`: working version is now `0.4.18-test`.' 'Config include should still keep VERSION status'
+assert_contains "$tracker_text" '- `VERSION`: working version is now `0.5.0-test`.' 'Config include should still keep VERSION status'
 # shellcheck disable=SC2016
 assert_not_contains "$tracker_text" '- `.tracker-sync.json`: tracker change detection now comes from include/exclude config instead of hardcoded path rules.' 'Config include filter should drop config status lines when config itself is excluded from tracked changes'
 # shellcheck disable=SC2016

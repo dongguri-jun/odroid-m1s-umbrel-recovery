@@ -123,6 +123,13 @@ required = [
     'Install health summary',
     'HTTP by device IP',
     'HTTP by umbrel.local',
+    'install_fstrim_dropin',
+    'fstrim.service.d',
+    'm1s-no-syscallfilter.conf',
+    'SystemCallFilter=',
+    'SystemCallErrorNumber=',
+    'reset-failed fstrim.service',
+    'start fstrim.service',
 ]
 missing = [needle for needle in required if needle not in text]
 if missing:
@@ -185,6 +192,7 @@ required = [
     '"0.4.15_to_0.4.16"',
     '"0.4.16_to_0.4.17"',
     '"0.4.17_to_0.4.18"',
+    '"0.4.18_to_0.5.0"',
     'applied_steps',
     'in_progress_step',
     'failed_step',
@@ -228,6 +236,16 @@ required = [
     'precheck_0_4_11_to_0_4_12',
     'apply_0_4_11_to_0_4_12',
     'postcheck_0_4_11_to_0_4_12',
+    'install_fstrim_dropin',
+    'fstrim.service.d',
+    'm1s-no-syscallfilter.conf',
+    'SystemCallFilter=',
+    'SystemCallErrorNumber=',
+    'reset-failed fstrim.service',
+    'start fstrim.service',
+    'precheck_0_4_18_to_0_5_0',
+    'apply_0_4_18_to_0_5_0',
+    'postcheck_0_4_18_to_0_5_0',
 ]
 missing = [needle for needle in required if needle not in text]
 if missing:
