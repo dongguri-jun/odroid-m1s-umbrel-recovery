@@ -1,0 +1,55 @@
+{
+  "tracker_path": "docs/dev/dev-tracker.md",
+  "debounce_seconds": 45,
+  "include_globs": [
+    ".tracker-sync.json",
+    "scripts/**",
+    "tests/**",
+    "README.md",
+    "CHANGELOG.md",
+    "VERSION"
+  ],
+  "exclude_globs": [
+    "docs/dev/dev-tracker.md",
+    "docs/ai-shared/MEMORY.md",
+    ".git/**",
+    ".sisyphus/**",
+    "**/*.log",
+    "**/*.tmp",
+    "**/*.swp"
+  ],
+  "notes": {
+    "auto_hook": "A global Claude Code PostToolUse hook at ~/.claude/hooks/posttooluse-sync-dev-tracker.sh schedules sync-dev-tracker.sh after tracked Edit/Write/MultiEdit events.",
+    "manual_fallback": "Run `bash scripts/sync-dev-tracker.sh` any time you want an immediate refresh, or `bash scripts/sync-dev-tracker.sh --run-local-gates` after the local verifier succeeds."
+  },
+  "pending_checks": [
+    {
+      "id": "preview",
+      "label": "Non-destructive preview on target ODROID M1S"
+    },
+    {
+      "id": "fresh-install",
+      "label": "Destructive fresh install on eMMC-root + NVMe-target"
+    },
+    {
+      "id": "root-fail-closed",
+      "label": "Root disk detection failure blocks NVMe formatting"
+    },
+    {
+      "id": "non-nvme-guard",
+      "label": "Non-NVMe target is refused on real device"
+    },
+    {
+      "id": "busy-cleanup",
+      "label": "Target-scoped SSD busy-process cleanup works on device"
+    },
+    {
+      "id": "umbrel-start-failure",
+      "label": "Umbrel start failure aborts install before success state"
+    },
+    {
+      "id": "install-state",
+      "label": "Installed state file records final version/image/target partition"
+    }
+  ]
+}
