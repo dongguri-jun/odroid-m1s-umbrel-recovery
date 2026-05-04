@@ -198,6 +198,14 @@ git clone https://github.com/dongguri-jun/odroid-m1s-umbrel-recovery.git
 
 입력 후 **엔터**를 누르세요. 네트워크를 통해 파일이 내려받아집니다.
 
+**(4) 내려받은 폴더 안으로 들어갑니다.**
+
+```bash
+cd odroid-m1s-umbrel-recovery
+```
+
+입력 후 **엔터**를 누르세요. 이제 다음 단계(6번)의 명령을 실행할 준비가 된 상태입니다.
+
 ### `git clone` 이 안 될 때
 
 만약 아래처럼 나오면:
@@ -218,15 +226,8 @@ sudo systemctl restart systemd-resolved
 
 ```bash
 git clone https://github.com/dongguri-jun/odroid-m1s-umbrel-recovery.git
-```
-
-**(4) 내려받은 폴더 안으로 들어갑니다.**
-
-```bash
 cd odroid-m1s-umbrel-recovery
 ```
-
-입력 후 **엔터**를 누르세요. 이제 다음 단계(6번)의 명령을 실행할 준비가 된 상태입니다.
 
 ---
 
