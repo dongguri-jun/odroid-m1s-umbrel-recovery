@@ -37,9 +37,10 @@ import sys
 print(Path(sys.argv[1]).read_text(encoding='utf-8'))
 PY
 )"
+current_branch="$(git branch --show-current)"
+expected_branch_line="Branch: \`${current_branch}\`"
 assert_contains "$tracker_text" '## Current branch' 'Tracker heading should remain present'
-# shellcheck disable=SC2016
-assert_contains "$tracker_text" 'Branch: `public-clean`' 'Tracker should reflect the current branch'
+assert_contains "$tracker_text" "$expected_branch_line" 'Tracker should reflect the current branch'
 # shellcheck disable=SC2016
 assert_contains "$tracker_text" 'Working version: `0.4.17`' 'Tracker should reflect VERSION'
 assert_contains "$tracker_text" 'scripts/sync-dev-tracker.sh' 'Tracker status should mention tracker automation when script itself is modified'
