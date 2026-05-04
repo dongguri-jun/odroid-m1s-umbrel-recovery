@@ -26,7 +26,10 @@ assert_not_contains() {
 
 printf '[unit] dev tracker sync renders auto-managed sections\n'
 tracker_copy="$(mktemp)"
+sync_script_backup="$(mktemp)"
+cp scripts/sync-dev-tracker.sh "$sync_script_backup"
 rm -f "$tracker_copy"
+printf '\n# test-marker\n' >> scripts/sync-dev-tracker.sh
 DEV_TRACKER_PATH="$tracker_copy" bash scripts/sync-dev-tracker.sh
 tracker_text="$(python3 - "$tracker_copy" <<'PY'
 from pathlib import Path
@@ -41,6 +44,8 @@ assert_contains "$tracker_text" 'Branch: `public-clean`' 'Tracker should reflect
 assert_contains "$tracker_text" 'Working version: `0.4.17`' 'Tracker should reflect VERSION'
 assert_contains "$tracker_text" 'scripts/sync-dev-tracker.sh' 'Tracker status should mention tracker automation when script itself is modified'
 assert_contains "$tracker_text" 'Non-destructive preview on target ODROID M1S' 'Pending device tests should include the standard checklist'
+cp "$sync_script_backup" scripts/sync-dev-tracker.sh
+rm -f "$sync_script_backup"
 
 printf '[unit] dev tracker sync records device checks\n'
 DEV_TRACKER_PATH="$tracker_copy" bash scripts/sync-dev-tracker.sh --record-device-check preview --record-device-check fresh-install
