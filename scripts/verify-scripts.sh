@@ -184,6 +184,7 @@ required = [
     '"0.4.14_to_0.4.15"',
     '"0.4.15_to_0.4.16"',
     '"0.4.16_to_0.4.17"',
+    '"0.4.17_to_0.4.18"',
     'applied_steps',
     'in_progress_step',
     'failed_step',

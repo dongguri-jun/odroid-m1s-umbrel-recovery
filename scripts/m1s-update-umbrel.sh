@@ -16,7 +16,7 @@ set -Eeuo pipefail
 #   --version      Print script version and exit.
 #   -h, --help     Show this help.
 
-SCRIPT_VERSION="0.4.17"
+SCRIPT_VERSION="0.4.18"
 INSTALL_STATE_DIR="/etc/umbrel-recovery"
 INSTALL_STATE_FILE="$INSTALL_STATE_DIR/installed.json"
 DATA_DIR="/mnt/fullnode"
@@ -47,6 +47,7 @@ MIGRATIONS=(
   "0.4.14_to_0.4.15"
   "0.4.15_to_0.4.16"
   "0.4.16_to_0.4.17"
+  "0.4.17_to_0.4.18"
 )
 
 log() {
@@ -1375,8 +1376,15 @@ postcheck_0_4_14_to_0_4_15() { precheck_common_canonical_install; }
 
 precheck_0_4_15_to_0_4_16() { precheck_common_canonical_install; }
 apply_0_4_15_to_0_4_16() { info "[0.4.16] Fresh installer target-scoped SSD busy-process cleanup; recording migration history"; }
-apply_0_4_16_to_0_4_17() { info "[0.4.17] Fresh installer NVMe resume + reinstall stabilization; recording migration history"; }
 postcheck_0_4_15_to_0_4_16() { precheck_common_canonical_install; }
+
+precheck_0_4_16_to_0_4_17() { precheck_common_canonical_install; }
+apply_0_4_16_to_0_4_17() { info "[0.4.17] Fresh installer NVMe resume + reinstall stabilization; recording migration history"; }
+postcheck_0_4_16_to_0_4_17() { precheck_common_canonical_install; }
+
+precheck_0_4_17_to_0_4_18() { precheck_common_canonical_install; }
+apply_0_4_17_to_0_4_18() { info "[0.4.18] CI-only installer compatibility follow-up; recording migration history"; }
+postcheck_0_4_17_to_0_4_18() { precheck_common_canonical_install; }
 
 # ---------------------------------------------------------------------------
 # Main flow
