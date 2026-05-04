@@ -832,10 +832,28 @@ maybe_recover_missing_nvme() {
     nvme_rescan_runtime || true
     if nvme_disk_visible; then
       info "Recovered NVMe visibility via runtime PCI rescan. Continuing installation."
-    else
-      warn "NVMe is still not visible. Automatic reboot recovery is skipped until an explicit /dev/nvme0n1 target is supplied."
+      return 0
     fi
-    return 0
+
+    if preinstall_resume_attempted; then
+      clear_preinstall_resume_state
+      err "NVMe is still missing after one automatic recovery reboot."
+      err "Please inspect SSD seating, power, or firmware manually and rerun the installer."
+      exit 1
+    fi
+
+    warn "Runtime PCI rescan did not restore NVMe visibility. Applying boot-time NVMe mitigation and rebooting once."
+    apply_nvme_boot_mitigation
+    write_preinstall_resume_state
+    install_preinstall_resume_unit
+    if [[ "$DRY_RUN" -eq 1 ]]; then
+      echo "[DRY-RUN] systemctl reboot"
+      exit 0
+    fi
+    info "Rebooting once to resume installation after NVMe recovery."
+    sync
+    systemctl reboot
+    exit 0
   fi
 
   if ! nvme_target_missing_preflight; then
@@ -1048,6 +1066,41 @@ EOF
     docker restart --time 60 umbrel >/dev/null
     wait_for_umbrel_container || { err "Umbrel did not restart after retrying safe shutdown container patch."; return 1; }
   fi
+}
+
+autoselect_target_disk_if_single_candidate() {
+  local candidate_paths=()
+  local disk_path disk_name line
+
+  if [[ -z "$ROOT_DISK" ]]; then
+    return 1
+  fi
+
+  while IFS= read -r line; do
+    [[ -n "$line" ]] || continue
+    unset NAME SIZE TYPE MODEL
+    eval "$line"
+    [[ "${TYPE:-}" == "disk" ]] || continue
+    # shellcheck disable=SC2153 # NAME is assigned by eval from lsblk -P output.
+    disk_path="/dev/${NAME}"
+    [[ -z "$disk_path" ]] && continue
+    disk_name="$(basename "$disk_path")"
+    if [[ -n "$ROOT_DISK" && "$disk_name" == "$ROOT_DISK" ]]; then
+      continue
+    fi
+    if [[ "$disk_name" != nvme* ]]; then
+      continue
+    fi
+    candidate_paths+=("$disk_path")
+  done < <(lsblk -dn -o NAME,SIZE,TYPE,MODEL -P 2>/dev/null)
+
+  if [[ "${#candidate_paths[@]}" -ne 1 ]]; then
+    return 1
+  fi
+
+  TARGET_INPUT="${candidate_paths[0]}"
+  info "Exactly one non-root NVMe SSD was detected ($TARGET_INPUT). Selecting it automatically."
+  return 0
 }
 
 select_target_disk_interactive() {
@@ -1271,7 +1324,7 @@ fi
 maybe_recover_missing_nvme
 
 if [[ -z "$TARGET_INPUT" ]]; then
-  select_target_disk_interactive
+  autoselect_target_disk_if_single_candidate || select_target_disk_interactive
 fi
 
 TARGET_INPUT_RESOLVED="$(resolve_block_path "$TARGET_INPUT")"

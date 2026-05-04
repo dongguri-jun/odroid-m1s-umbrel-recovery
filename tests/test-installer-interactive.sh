@@ -162,6 +162,99 @@ assert_contains "$unsafe_layout_output" "Refusing to format NVMe" "Unsafe layout
 ROOT_DISK="mmcblk0"
 pass "Root disk safety gate fails closed unless eMMC-root and NVMe-target are proven"
 
+printf '[unit] installer one-command NVMe recovery\n'
+TARGET_INPUT=""
+DRY_RUN=1
+nvme_visible_state="missing"
+resume_attempted_state=0
+nvme_disk_visible() {
+  [[ "$nvme_visible_state" == "visible" ]]
+}
+nvme_rescan_runtime() {
+  nvme_visible_state="missing"
+  return 0
+}
+preinstall_resume_attempted() {
+  [[ "$resume_attempted_state" -eq 1 ]]
+}
+apply_nvme_boot_mitigation() {
+  printf 'apply_nvme_boot_mitigation\n'
+}
+write_preinstall_resume_state() {
+  printf 'write_preinstall_resume_state\n'
+}
+install_preinstall_resume_unit() {
+  printf 'install_preinstall_resume_unit\n'
+}
+clear_preinstall_resume_state() {
+  printf 'clear_preinstall_resume_state\n'
+}
+set +e
+one_command_recovery_output="$(maybe_recover_missing_nvme 2>&1)"
+one_command_recovery_status=$?
+set -e
+assert_eq "0" "$one_command_recovery_status" "Missing NVMe without explicit target should enter automatic recovery dry-run path"
+assert_contains "$one_command_recovery_output" "Applying boot-time NVMe mitigation and rebooting once" "One-command flow should promise automatic reboot recovery"
+assert_contains "$one_command_recovery_output" "apply_nvme_boot_mitigation" "One-command flow should apply NVMe mitigation before reboot"
+assert_contains "$one_command_recovery_output" "write_preinstall_resume_state" "One-command flow should persist resume state"
+assert_contains "$one_command_recovery_output" "install_preinstall_resume_unit" "One-command flow should install the resume unit"
+assert_contains "$one_command_recovery_output" "[DRY-RUN] systemctl reboot" "One-command flow should reboot automatically in dry-run"
+assert_not_contains "$one_command_recovery_output" "explicit /dev/nvme0n1 target is supplied" "One-command flow must not require an explicit target anymore"
+pass "Missing NVMe now triggers automatic one-command recovery without an explicit target"
+
+printf '[unit] installer single-NVMe auto-select\n'
+TARGET_INPUT=""
+set +e
+autoselect_target_disk_if_single_candidate >/dev/null 2>&1
+multiple_candidate_status=$?
+set -e
+assert_eq "1" "$multiple_candidate_status" "Multiple NVMe candidates should still require interactive selection"
+assert_eq "" "$TARGET_INPUT" "Multiple NVMe candidates must not auto-select a target"
+
+LSBLK_BACKUP="$TEST_TMPDIR/bin/lsblk.multiple"
+cp "$TEST_TMPDIR/bin/lsblk" "$LSBLK_BACKUP"
+cat > "$TEST_TMPDIR/bin/lsblk" <<'STUB'
+#!/usr/bin/env bash
+case "$*" in
+  "-dn -o NAME,SIZE,TYPE,MODEL -P")
+    printf '%s\n' 'NAME="mmcblk0" SIZE="32G" TYPE="disk" MODEL="eMMC"'
+    printf '%s\n' 'NAME="nvme0n1" SIZE="2T" TYPE="disk" MODEL="NVME_A"'
+    ;;
+  -nrpo\ MOUNTPOINT\ /dev/*)
+    exit 0
+    ;;
+  -nrpo\ NAME,TYPE\ /dev/*)
+    printf '%s disk\n' "$4"
+    ;;
+  -no\ PKNAME\ /dev/mmcblk0p2)
+    printf 'mmcblk0\n'
+    ;;
+  -no\ PKNAME\ /dev/disk/by-uuid/root-mmc)
+    exit 0
+    ;;
+  -dn\ -o\ TYPE\ /dev/mmcblk0)
+    printf 'disk\n'
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+STUB
+chmod +x "$TEST_TMPDIR/bin/lsblk"
+TARGET_INPUT=""
+single_candidate_output_file="$TEST_TMPDIR/single-candidate-output.txt"
+set +e
+autoselect_target_disk_if_single_candidate >"$single_candidate_output_file" 2>&1
+single_candidate_status=$?
+set -e
+single_candidate_output="$(<"$single_candidate_output_file")"
+mv "$LSBLK_BACKUP" "$TEST_TMPDIR/bin/lsblk"
+chmod +x "$TEST_TMPDIR/bin/lsblk"
+assert_eq "0" "$single_candidate_status" "Exactly one NVMe candidate should be auto-selected"
+assert_eq "/dev/nvme0n1" "$TARGET_INPUT" "Single visible NVMe should be selected automatically"
+assert_contains "$single_candidate_output" "Selecting it automatically" "Single-candidate auto-select should explain itself"
+pass "Exactly one NVMe candidate is auto-selected for one-command installs"
+
 printf '[unit] installer target-scoped SSD busy process cleanup\n'
 TARGET_MOUNT_PATHS=("/mnt/fullnode" "/mnt/old-fullnode")
 TARGET_EXISTING_PARTITIONS=("/dev/nvme0n1p1")
