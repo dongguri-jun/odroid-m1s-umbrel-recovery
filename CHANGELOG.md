@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.4.17
+
+- Fix the installer's safe-shutdown post-step to wait for the top-level `umbrel` container after restart, instead of calling a missing helper during the real-device shutdown-patch path.
+- Fix full reinstall handling on already-installed NVMe targets by using a `swapon` query form that works on the ODROID M1S host image. This lets the installer detect `/mnt/fullnode/swapfile`, deactivate it, and unmount `/dev/nvme0n1p1` cleanly before repartitioning.
+- Verify the installer end-to-end on a real ODROID M1S that initially reproduced the public NVMe cold-boot failure class: first boot missed the NVMe target, the installer applied the NVMe mitigation and rebooted once, `nvme0n1` reappeared after reboot, and the destructive reinstall completed to a running Umbrel with `/dev/nvme0n1p1 -> /mnt/fullnode`, active Avahi aliasing, recorded install state, and working HTTP responses from both `http://umbrel.local` and the device IP.
+- Bring installer, updater, verifier expectations, migration history, and version metadata forward to `0.4.17`. Existing hosts get a no-op `0.4.16_to_0.4.17` history step; the real behavior changes are in the fresh installer.
+
+## 0.4.16
+
+- Add target-scoped SSD busy-process cleanup to the fresh installer. After known app/container services are stopped, the installer now collects only PIDs holding the selected NVMe SSD or its mount paths, sends SIGTERM first, and escalates to SIGKILL only for remaining non-protected SSD holders.
+- Preserve host control-plane processes while cleaning old SSD holders: SSH/session ancestors, systemd, networking, resolver, DBus, cron, apt/dpkg, and the installer itself are excluded from automatic termination.
+- Retry unmount after automatic SSD process cleanup and improve final failure guidance with `fuser` and `journalctl -k` commands for cases that still remain busy.
+- Treat Umbrel container start failure as a hard installer failure instead of continuing as if the install succeeded. The installer now stops before hostname/mDNS/install-state recording and prints Docker log/retry guidance.
+- Fail closed if the installer cannot prove the ODROID M1S is booted from eMMC (`mmcblk*`) before formatting an NVMe target. The previous explicit-target `CONFIRM-TARGET` fallback is removed so user confirmation alone cannot bypass root/system disk safety.
+- Bring installer, updater, verifier expectations, migration history, and version metadata forward to `0.4.16`. Existing hosts get a no-op `0.4.15_to_0.4.16` history step; fresh-installer busy-device handling, Umbrel start hard-fail, and stricter eMMC-root/NVMe-target gating are the real behavior changes.
+
+## 0.4.15
+
+- Restrict the fresh installer to NVMe SSD targets only. Interactive disk selection now lists only non-root `nvme*` disks, instead of showing every non-root block device and asking the user to override a non-NVMe warning.
+- Reject explicit non-NVMe `--target-partition` inputs with a hard error instead of a warning-only path. This removes the easiest accidental-data-loss branch where a USB or other auxiliary disk could be formatted by mistake.
+- Add installer regression coverage for NVMe-only candidate filtering and explicit non-NVMe target rejection.
+- Bring installer, updater, verifier expectations, migration history, and version metadata forward to `0.4.15`. Existing hosts get a no-op `0.4.14_to_0.4.15` history step; fresh-installer target filtering is the real behavior change.
+
 ## 0.4.14
 
 - Fix the fresh installer's interactive storage selection prompts so user aborts are handled consistently. A normal terminal `Ctrl-C` now exits through a SIGINT trap with status 130, and web-terminal style `Ctrl-C` input (`0x03`) is no longer treated as an invalid menu choice.
