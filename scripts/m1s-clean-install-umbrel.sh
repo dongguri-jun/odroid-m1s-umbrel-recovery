@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SCRIPT_VERSION="0.4.14"
+SCRIPT_VERSION="0.4.17"
 INSTALL_STATE_DIR="/etc/umbrel-recovery"
 INSTALL_STATE_FILE="$INSTALL_STATE_DIR/installed.json"
 PREINSTALL_RESUME_STATE_FILE="$INSTALL_STATE_DIR/preinstall-resume.json"
@@ -214,6 +214,139 @@ wait_for_block_device() {
   return 1
 }
 
+collect_target_busy_pids() {
+  command -v fuser >/dev/null 2>&1 || return 0
+
+  local paths=()
+  local path raw pid
+  for path in "${TARGET_MOUNT_PATHS[@]}" "${TARGET_EXISTING_PARTITIONS[@]}" "$TARGET_PARTITION" "$DATA_DIR"; do
+    [[ -n "$path" ]] || continue
+    if append_unique "$path" "${paths[@]}"; then
+      paths+=("$path")
+    fi
+  done
+
+  local seen=()
+  for path in "${paths[@]}"; do
+    raw="$(fuser "$path" 2>/dev/null || true)"
+    for pid in $raw; do
+      [[ "$pid" =~ ^[0-9]+$ ]] || continue
+      if append_unique "$pid" "${seen[@]}"; then
+        seen+=("$pid")
+        printf '%s\n' "$pid"
+      fi
+    done
+  done
+}
+
+is_installer_process_ancestor() {
+  local candidate="$1"
+  local current="$BASHPID"
+  local parent
+
+  while [[ -n "$current" && "$current" =~ ^[0-9]+$ && "$current" != "0" ]]; do
+    [[ "$candidate" == "$current" ]] && return 0
+    parent="$(ps -p "$current" -o ppid= 2>/dev/null | xargs || true)"
+    [[ -n "$parent" && "$parent" != "$current" ]] || break
+    current="$parent"
+  done
+
+  return 1
+}
+
+describe_pid() {
+  local pid="$1"
+  local args
+  args="$(ps -p "$pid" -o args= 2>/dev/null | xargs || true)"
+  [[ -n "$args" ]] || args="unknown"
+  printf '%s' "$args"
+}
+
+is_protected_busy_pid() {
+  local pid="$1"
+  [[ "$pid" =~ ^[0-9]+$ ]] || return 0
+  [[ "$pid" == "1" ]] && return 0
+  is_installer_process_ancestor "$pid" && return 0
+
+  local comm args
+  comm="$(ps -p "$pid" -o comm= 2>/dev/null | xargs || true)"
+  args="$(ps -p "$pid" -o args= 2>/dev/null | xargs || true)"
+
+  case "$comm" in
+    systemd|sshd|ssh|sudo|systemd-networkd|NetworkManager|systemd-resolved|dbus-daemon|systemd-udevd|udevd|cron|apt|apt-get|dpkg|dpkg-deb|unattended-upgr)
+      return 0
+      ;;
+  esac
+
+  if [[ -n "$SCRIPT_PATH_ABS" && "$args" == *"$SCRIPT_PATH_ABS"* ]]; then
+    return 0
+  fi
+  [[ "$args" == *"m1s-clean-install-umbrel.sh"* ]] && return 0
+
+  return 1
+}
+
+filter_killable_target_pids() {
+  local pid
+  for pid in "$@"; do
+    [[ -n "$pid" ]] || continue
+    if is_protected_busy_pid "$pid"; then
+      warn "Preserving protected SSD holder PID $pid: $(describe_pid "$pid")" >&2
+      continue
+    fi
+    printf '%s\n' "$pid"
+  done
+}
+
+stop_target_busy_processes() {
+  command -v fuser >/dev/null 2>&1 || return 0
+
+  local pids=()
+  local killable=()
+  local survivors=()
+  local pid
+  mapfile -t pids < <(collect_target_busy_pids)
+  [[ "${#pids[@]}" -gt 0 ]] || return 0
+
+  mapfile -t killable < <(filter_killable_target_pids "${pids[@]}")
+  [[ "${#killable[@]}" -gt 0 ]] || return 0
+
+  warn "The selected NVMe SSD is still being used by old processes. Stopping only processes that hold the selected SSD."
+  for pid in "${killable[@]}"; do
+    warn "Sending SIGTERM to SSD holder PID $pid: $(describe_pid "$pid")"
+    if [[ "$DRY_RUN" -eq 1 ]]; then
+      printf '[DRY-RUN] kill -TERM %q\n' "$pid"
+    else
+      kill -TERM "$pid" 2>/dev/null || true
+    fi
+  done
+
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    echo "[DRY-RUN] sleep 3"
+  else
+    sleep 3
+  fi
+
+  mapfile -t pids < <(collect_target_busy_pids)
+  mapfile -t survivors < <(filter_killable_target_pids "${pids[@]}")
+  [[ "${#survivors[@]}" -gt 0 ]] || return 0
+
+  for pid in "${survivors[@]}"; do
+    warn "Sending SIGKILL to stubborn SSD holder PID $pid: $(describe_pid "$pid")"
+    if [[ "$DRY_RUN" -eq 1 ]]; then
+      printf '[DRY-RUN] kill -KILL %q\n' "$pid"
+    else
+      kill -KILL "$pid" 2>/dev/null || true
+    fi
+  done
+
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    echo "[DRY-RUN] sleep 1"
+  else
+    sleep 1
+  fi
+}
+
 resolve_block_path() {
   local path="$1"
   if command -v readlink >/dev/null 2>&1; then
@@ -251,7 +384,86 @@ target_input_looks_like_nvme() {
   else
     base="$(basename "$input")"
   fi
-  [[ "$base" == "nvme0n1" ]]
+  [[ "$base" == nvme* ]]
+}
+
+detect_root_disk() {
+  local source="${1:-}"
+  local resolved=""
+  local parent=""
+  local disk=""
+  local dev_type=""
+
+  [[ -n "$source" ]] || return 0
+
+  disk="$(lsblk -no PKNAME "$source" 2>/dev/null | head -n1 | xargs || true)"
+  if [[ -n "$disk" ]]; then
+    printf '%s\n' "$disk"
+    return 0
+  fi
+
+  resolved="$(resolve_block_path "$source")"
+  if [[ -n "$resolved" && "$resolved" != "$source" ]]; then
+    disk="$(lsblk -no PKNAME "$resolved" 2>/dev/null | head -n1 | xargs || true)"
+    if [[ -n "$disk" ]]; then
+      printf '%s\n' "$disk"
+      return 0
+    fi
+  fi
+
+  for candidate in "$resolved" "$source"; do
+    [[ -n "$candidate" ]] || continue
+    parent="$(guess_parent_disk_path "$candidate")"
+    if [[ -n "$parent" ]]; then
+      printf '%s\n' "$(basename "$parent")"
+      return 0
+    fi
+    if [[ "$candidate" == /dev/* ]]; then
+      dev_type="$(lsblk -dn -o TYPE "$candidate" 2>/dev/null | head -n1 | xargs || true)"
+      if [[ "$dev_type" == "disk" ]]; then
+        printf '%s\n' "$(basename "$candidate")"
+        return 0
+      fi
+    fi
+  done
+}
+
+require_emmc_root_disk() {
+  local root_disk="${1:-}"
+  if [[ -z "$root_disk" ]]; then
+    err "Could not determine the current root/system disk."
+    err "For safety, refusing to format any NVMe target until the root disk is identified."
+    err "Expected ODROID M1S layout: root/system disk on /dev/mmcblk*, Umbrel data disk on /dev/nvme*."
+    return 1
+  fi
+  if [[ "$root_disk" != mmcblk* ]]; then
+    err "This installer expects ODROID M1S to boot from eMMC (/dev/mmcblk*). Detected root disk: /dev/$root_disk"
+    err "Refusing to format NVMe because it may be the system disk in this layout."
+    return 1
+  fi
+}
+
+assert_safe_root_target_layout() {
+  if ! require_emmc_root_disk "$ROOT_DISK"; then
+    return 1
+  fi
+  if [[ -z "$TARGET_DISK" ]]; then
+    err "Could not determine target disk for: $TARGET_INPUT"
+    return 1
+  fi
+  if [[ "$TARGET_DISK" == "$ROOT_DISK" ]]; then
+    err "Refusing to format the root/system disk. Root disk: /dev/$ROOT_DISK, target: $TARGET_PARTITION"
+    return 1
+  fi
+  require_nvme_target_disk "$TARGET_DISK"
+}
+
+require_nvme_target_disk() {
+  local disk_name="$1"
+  if [[ "$disk_name" != nvme* ]]; then
+    err "This installer currently supports NVMe SSD targets only. Refusing non-NVMe target disk: /dev/$disk_name"
+    return 1
+  fi
 }
 
 preinstall_resume_attempted() {
@@ -696,6 +908,24 @@ report_install_health() {
   fi
 }
 
+wait_for_umbrel_container() {
+  local attempts="${1:-30}"
+  local delay="${2:-2}"
+  local state=""
+  local i
+
+  for ((i=0; i<attempts; i++)); do
+    state="$(docker inspect --format='{{.State.Status}}' umbrel 2>/dev/null || true)"
+    if [[ "$state" == "running" ]]; then
+      return 0
+    fi
+    sleep "$delay"
+  done
+
+  err "Umbrel container did not reach running state (last state: ${state:-unknown})."
+  return 1
+}
+
 patch_umbrel_shutdown_source() {
   docker exec -i umbrel python3 - <<'PY_INNER'
 from pathlib import Path
@@ -782,7 +1012,7 @@ select_target_disk_interactive() {
   local candidate_models=()
   local candidate_mounts=()
   local candidate_parts=()
-  local disk_path size model mounts part_count disk_name choice index line non_nvme_confirm
+  local disk_path size model mounts part_count disk_name choice index line
 
   if [[ -z "$ROOT_DISK" ]]; then
     err "Could not determine the current root/system disk automatically."
@@ -804,6 +1034,9 @@ select_target_disk_interactive() {
     if [[ -n "$ROOT_DISK" && "$disk_name" == "$ROOT_DISK" ]]; then
       continue
     fi
+    if [[ "$disk_name" != nvme* ]]; then
+      continue
+    fi
 
     mounts="$(lsblk -nrpo MOUNTPOINT "$disk_path" 2>/dev/null | awk 'NF' | paste -sd ', ' -)"
     [[ -n "$mounts" ]] || mounts="NOT_MOUNTED"
@@ -817,12 +1050,13 @@ select_target_disk_interactive() {
   done < <(lsblk -dn -o NAME,SIZE,TYPE,MODEL -P 2>/dev/null)
 
   if [[ "${#candidate_paths[@]}" -eq 0 ]]; then
-    err "No candidate storage disks were found."
+    err "No candidate NVMe SSD storage disks were found."
+    err "Connect a supported NVMe SSD, then rerun this installer."
     exit 1
   fi
 
   echo
-  echo "Detected non-root storage disks:"
+  echo "Detected non-root NVMe SSD storage disks:"
   for index in "${!candidate_paths[@]}"; do
     printf '  %d) %s  size=%s  model=%s  partitions=%s  mounts=%s\n' \
       "$((index + 1))" \
@@ -837,18 +1071,6 @@ select_target_disk_interactive() {
     read_prompt_or_abort choice "Choose the storage disk to initialize [1-${#candidate_paths[@]}] (or q to quit): "
     if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#candidate_paths[@]} )); then
       local selected="${candidate_paths[$((choice - 1))]}"
-      local selected_name
-      selected_name="$(basename "$selected")"
-      if [[ "$selected_name" != nvme* ]]; then
-        echo
-        warn "WARNING: '$selected' is NOT an NVMe device."
-        warn "This script is designed for NVMe SSD. Formatting a non-NVMe device may destroy important data."
-        read_prompt_or_abort non_nvme_confirm "Type YES-USE-THIS-DISK to proceed with this non-NVMe disk, or q to quit: "
-        if [[ "$non_nvme_confirm" != "YES-USE-THIS-DISK" ]]; then
-          warn "Selection cancelled. Please choose again."
-          continue
-        fi
-      fi
       TARGET_INPUT="$selected"
       return 0
     fi
@@ -991,26 +1213,15 @@ if [[ "$MODEL" != "unknown" && "$MODEL" != *"ODROID-M1S"* ]]; then
 fi
 
 ROOT_SOURCE="$(findmnt -n -o SOURCE / || true)"
-ROOT_DISK="$(lsblk -no PKNAME "$ROOT_SOURCE" 2>/dev/null | head -n1 || true)"
+ROOT_DISK="$(detect_root_disk "$ROOT_SOURCE")"
 TARGET_DISK=""
 CURRENT_DATA_SOURCE="$(findmnt -n -o SOURCE --target "$DATA_DIR" 2>/dev/null || true)"
 EXISTING_TARGET_MOUNT=""
 
-if [[ -z "$ROOT_DISK" ]]; then
-  warn "Could not determine the current root/system disk automatically."
-  if [[ -n "$TARGET_INPUT" ]]; then
-    warn "Root disk detection failed. Proceeding with explicit target: $TARGET_INPUT"
-    warn "Please verify this is NOT your system disk."
-    if [[ "$DRY_RUN" -eq 0 && "$AUTO_RESUME_INSTALL" -ne 1 ]]; then
-      read_prompt_or_abort ROOT_CONFIRM "Type CONFIRM-TARGET to continue anyway, or q to quit: "
-      if [[ "$ROOT_CONFIRM" != "CONFIRM-TARGET" ]]; then
-        err "Aborted by user."
-        exit 1
-      fi
-    elif [[ "$AUTO_RESUME_INSTALL" -eq 1 ]]; then
-      info "Resume mode: skipping root-disk confirmation prompt after prior recovery reboot."
-    fi
-  fi
+if ! require_emmc_root_disk "$ROOT_DISK"; then
+  err "Detected root source: ${ROOT_SOURCE:-unknown}"
+  err "Target input: ${TARGET_INPUT:-interactive selection not reached}"
+  exit 1
 fi
 
 maybe_recover_missing_nvme
@@ -1061,18 +1272,12 @@ else
   fi
 fi
 
-if [[ -z "$TARGET_DISK" ]]; then
-  err "Could not determine target disk for: $TARGET_INPUT"
+if ! assert_safe_root_target_layout; then
+  err "Detected root source: ${ROOT_SOURCE:-unknown}"
+  err "Detected root disk: ${ROOT_DISK:-unknown}"
+  err "Target disk: ${TARGET_DISK:-unknown}"
+  err "Target partition: ${TARGET_PARTITION:-unknown}"
   exit 1
-fi
-
-if [[ -n "$ROOT_DISK" && "$TARGET_DISK" == "$ROOT_DISK" ]]; then
-  err "Refusing to format the root/system disk. Root disk: /dev/$ROOT_DISK, target: $TARGET_PARTITION"
-  exit 1
-fi
-
-if [[ "$TARGET_DISK" != nvme* ]]; then
-  warn "Target partition parent disk is /dev/$TARGET_DISK, not an nvme device."
 fi
 
 if [[ "$TARGET_MODE" == "partition" ]]; then
@@ -1107,7 +1312,7 @@ while IFS= read -r swap_path; do
   if append_unique "$swap_path" "${TARGET_SWAP_PATHS[@]}"; then
     TARGET_SWAP_PATHS+=("$swap_path")
   fi
-done < <(swapon --noheadings --raw --output=NAME 2>/dev/null | while read -r p; do
+done < <(swapon --show=NAME --noheadings --raw 2>/dev/null | while read -r p; do
   [[ -n "$p" ]] || continue
   for target_dev in "${TARGET_EXISTING_PARTITIONS[@]}"; do
     if [[ "$p" == "$target_dev" ]]; then
@@ -1435,6 +1640,7 @@ if command -v fuser >/dev/null 2>&1; then
     run_shell "fuser -vm '$mount_path' || true"
   done
 fi
+stop_target_busy_processes
 if [[ "$DRY_RUN" -eq 1 ]]; then
   for swap_path in "${TARGET_SWAP_PATHS[@]}"; do
     run_shell "swapoff '$swap_path' >/dev/null 2>&1 || true"
@@ -1460,7 +1666,7 @@ else
     err "Target swap is still active after swapoff attempt: $active_swap"
     err "Disable swap users on the SSD and try again."
     exit 1
-  done < <(swapon --noheadings --raw --output=NAME 2>/dev/null | while read -r p; do
+  done < <(swapon --show=NAME --noheadings --raw 2>/dev/null | while read -r p; do
     [[ -n "$p" ]] || continue
     for swap_path in "${TARGET_SWAP_PATHS[@]}"; do
       if [[ "$p" == "$swap_path" ]]; then
@@ -1485,17 +1691,29 @@ else
   for target_dev in "${TARGET_EXISTING_PARTITIONS[@]}"; do
     [[ -n "$target_dev" ]] || continue
     if findmnt -rn -S "$target_dev" >/dev/null 2>&1; then
-      err "Target device is still mounted after unmount attempt: $target_dev"
-      err "Stop remaining processes using the SSD and try again."
-      exit 1
+      warn "Target device is still mounted after first unmount attempt: $target_dev"
+      stop_target_busy_processes
+      umount "$target_dev" >/dev/null 2>&1 || true
+      if findmnt -rn -S "$target_dev" >/dev/null 2>&1; then
+        err "Target device is still mounted after automatic SSD process cleanup: $target_dev"
+        err "Reboot the ODROID M1S and rerun the installer, or inspect with: sudo fuser -vm $target_dev"
+        exit 1
+      fi
     fi
   done
 
   CURRENT_DATA_SOURCE="$(findmnt -rn -o SOURCE -T "$DATA_DIR" 2>/dev/null || true)"
   if [[ -n "$CURRENT_DATA_SOURCE" && "$CURRENT_DATA_SOURCE" != "$ROOT_SOURCE" && "$CURRENT_DATA_SOURCE" != "tmpfs" ]]; then
-    err "Data directory is still backed by a non-root mounted filesystem after unmount attempt: $DATA_DIR -> $CURRENT_DATA_SOURCE"
-    err "Stop remaining processes using the SSD and try again."
-    exit 1
+    warn "Data directory is still backed by a non-root mounted filesystem after first unmount attempt: $DATA_DIR -> $CURRENT_DATA_SOURCE"
+    stop_target_busy_processes
+    umount "$DATA_DIR" >/dev/null 2>&1 || true
+    CURRENT_DATA_SOURCE="$(findmnt -rn -o SOURCE -T "$DATA_DIR" 2>/dev/null || true)"
+    if [[ -n "$CURRENT_DATA_SOURCE" && "$CURRENT_DATA_SOURCE" != "$ROOT_SOURCE" && "$CURRENT_DATA_SOURCE" != "tmpfs" ]]; then
+      err "Data directory is still busy after automatic SSD process cleanup: $DATA_DIR -> $CURRENT_DATA_SOURCE"
+      err "Reboot the ODROID M1S and rerun the installer, or inspect with: sudo fuser -vm $DATA_DIR"
+      err "Kernel storage clues: sudo journalctl -k -b --no-pager | grep -Ei 'nvme|I/O error|EXT4'"
+      exit 1
+    fi
   fi
 fi
 
@@ -1605,7 +1823,7 @@ SWAP_SIZE_MB=4096
 if [[ "$DRY_RUN" -eq 1 ]]; then
   echo "[DRY-RUN] create $SWAPFILE (${SWAP_SIZE_MB}MB), mkswap, swapon, add to /etc/fstab"
 else
-  if swapon --noheadings --raw --output=NAME 2>/dev/null | grep -qx "$SWAPFILE"; then
+  if swapon --show=NAME --noheadings --raw 2>/dev/null | grep -qx "$SWAPFILE"; then
     info "Swapfile $SWAPFILE already active; skipping"
   else
     if [[ ! -f "$SWAPFILE" ]]; then
@@ -1830,10 +2048,12 @@ if [[ "$DRY_RUN" -eq 0 ]]; then
   sleep 10
   CONTAINER_STATE="$(docker inspect --format='{{.State.Status}}' umbrel 2>/dev/null || true)"
   if [[ "$CONTAINER_STATE" != "running" ]]; then
-    warn "Umbrel container is not running (state: ${CONTAINER_STATE:-unknown})."
-    warn "Check logs with: docker logs umbrel"
-    warn "The SSD is mounted at $DATA_DIR and Docker is installed. You can retry:"
-    warn "  docker rm -f umbrel; docker run -d --name umbrel --restart always -p 80:80 -v $DATA_DIR:/data -v /var/run/docker.sock:/var/run/docker.sock --stop-timeout 60 --pid=host --privileged $IMAGE"
+    err "Umbrel container failed to start (state: ${CONTAINER_STATE:-unknown})."
+    err "The SSD is mounted at $DATA_DIR and Docker is installed, but the install cannot be marked successful until Umbrel is running."
+    err "Check logs with: sudo docker logs umbrel"
+    err "After fixing the cause, retry Umbrel manually:"
+    err "  sudo docker rm -f umbrel; sudo docker run -d --name umbrel --restart always -p 80:80 -v $DATA_DIR:/data -v /var/run/docker.sock:/var/run/docker.sock --stop-timeout 60 --pid=host --privileged $IMAGE"
+    exit 1
   else
     info "Umbrel container is running."
     install_umbrel_safe_shutdown
