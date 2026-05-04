@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.18
+
+- Follow up on the `0.4.17` installer release with CI-only compatibility fixes that do not change the intended installer flow on ODROID M1S hardware.
+- Fix the installer's `wait_for_umbrel_container()` helper so GitHub Actions ShellCheck no longer fails on optional-argument warnings while preserving the same 30x2s polling behavior.
+- Make the tracker-sync regression test branch-agnostic so it passes on both the local `public-clean` branch and GitHub Actions runs on `main`.
+- Bring installer, updater, verifier expectations, migration history, and version metadata forward to `0.4.18`. Existing hosts get a no-op `0.4.17_to_0.4.18` history step; the runtime installer behavior is unchanged from the `0.4.17` hot path.
+
 ## 0.4.17
 
 - Fix the installer's safe-shutdown post-step to wait for the top-level `umbrel` container after restart, instead of calling a missing helper during the real-device shutdown-patch path.
