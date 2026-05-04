@@ -552,6 +552,7 @@ ConditionPathExists=$PREINSTALL_RESUME_STATE_FILE
 
 [Service]
 Type=oneshot
+TimeoutStartSec=infinity
 ExecStart=/usr/bin/env AUTO_RESUME_INSTALL=1 /bin/bash -lc '$resume_cmd'
 
 [Install]
@@ -1473,7 +1474,9 @@ if [[ "$DRY_RUN" -eq 0 ]]; then
   fi
 fi
 
-clear_preinstall_resume_state
+if [[ "$AUTO_RESUME_INSTALL" -ne 1 ]]; then
+  clear_preinstall_resume_state
+fi
 
 # Make sure unattended-upgrades or any other apt consumer is not holding the
 # dpkg lock. If we continue while the lock is held, the Docker install step
@@ -2305,6 +2308,8 @@ os.rename(tmp, path)
 PY
   info "Install state written to $INSTALL_STATE_FILE (version=$SCRIPT_VERSION)"
 fi
+
+clear_preinstall_resume_state
 
 info "Done."
 cat <<EOF

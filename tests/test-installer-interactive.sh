@@ -202,6 +202,15 @@ assert_contains "$one_command_recovery_output" "[DRY-RUN] systemctl reboot" "One
 assert_not_contains "$one_command_recovery_output" "explicit /dev/nvme0n1 target is supplied" "One-command flow must not require an explicit target anymore"
 pass "Missing NVMe now triggers automatic one-command recovery without an explicit target"
 
+printf '[unit] installer resume cleanup timing\n'
+installer_text="$(<scripts/m1s-clean-install-umbrel.sh)"
+assert_contains "$installer_text" 'TimeoutStartSec=infinity' 'Resume service should not time out during long post-reboot installs'
+assert_contains "$installer_text" "if [[ \"\$AUTO_RESUME_INSTALL\" -ne 1 ]]; then" "Resume path should defer preinstall cleanup until after the resumed run"
+assert_contains "$installer_text" 'clear_preinstall_resume_state
+
+info "Done."' 'Resume artifacts should be cleared only after install state is written and the run completes'
+pass "Resume service uses infinite timeout and deferred cleanup"
+
 printf '[unit] installer single-NVMe auto-select\n'
 TARGET_INPUT=""
 set +e
