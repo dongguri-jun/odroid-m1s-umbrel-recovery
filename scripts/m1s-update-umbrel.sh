@@ -16,7 +16,7 @@ set -Eeuo pipefail
 #   --version      Print script version and exit.
 #   -h, --help     Show this help.
 
-SCRIPT_VERSION="0.4.18"
+SCRIPT_VERSION="0.5.0"
 INSTALL_STATE_DIR="/etc/umbrel-recovery"
 INSTALL_STATE_FILE="$INSTALL_STATE_DIR/installed.json"
 DATA_DIR="/mnt/fullnode"
@@ -48,6 +48,7 @@ MIGRATIONS=(
   "0.4.15_to_0.4.16"
   "0.4.16_to_0.4.17"
   "0.4.17_to_0.4.18"
+  "0.4.18_to_0.5.0"
 )
 
 log() {
@@ -619,6 +620,50 @@ EOF
   systemctl daemon-reload
   systemctl enable --now nvme-timeout-snapshot.timer >/dev/null 2>&1 || warn "Failed to enable NVMe timeout diagnostic snapshot timer"
   info "Installed passive NVMe timeout diagnostic snapshot timer"
+}
+
+install_fstrim_dropin() {
+  local dropin_dir="/etc/systemd/system/fstrim.service.d"
+  local dropin_file="$dropin_dir/m1s-no-syscallfilter.conf"
+  local host_version="unknown"
+
+  if [[ -r /etc/os-release ]]; then
+    # shellcheck disable=SC1091
+    source /etc/os-release
+    host_version="${VERSION_ID:-unknown}"
+  fi
+
+  if [[ "$host_version" != "22.04" ]]; then
+    info "Skipping fstrim.service compatibility drop-in on Ubuntu ${host_version}"
+    return 0
+  fi
+
+  info "Installing ODROID M1S fstrim.service compatibility drop-in"
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    echo "[DRY-RUN] create $dropin_file"
+    echo "[DRY-RUN] systemctl daemon-reload"
+    echo "[DRY-RUN] systemctl reset-failed fstrim.service"
+    echo "[DRY-RUN] systemctl start fstrim.service"
+    return 0
+  fi
+
+  mkdir -p "$dropin_dir"
+  cat > "$dropin_file" <<'EOF'
+[Service]
+# ODROID M1S (aarch64 + Ubuntu 22.04) ships a SystemCallFilter that kills
+# fstrim with SIGSYS on every run. fstrim is root-only, triggered only by
+# fstrim.timer, and operates on already-mounted local filesystems. Disabling
+# the syscall filter here restores weekly TRIM without expanding any
+# externally reachable attack surface.
+SystemCallFilter=
+SystemCallErrorNumber=
+EOF
+  chmod 0644 "$dropin_file"
+
+  systemctl daemon-reload
+  systemctl reset-failed fstrim.service >/dev/null 2>&1 || true
+  systemctl start fstrim.service >/dev/null 2>&1 || warn "Failed to start fstrim.service after installing compatibility drop-in"
+  info "Installed fstrim.service compatibility drop-in"
 }
 
 patch_to_0_4_0() {
@@ -1385,6 +1430,31 @@ postcheck_0_4_16_to_0_4_17() { precheck_common_canonical_install; }
 precheck_0_4_17_to_0_4_18() { precheck_common_canonical_install; }
 apply_0_4_17_to_0_4_18() { info "[0.4.18] CI-only installer compatibility follow-up; recording migration history"; }
 postcheck_0_4_17_to_0_4_18() { precheck_common_canonical_install; }
+
+precheck_0_4_18_to_0_5_0() { precheck_common_canonical_install; }
+apply_0_4_18_to_0_5_0() { install_fstrim_dropin; }
+postcheck_0_4_18_to_0_5_0() {
+  local dropin_file="/etc/systemd/system/fstrim.service.d/m1s-no-syscallfilter.conf"
+  local host_version="unknown"
+
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    return 0
+  fi
+
+  if [[ -r /etc/os-release ]]; then
+    # shellcheck disable=SC1091
+    source /etc/os-release
+    host_version="${VERSION_ID:-unknown}"
+  fi
+
+  if [[ "$host_version" != "22.04" ]]; then
+    return 0
+  fi
+
+  [[ -f "$dropin_file" ]] || { err "fstrim drop-in is missing"; return 1; }
+  grep -q '^SystemCallFilter=$' "$dropin_file" || { err "fstrim drop-in did not clear SystemCallFilter"; return 1; }
+  grep -q '^SystemCallErrorNumber=$' "$dropin_file" || { err "fstrim drop-in did not clear SystemCallErrorNumber"; return 1; }
+}
 
 # ---------------------------------------------------------------------------
 # Main flow

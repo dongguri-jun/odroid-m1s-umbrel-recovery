@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SCRIPT_VERSION="0.4.18"
+SCRIPT_VERSION="0.5.0"
 INSTALL_STATE_DIR="/etc/umbrel-recovery"
 INSTALL_STATE_FILE="$INSTALL_STATE_DIR/installed.json"
 PREINSTALL_RESUME_STATE_FILE="$INSTALL_STATE_DIR/preinstall-resume.json"
@@ -777,6 +777,50 @@ EOF
   systemctl daemon-reload
   systemctl enable --now nvme-timeout-snapshot.timer >/dev/null 2>&1 || warn "Failed to enable NVMe timeout diagnostic snapshot timer"
   info "Installed passive NVMe timeout diagnostic snapshot timer"
+}
+
+install_fstrim_dropin() {
+  local dropin_dir="/etc/systemd/system/fstrim.service.d"
+  local dropin_file="$dropin_dir/m1s-no-syscallfilter.conf"
+  local host_version="unknown"
+
+  if [[ -r /etc/os-release ]]; then
+    # shellcheck disable=SC1091
+    source /etc/os-release
+    host_version="${VERSION_ID:-unknown}"
+  fi
+
+  if [[ "$host_version" != "22.04" ]]; then
+    info "Skipping fstrim.service compatibility drop-in on Ubuntu ${host_version}"
+    return 0
+  fi
+
+  info "Installing ODROID M1S fstrim.service compatibility drop-in"
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    echo "[DRY-RUN] create $dropin_file"
+    echo "[DRY-RUN] systemctl daemon-reload"
+    echo "[DRY-RUN] systemctl reset-failed fstrim.service"
+    echo "[DRY-RUN] systemctl start fstrim.service"
+    return 0
+  fi
+
+  mkdir -p "$dropin_dir"
+  cat > "$dropin_file" <<'EOF'
+[Service]
+# ODROID M1S (aarch64 + Ubuntu 22.04) ships a SystemCallFilter that kills
+# fstrim with SIGSYS on every run. fstrim is root-only, triggered only by
+# fstrim.timer, and operates on already-mounted local filesystems. Disabling
+# the syscall filter here restores weekly TRIM without expanding any
+# externally reachable attack surface.
+SystemCallFilter=
+SystemCallErrorNumber=
+EOF
+  chmod 0644 "$dropin_file"
+
+  systemctl daemon-reload
+  systemctl reset-failed fstrim.service >/dev/null 2>&1 || true
+  systemctl start fstrim.service >/dev/null 2>&1 || warn "Failed to start fstrim.service after installing compatibility drop-in"
+  info "Installed fstrim.service compatibility drop-in"
 }
 
 maybe_recover_missing_nvme() {
@@ -1803,6 +1847,7 @@ fi
 apply_nvme_boot_mitigation
 ensure_nvme_diagnostic_tools
 install_nvme_timeout_snapshotter
+install_fstrim_dropin
 
 info "Disabling automatic reboot from unattended-upgrades"
 APT_NOREBOOT_FILE="/etc/apt/apt.conf.d/52m1s-no-auto-reboot"
