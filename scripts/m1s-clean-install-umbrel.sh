@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SCRIPT_VERSION="0.5.0"
+SCRIPT_VERSION="0.5.1"
 INSTALL_STATE_DIR="/etc/umbrel-recovery"
 INSTALL_STATE_FILE="$INSTALL_STATE_DIR/installed.json"
 PREINSTALL_RESUME_STATE_FILE="$INSTALL_STATE_DIR/preinstall-resume.json"
@@ -905,6 +905,41 @@ interface_ipv4() {
   local iface="$1"
   [[ -n "$iface" ]] || return 1
   ip -4 -o addr show dev "$iface" scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1
+}
+
+ufw_is_active() {
+  command -v ufw >/dev/null 2>&1 || return 1
+  ufw status 2>/dev/null | grep -Fxq "Status: active"
+}
+
+ufw_allows_tailscale_web() {
+  command -v ufw >/dev/null 2>&1 || return 1
+  ufw status 2>/dev/null | grep -Eq '(^|[[:space:]])8240(/tcp)?[[:space:]]'
+}
+
+ensure_tailscale_web_firewall_access() {
+  if ! command -v ufw >/dev/null 2>&1; then
+    info "UFW is not installed; Tailscale web UI port 8240 is not blocked by UFW."
+    return 0
+  fi
+
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    echo "[DRY-RUN] if UFW is active, allow 8240/tcp for the Umbrel Tailscale web UI"
+    return 0
+  fi
+
+  if ! ufw_is_active; then
+    info "UFW is not active; Tailscale web UI port 8240 is not blocked by UFW."
+    return 0
+  fi
+
+  if ufw_allows_tailscale_web; then
+    info "UFW already allows Tailscale web UI on 8240/tcp."
+    return 0
+  fi
+
+  info "Allowing Tailscale web UI through UFW on 8240/tcp"
+  ufw allow 8240/tcp >/dev/null || warn "Failed to allow 8240/tcp in UFW; Tailscale app login may time out from other devices."
 }
 
 report_install_health() {
@@ -2189,6 +2224,7 @@ if [[ -z "$LAN_INTERFACE" ]]; then
   LAN_INTERFACE="eth0"
 fi
 LAN_IP="$(interface_ipv4 "$LAN_INTERFACE" || true)"
+ensure_tailscale_web_firewall_access
 
 if ! command -v avahi-publish >/dev/null 2>&1; then
   info "Installing avahi-daemon and avahi-utils..."
@@ -2316,6 +2352,7 @@ cat <<EOF
 
 Umbrel container has been started.
 Open: http://umbrel.local  or  http://${LAN_IP:-<device-ip>}
+Tailscale app: http://${LAN_IP:-<device-ip>}:8240
 Image: $IMAGE
 Data directory: $DATA_DIR
 LAN interface: ${LAN_INTERFACE:-unknown}

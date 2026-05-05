@@ -16,7 +16,7 @@ set -Eeuo pipefail
 #   --version      Print script version and exit.
 #   -h, --help     Show this help.
 
-SCRIPT_VERSION="0.5.0"
+SCRIPT_VERSION="0.5.1"
 INSTALL_STATE_DIR="/etc/umbrel-recovery"
 INSTALL_STATE_FILE="$INSTALL_STATE_DIR/installed.json"
 DATA_DIR="/mnt/fullnode"
@@ -49,6 +49,7 @@ MIGRATIONS=(
   "0.4.16_to_0.4.17"
   "0.4.17_to_0.4.18"
   "0.4.18_to_0.5.0"
+  "0.5.0_to_0.5.1"
 )
 
 log() {
@@ -69,6 +70,41 @@ run_cmd() {
     return 0
   fi
   "$@"
+}
+
+ufw_is_active() {
+  command -v ufw >/dev/null 2>&1 || return 1
+  ufw status 2>/dev/null | grep -Fxq "Status: active"
+}
+
+ufw_allows_tailscale_web() {
+  command -v ufw >/dev/null 2>&1 || return 1
+  ufw status 2>/dev/null | grep -Eq '(^|[[:space:]])8240(/tcp)?[[:space:]]'
+}
+
+ensure_tailscale_web_firewall_access() {
+  if ! command -v ufw >/dev/null 2>&1; then
+    info "UFW is not installed; Tailscale web UI port 8240 is not blocked by UFW."
+    return 0
+  fi
+
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    echo "[DRY-RUN] if UFW is active, allow 8240/tcp for the Umbrel Tailscale web UI"
+    return 0
+  fi
+
+  if ! ufw_is_active; then
+    info "UFW is not active; Tailscale web UI port 8240 is not blocked by UFW."
+    return 0
+  fi
+
+  if ufw_allows_tailscale_web; then
+    info "UFW already allows Tailscale web UI on 8240/tcp."
+    return 0
+  fi
+
+  info "Allowing Tailscale web UI through UFW on 8240/tcp"
+  ufw allow 8240/tcp >/dev/null || { err "Failed to allow 8240/tcp in UFW; Tailscale app login may time out from other devices."; return 1; }
 }
 
 wait_for_apt_locks() {
@@ -1454,6 +1490,15 @@ postcheck_0_4_18_to_0_5_0() {
   [[ -f "$dropin_file" ]] || { err "fstrim drop-in is missing"; return 1; }
   grep -q '^SystemCallFilter=$' "$dropin_file" || { err "fstrim drop-in did not clear SystemCallFilter"; return 1; }
   grep -q '^SystemCallErrorNumber=$' "$dropin_file" || { err "fstrim drop-in did not clear SystemCallErrorNumber"; return 1; }
+}
+
+precheck_0_5_0_to_0_5_1() { precheck_common_canonical_install; }
+apply_0_5_0_to_0_5_1() { ensure_tailscale_web_firewall_access; }
+postcheck_0_5_0_to_0_5_1() {
+  if [[ "$DRY_RUN" -eq 1 ]] || ! ufw_is_active; then
+    return 0
+  fi
+  ufw_allows_tailscale_web || { err "UFW does not allow Tailscale web UI on 8240/tcp"; return 1; }
 }
 
 # ---------------------------------------------------------------------------
