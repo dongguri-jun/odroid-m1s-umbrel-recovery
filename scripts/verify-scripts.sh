@@ -128,8 +128,13 @@ required = [
     'm1s-no-syscallfilter.conf',
     'SystemCallFilter=',
     'SystemCallErrorNumber=',
+    'ensure_tailscale_web_firewall_access',
+    'ufw allow 8240/tcp',
     'reset-failed fstrim.service',
     'start fstrim.service',
+    'ensure_tailscale_web_firewall_access',
+    'ufw allow 8240/tcp',
+    'Tailscale app: http://${LAN_IP:-<device-ip>}:8240',
 ]
 missing = [needle for needle in required if needle not in text]
 if missing:
@@ -193,6 +198,7 @@ required = [
     '"0.4.16_to_0.4.17"',
     '"0.4.17_to_0.4.18"',
     '"0.4.18_to_0.5.0"',
+    '"0.5.0_to_0.5.1"',
     'applied_steps',
     'in_progress_step',
     'failed_step',
@@ -246,6 +252,11 @@ required = [
     'precheck_0_4_18_to_0_5_0',
     'apply_0_4_18_to_0_5_0',
     'postcheck_0_4_18_to_0_5_0',
+    'ensure_tailscale_web_firewall_access',
+    'ufw allow 8240/tcp',
+    'precheck_0_5_0_to_0_5_1',
+    'apply_0_5_0_to_0_5_1',
+    'postcheck_0_5_0_to_0_5_1',
 ]
 missing = [needle for needle in required if needle not in text]
 if missing:
