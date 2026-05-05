@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.1
+
+- Automatically allow the Umbrel Tailscale web UI port (`8240/tcp`) when UFW is active, fixing the real-device failure where the Tailscale app container listened correctly but browser access from another LAN device timed out.
+- Keep the firewall change tightly scoped: the installer and updater do not enable UFW and only add the required Tailscale web UI allow rule when UFW is already enforcing inbound policy.
+- Add updater migration coverage so existing `0.5.0` installs receive the same Tailscale firewall compatibility fix without reinstalling or touching app data.
+
 ## 0.5.0
 
 - Ship an ODROID M1S `fstrim.service` compatibility drop-in through both the fresh installer and the in-place updater so Ubuntu 22.04 aarch64 hosts stop losing weekly TRIM to the upstream `SystemCallFilter=` / `SIGSYS` failure mode.

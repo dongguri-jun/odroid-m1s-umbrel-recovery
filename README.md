@@ -342,6 +342,34 @@ http://192.168.0.10
 
 ---
 
+## 9-1. Tailscale 앱을 사용할 때
+
+Umbrel App Store에서 **Tailscale** 앱을 설치하면, 로그인 화면은 Umbrel 메인 화면 안이 아니라 별도의 Tailscale 웹 화면으로 열립니다.
+
+이 앱은 일반적인 Umbrel 앱과 달리 **8240번 포트**를 직접 사용합니다.
+
+최신 설치/업데이트 스크립트는 ODROID M1S 안의 UFW 방화벽이 켜져 있는 경우, Tailscale 앱 화면이 다른 기기에서 열리도록 `8240/tcp`를 자동으로 허용합니다.
+
+만약 Tailscale 앱을 눌렀을 때 새 창에서 아래처럼 보이면:
+
+```text
+사이트에 연결할 수 없음
+ERR_CONNECTION_TIMED_OUT
+```
+
+먼저 아래 업데이트 절차를 실행해 주세요.
+
+```bash
+cd /home/*/odroid-m1s-umbrel-recovery
+sudo git -c safe.directory='*' fetch origin
+sudo git -c safe.directory='*' reset --hard origin/main
+sudo bash scripts/m1s-update-umbrel.sh
+```
+
+그 다음 다시 Umbrel 화면에서 Tailscale 앱을 열어 로그인하면 됩니다.
+
+---
+
 ## 10. Bitcoin 노드 앱 설치
 
 Umbrel 계정을 만든 뒤에는 App Store에서 **Bitcoin 노드 앱**을 설치합니다.
