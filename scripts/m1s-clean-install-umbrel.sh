@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SCRIPT_VERSION="0.5.2"
+SCRIPT_VERSION="0.5.3"
 INSTALL_STATE_DIR="/etc/umbrel-recovery"
 INSTALL_STATE_FILE="$INSTALL_STATE_DIR/installed.json"
 PREINSTALL_RESUME_STATE_FILE="$INSTALL_STATE_DIR/preinstall-resume.json"
@@ -930,6 +930,82 @@ disable_ufw_for_umbrel() {
 
   info "Disabling UFW to avoid interfering with Umbrel Docker networking"
   ufw --force disable >/dev/null || warn "Failed to disable UFW; Umbrel app networking may remain blocked by host firewall rules."
+}
+
+remove_pwm_fan_config() {
+  local config_ini="/boot/config.ini"
+  local result
+
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    echo "[DRY-RUN] remove PWM fan overlay settings from $config_ini if present"
+    return 0
+  fi
+
+  if [[ ! -f "$config_ini" ]]; then
+    info "$config_ini not found; skipping PWM fan cleanup"
+    return 0
+  fi
+
+  run_cmd cp "$config_ini" "$config_ini.bak.$(date +%s)"
+  result="$(PWM_CONFIG_FILE="$config_ini" python3 - <<'PY'
+from pathlib import Path
+import os
+import re
+
+path = Path(os.environ['PWM_CONFIG_FILE'])
+lines = path.read_text().splitlines()
+out = []
+changed = False
+in_overlay_pwm = False
+
+for line in lines:
+    stripped = line.strip()
+
+    if stripped.startswith('[') and stripped.endswith(']'):
+        if stripped == '[overlay_pwm]':
+            changed = True
+            in_overlay_pwm = True
+            continue
+        in_overlay_pwm = False
+        out.append(line)
+        continue
+
+    if in_overlay_pwm:
+        changed = True
+        continue
+
+    if re.match(r'^\s*overlay_profile\s*=\s*pwm\s*$', line):
+        changed = True
+        continue
+
+    if re.match(r'^\s*overlays\s*=', line):
+        key, value = line.split('=', 1)
+        raw_value = value.strip()
+        quoted = raw_value.startswith('"') and raw_value.endswith('"')
+        body = raw_value[1:-1] if quoted else raw_value
+        tokens = body.split()
+        filtered = [token for token in tokens if token not in {'pwm1', 'pwm2'}]
+        if filtered != tokens:
+            changed = True
+            rebuilt = ' '.join(filtered)
+            out.append(f'{key}="{rebuilt}"' if quoted else f'{key}={rebuilt}')
+            continue
+
+    out.append(line)
+
+if changed:
+    path.write_text('\n'.join(out).rstrip() + '\n')
+    print('changed')
+else:
+    print('unchanged')
+PY
+)"
+
+  if [[ "$result" == "changed" ]]; then
+    info "Removed PWM fan overlay settings from $config_ini"
+  else
+    info "PWM fan overlay settings already absent in $config_ini"
+  fi
 }
 
 report_install_health() {
@@ -1926,6 +2002,7 @@ if [[ "$DRY_RUN" -eq 0 && "$CURRENT_DATA_SOURCE" != "$TARGET_PARTITION" ]]; then
 fi
 
 apply_nvme_boot_mitigation
+remove_pwm_fan_config
 ensure_nvme_diagnostic_tools
 install_nvme_timeout_snapshotter
 install_fstrim_dropin
