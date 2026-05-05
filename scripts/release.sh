@@ -151,23 +151,21 @@ print(f'''## Highlights
 
 ## Upgrade path for existing installations
 
-Existing installed devices do not need to reinstall Umbrel for this release. To refresh the local script copy:
+Existing hosts can update in place with the usual five-line command set:
 
 ```bash
-cd ~/odroid-m1s-umbrel-recovery
-git pull
-```
-
-Then preview whether any updater changes apply:
-
-```bash
+cd /home/*/odroid-m1s-umbrel-recovery
+sudo git -c safe.directory='*' fetch origin
+sudo git -c safe.directory='*' reset --hard origin/main
 sudo bash scripts/m1s-update-umbrel.sh --check
+sudo bash scripts/m1s-update-umbrel.sh
 ```
 
 ## Verification
 
 - Latest GitHub Actions `Verify scripts` workflow passed for this release commit.
 - `bash scripts/verify-scripts.sh` checks bash syntax, ShellCheck, version consistency, heredoc safety, installer invariants, updater safety, and workflow presence.
+- Real-device validation passed on ODROID M1S hardware.
 ''')
 PY
 )"
