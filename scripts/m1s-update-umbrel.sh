@@ -16,7 +16,7 @@ set -Eeuo pipefail
 #   --version      Print script version and exit.
 #   -h, --help     Show this help.
 
-SCRIPT_VERSION="0.5.2"
+SCRIPT_VERSION="0.5.3"
 INSTALL_STATE_DIR="/etc/umbrel-recovery"
 INSTALL_STATE_FILE="$INSTALL_STATE_DIR/installed.json"
 DATA_DIR="/mnt/fullnode"
@@ -51,6 +51,7 @@ MIGRATIONS=(
   "0.4.18_to_0.5.0"
   "0.5.0_to_0.5.1"
   "0.5.1_to_0.5.2"
+  "0.5.2_to_0.5.3"
 )
 
 log() {
@@ -352,6 +353,82 @@ apply_nvme_boot_mitigation() {
   info "Configuring conservative NVMe power policy for future boots"
   nvme_cmdline_patch_flash_kernel_defaults
   nvme_cmdline_patch_extlinux
+}
+
+remove_pwm_fan_config() {
+  local config_ini="/boot/config.ini"
+  local result
+
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    echo "[DRY-RUN] remove PWM fan overlay settings from $config_ini if present"
+    return 0
+  fi
+
+  if [[ ! -f "$config_ini" ]]; then
+    info "$config_ini not found; skipping PWM fan cleanup"
+    return 0
+  fi
+
+  run_cmd cp "$config_ini" "$config_ini.bak.$(date +%s)"
+  result="$(PWM_CONFIG_FILE="$config_ini" python3 - <<'PY'
+from pathlib import Path
+import os
+import re
+
+path = Path(os.environ['PWM_CONFIG_FILE'])
+lines = path.read_text().splitlines()
+out = []
+changed = False
+in_overlay_pwm = False
+
+for line in lines:
+    stripped = line.strip()
+
+    if stripped.startswith('[') and stripped.endswith(']'):
+        if stripped == '[overlay_pwm]':
+            changed = True
+            in_overlay_pwm = True
+            continue
+        in_overlay_pwm = False
+        out.append(line)
+        continue
+
+    if in_overlay_pwm:
+        changed = True
+        continue
+
+    if re.match(r'^\s*overlay_profile\s*=\s*pwm\s*$', line):
+        changed = True
+        continue
+
+    if re.match(r'^\s*overlays\s*=', line):
+        key, value = line.split('=', 1)
+        raw_value = value.strip()
+        quoted = raw_value.startswith('"') and raw_value.endswith('"')
+        body = raw_value[1:-1] if quoted else raw_value
+        tokens = body.split()
+        filtered = [token for token in tokens if token not in {'pwm1', 'pwm2'}]
+        if filtered != tokens:
+            changed = True
+            rebuilt = ' '.join(filtered)
+            out.append(f'{key}="{rebuilt}"' if quoted else f'{key}={rebuilt}')
+            continue
+
+    out.append(line)
+
+if changed:
+    path.write_text('\n'.join(out).rstrip() + '\n')
+    print('changed')
+else:
+    print('unchanged')
+PY
+)"
+
+  if [[ "$result" == "changed" ]]; then
+    info "Removed PWM fan overlay settings from $config_ini"
+  else
+    info "PWM fan overlay settings already absent in $config_ini"
+  fi
 }
 
 install_fullnode_mount_guard() {
@@ -1503,6 +1580,33 @@ postcheck_0_5_1_to_0_5_2() {
   fi
   if ufw_is_active; then
     err "UFW is still active after the Umbrel networking simplification step"
+    return 1
+  fi
+}
+
+precheck_0_5_2_to_0_5_3() { precheck_common_canonical_install; }
+apply_0_5_2_to_0_5_3() { remove_pwm_fan_config; }
+postcheck_0_5_2_to_0_5_3() {
+  local config_ini="/boot/config.ini"
+
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    return 0
+  fi
+
+  [[ -f "$config_ini" ]] || return 0
+
+  if grep -Eq '^\s*overlay_profile\s*=\s*pwm\s*$' "$config_ini"; then
+    err "PWM overlay profile is still present in $config_ini"
+    return 1
+  fi
+
+  if grep -Eq '^\s*\[overlay_pwm\]\s*$' "$config_ini"; then
+    err "overlay_pwm section is still present in $config_ini"
+    return 1
+  fi
+
+  if grep -Eq '^\s*overlays\s*=.*\b(pwm1|pwm2)\b' "$config_ini"; then
+    err "PWM overlay entries are still present in $config_ini"
     return 1
   fi
 }

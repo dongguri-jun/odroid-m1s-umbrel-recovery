@@ -257,7 +257,17 @@ required = [
     'precheck_0_5_1_to_0_5_2',
     'apply_0_5_1_to_0_5_2',
     'postcheck_0_5_1_to_0_5_2',
-]
+    '"0.5.2_to_0.5.3"',
+    'remove_pwm_fan_config',
+    'precheck_0_5_2_to_0_5_3',
+    'apply_0_5_2_to_0_5_3',
+    'postcheck_0_5_2_to_0_5_3',
+    '/boot/config.ini',
+    '[overlay_pwm]',
+    'overlay_profile',
+    'pwm1',
+    'pwm2',
+  ]
 missing = [needle for needle in required if needle not in text]
 if missing:
     print('Missing expected updater invariant text:')
