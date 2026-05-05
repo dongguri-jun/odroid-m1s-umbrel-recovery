@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.2
+
+- Drop the reviewed host-port firewall experiment and simplify the ODROID host network model to match Umbrel Home more closely: if UFW is active, the installer and updater now disable it instead of trying to maintain per-app allow rules.
+- Keep Docker/netfilter behavior untouched while removing the extra generated firewall artifact, approval workflow, and host-port reconciliation logic that made the ODROID path more complex than Umbrel Home.
+- Use the `0.5.1_to_0.5.2` updater history step to converge existing devices on the simpler Umbrel-style host firewall posture without requiring manual terminal firewall work.
+
 ## 0.5.1
 
 - Automatically allow the Umbrel Tailscale web UI port (`8240/tcp`) when UFW is active, fixing the real-device failure where the Tailscale app container listened correctly but browser access from another LAN device timed out.

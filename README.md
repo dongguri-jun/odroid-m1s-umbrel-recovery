@@ -348,7 +348,7 @@ Umbrel App Store에서 **Tailscale** 앱을 설치하면, 로그인 화면은 Um
 
 이 앱은 일반적인 Umbrel 앱과 달리 **8240번 포트**를 직접 사용합니다.
 
-최신 설치/업데이트 스크립트는 ODROID M1S 안의 UFW 방화벽이 켜져 있는 경우, Tailscale 앱 화면이 다른 기기에서 열리도록 `8240/tcp`를 자동으로 허용합니다.
+Umbrel Home과 비슷한 동작을 맞추기 위해, 이 프로젝트의 최신 설치/업데이트 스크립트는 **UFW를 비활성화**해서 Docker bridge / app proxy / host-network 앱이 host firewall에 막히지 않게 합니다.
 
 만약 Tailscale 앱을 눌렀을 때 새 창에서 아래처럼 보이면:
 
