@@ -16,7 +16,7 @@ set -Eeuo pipefail
 #   --version      Print script version and exit.
 #   -h, --help     Show this help.
 
-SCRIPT_VERSION="0.5.1"
+SCRIPT_VERSION="0.5.2"
 INSTALL_STATE_DIR="/etc/umbrel-recovery"
 INSTALL_STATE_FILE="$INSTALL_STATE_DIR/installed.json"
 DATA_DIR="/mnt/fullnode"
@@ -50,6 +50,7 @@ MIGRATIONS=(
   "0.4.17_to_0.4.18"
   "0.4.18_to_0.5.0"
   "0.5.0_to_0.5.1"
+  "0.5.1_to_0.5.2"
 )
 
 log() {
@@ -77,34 +78,24 @@ ufw_is_active() {
   ufw status 2>/dev/null | grep -Fxq "Status: active"
 }
 
-ufw_allows_tailscale_web() {
-  command -v ufw >/dev/null 2>&1 || return 1
-  ufw status 2>/dev/null | grep -Eq '(^|[[:space:]])8240(/tcp)?[[:space:]]'
-}
-
-ensure_tailscale_web_firewall_access() {
+disable_ufw_for_umbrel() {
   if ! command -v ufw >/dev/null 2>&1; then
-    info "UFW is not installed; Tailscale web UI port 8240 is not blocked by UFW."
+    info "UFW is not installed; nothing to disable for Umbrel networking."
     return 0
   fi
 
   if [[ "$DRY_RUN" -eq 1 ]]; then
-    echo "[DRY-RUN] if UFW is active, allow 8240/tcp for the Umbrel Tailscale web UI"
+    echo "[DRY-RUN] if UFW is active, disable it to match Umbrel Home-style Docker networking"
     return 0
   fi
 
   if ! ufw_is_active; then
-    info "UFW is not active; Tailscale web UI port 8240 is not blocked by UFW."
+    info "UFW is already inactive; Umbrel networking is not being blocked by host firewall rules."
     return 0
   fi
 
-  if ufw_allows_tailscale_web; then
-    info "UFW already allows Tailscale web UI on 8240/tcp."
-    return 0
-  fi
-
-  info "Allowing Tailscale web UI through UFW on 8240/tcp"
-  ufw allow 8240/tcp >/dev/null || { err "Failed to allow 8240/tcp in UFW; Tailscale app login may time out from other devices."; return 1; }
+  info "Disabling UFW to avoid interfering with Umbrel Docker networking"
+  ufw --force disable >/dev/null || { err "Failed to disable UFW; Umbrel app networking may remain blocked by host firewall rules."; return 1; }
 }
 
 wait_for_apt_locks() {
@@ -1493,12 +1484,27 @@ postcheck_0_4_18_to_0_5_0() {
 }
 
 precheck_0_5_0_to_0_5_1() { precheck_common_canonical_install; }
-apply_0_5_0_to_0_5_1() { ensure_tailscale_web_firewall_access; }
+apply_0_5_0_to_0_5_1() { disable_ufw_for_umbrel; }
 postcheck_0_5_0_to_0_5_1() {
-  if [[ "$DRY_RUN" -eq 1 ]] || ! ufw_is_active; then
+  if [[ "$DRY_RUN" -eq 1 ]]; then
     return 0
   fi
-  ufw_allows_tailscale_web || { err "UFW does not allow Tailscale web UI on 8240/tcp"; return 1; }
+  if ufw_is_active; then
+    err "UFW is still active after the Umbrel networking simplification step"
+    return 1
+  fi
+}
+
+precheck_0_5_1_to_0_5_2() { precheck_common_canonical_install; }
+apply_0_5_1_to_0_5_2() { disable_ufw_for_umbrel; }
+postcheck_0_5_1_to_0_5_2() {
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    return 0
+  fi
+  if ufw_is_active; then
+    err "UFW is still active after the Umbrel networking simplification step"
+    return 1
+  fi
 }
 
 # ---------------------------------------------------------------------------

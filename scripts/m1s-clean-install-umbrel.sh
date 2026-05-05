@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SCRIPT_VERSION="0.5.1"
+SCRIPT_VERSION="0.5.2"
 INSTALL_STATE_DIR="/etc/umbrel-recovery"
 INSTALL_STATE_FILE="$INSTALL_STATE_DIR/installed.json"
 PREINSTALL_RESUME_STATE_FILE="$INSTALL_STATE_DIR/preinstall-resume.json"
@@ -912,34 +912,24 @@ ufw_is_active() {
   ufw status 2>/dev/null | grep -Fxq "Status: active"
 }
 
-ufw_allows_tailscale_web() {
-  command -v ufw >/dev/null 2>&1 || return 1
-  ufw status 2>/dev/null | grep -Eq '(^|[[:space:]])8240(/tcp)?[[:space:]]'
-}
-
-ensure_tailscale_web_firewall_access() {
+disable_ufw_for_umbrel() {
   if ! command -v ufw >/dev/null 2>&1; then
-    info "UFW is not installed; Tailscale web UI port 8240 is not blocked by UFW."
+    info "UFW is not installed; nothing to disable for Umbrel networking."
     return 0
   fi
 
   if [[ "$DRY_RUN" -eq 1 ]]; then
-    echo "[DRY-RUN] if UFW is active, allow 8240/tcp for the Umbrel Tailscale web UI"
+    echo "[DRY-RUN] if UFW is active, disable it to match Umbrel Home-style Docker networking"
     return 0
   fi
 
   if ! ufw_is_active; then
-    info "UFW is not active; Tailscale web UI port 8240 is not blocked by UFW."
+    info "UFW is already inactive; Umbrel networking is not being blocked by host firewall rules."
     return 0
   fi
 
-  if ufw_allows_tailscale_web; then
-    info "UFW already allows Tailscale web UI on 8240/tcp."
-    return 0
-  fi
-
-  info "Allowing Tailscale web UI through UFW on 8240/tcp"
-  ufw allow 8240/tcp >/dev/null || warn "Failed to allow 8240/tcp in UFW; Tailscale app login may time out from other devices."
+  info "Disabling UFW to avoid interfering with Umbrel Docker networking"
+  ufw --force disable >/dev/null || warn "Failed to disable UFW; Umbrel app networking may remain blocked by host firewall rules."
 }
 
 report_install_health() {
@@ -2224,7 +2214,7 @@ if [[ -z "$LAN_INTERFACE" ]]; then
   LAN_INTERFACE="eth0"
 fi
 LAN_IP="$(interface_ipv4 "$LAN_INTERFACE" || true)"
-ensure_tailscale_web_firewall_access
+disable_ufw_for_umbrel
 
 if ! command -v avahi-publish >/dev/null 2>&1; then
   info "Installing avahi-daemon and avahi-utils..."
