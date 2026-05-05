@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.3
+
+- Remove ODROID M1S PWM fan overlay settings from `/boot/config.ini` during fresh installs so new Umbrel-only devices do not keep booting with the loud default PWM fan profile.
+- Add a `0.5.2_to_0.5.3` updater migration that applies the same PWM cleanup on existing installs and fails closed if `overlay_profile=pwm`, `[overlay_pwm]`, or `pwm1`/`pwm2` overlay entries remain afterward.
+- Keep the cleanup tightly scoped to the observed PWM fan config pattern, preserving unrelated overlay lines while backing up the original boot config before any mutation.
+
 ## 0.5.2
 
 - Drop the reviewed host-port firewall experiment and simplify the ODROID host network model to match Umbrel Home more closely: if UFW is active, the installer and updater now disable it instead of trying to maintain per-app allow rules.
