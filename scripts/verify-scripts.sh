@@ -6,19 +6,20 @@ cd "$repo_root"
 
 scripts=(scripts/*.sh)
 test_scripts=(tests/*.sh)
+git_hooks=(.githooks/*)
 installer="scripts/m1s-clean-install-umbrel.sh"
 updater="scripts/m1s-update-umbrel.sh"
 
 printf '[verify] bash syntax\n'
-for script in "${scripts[@]}" "${test_scripts[@]}"; do
+for script in "${scripts[@]}" "${test_scripts[@]}" "${git_hooks[@]}"; do
   bash -n "$script"
   printf '  ok %s\n' "$script"
 done
 
 printf '[verify] shellcheck\n'
 if command -v shellcheck >/dev/null 2>&1; then
-  shellcheck -x "${scripts[@]}" "${test_scripts[@]}"
-  printf '  ok shellcheck %s %s\n' "${scripts[*]}" "${test_scripts[*]}"
+  shellcheck -x "${scripts[@]}" "${test_scripts[@]}" "${git_hooks[@]}"
+  printf '  ok shellcheck %s %s %s\n' "${scripts[*]}" "${test_scripts[*]}" "${git_hooks[*]}"
 else
   printf '  skip shellcheck not installed\n'
 fi
@@ -370,6 +371,70 @@ if missing:
         print(f'  {needle}')
     raise SystemExit(1)
 print('  ok release script gates tags/releases on clean tree, pushed HEAD, changelog, and successful CI')
+PY
+
+printf '[verify] public-clean publish guard\n'
+python3 - <<'PY'
+from pathlib import Path
+import subprocess
+
+files = {
+    '.githooks/pre-push': [
+        'refs/heads/public-clean',
+        'Blocked: refusing to create or update remote public-clean.',
+        'git push origin public-clean:main',
+        'git push -u origin public-clean',
+        'git push origin HEAD:public-clean',
+    ],
+    'scripts/install-public-clean-guard.sh': [
+        'git rev-parse --is-inside-work-tree',
+        'git config --local core.hooksPath .githooks',
+        'git branch --unset-upstream public-clean',
+        'allowed publish command: git push origin public-clean:main',
+    ],
+    'scripts/publish-public.sh': [
+        'Publish must run from public-clean.',
+        'Local public-clean must not track an upstream.',
+        'git ls-remote --exit-code --heads origin public-clean',
+        'git push origin public-clean:main',
+    ],
+}
+for path, needles in files.items():
+    file_path = Path(path)
+    if not file_path.exists():
+        raise SystemExit(f'{path} is missing')
+    text = file_path.read_text(encoding='utf-8')
+    missing = [needle for needle in needles if needle not in text]
+    if missing:
+        print(f'{path} is missing expected public-clean guard text:')
+        for needle in missing:
+            print(f'  {needle}')
+        raise SystemExit(1)
+
+zero = '0' * 40
+one = '1' * 40
+cases = [
+    ('public-clean branch push', f'refs/heads/public-clean {one} refs/heads/public-clean {zero}\n', False),
+    ('HEAD to public-clean push', f'HEAD {one} refs/heads/public-clean {zero}\n', False),
+    ('public-clean to main publish', f'refs/heads/public-clean {one} refs/heads/main {zero}\n', True),
+]
+for label, stdin, should_pass in cases:
+    result = subprocess.run(
+        ['.githooks/pre-push', 'origin', 'https://github.com/dongguri-jun/odroid-m1s-umbrel-recovery.git'],
+        input=stdin,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    passed = result.returncode == 0
+    if passed != should_pass:
+        print(f'pre-push behavior failed for {label}')
+        print(f'  expected pass: {should_pass}')
+        print(f'  exit code: {result.returncode}')
+        print(f'  stderr: {result.stderr}')
+        raise SystemExit(1)
+print('  ok public-clean remote branch recreation is blocked by hook, installer, and publish script')
 PY
 
 printf '[verify] complete\n'
