@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+remote_name="${1:-}"
+remote_url="${2:-}"
+blocked=0
+
+zero_sha="0000000000000000000000000000000000000000"
+
+while read -r local_ref local_sha remote_ref _remote_sha; do
+  [[ -n "${local_ref:-}" ]] || continue
+
+  if [[ "$remote_ref" == "refs/heads/public-clean" && "$local_sha" != "$zero_sha" ]]; then
+    cat >&2 <<'EOF'
+Blocked: refusing to create or update remote public-clean.
+
+This repository publishes the local public-clean branch to the remote main branch only:
+  git push origin public-clean:main
+
+Do not use:
+  git push origin public-clean
+  git push -u origin public-clean
+  git push origin HEAD:public-clean
+EOF
+    printf '\nRemote: %s %s\n' "$remote_name" "$remote_url" >&2
+    printf 'Attempted ref update: %s -> %s\n' "$local_ref" "$remote_ref" >&2
+    blocked=1
+  fi
+done
+
+if [[ "$blocked" -ne 0 ]]; then
+  exit 1
+fi
