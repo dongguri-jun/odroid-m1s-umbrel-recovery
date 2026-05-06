@@ -1,5 +1,7 @@
 # ODROID M1S Umbrel 설치 방법
 
+[English guide](README.en.md)
+
 > **비공식 안내 / Disclaimer**
 >
 > 이 저장소는 **동구리 개인이 비영리적으로 정리한 자료**입니다. 바이너리리스트(주), 제로니모 브랜드, Umbrel, ODROID(Hardkernel) 어느 쪽과도 공식적으로 무관합니다.
