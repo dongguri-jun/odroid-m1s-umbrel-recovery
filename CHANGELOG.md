@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.4
+
+- Add `README.en.md`, a full English translation of the Korean ODROID M1S Umbrel installation guide for non-Korean readers.
+- Keep the English guide public-safe by omitting vendor-specific setup details and hardcoded account paths while preserving the general login, install, update, Tailscale, and safe-shutdown instructions.
+- Link the English guide from the Korean `README.md` so users can choose their preferred language from the top of the repository page.
+
 ## 0.5.3
 
 - Remove ODROID M1S PWM fan overlay settings from `/boot/config.ini` during fresh installs so new Umbrel-only devices do not keep booting with the loud default PWM fan profile.
