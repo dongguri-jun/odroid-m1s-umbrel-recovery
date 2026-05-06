@@ -47,7 +47,7 @@ SSD 데이터를 지우면 안 되는 경우에는 진행하지 마세요.
 아래 준비물이 필요합니다.
 
 - **ODROID M1S 본체 (반드시 8GB 모델 권장, 4GB 모델 비권장)** 
-(ODROID 공식 구매 홈페이지 : https://www.hardkernel.com/)
+  -(ODROID 공식 구매 홈페이지 : https://www.hardkernel.com/)
 - **전원 케이블**
 - **모니터**
 - **Hdmi to Hdmi 케이블**
