@@ -1,5 +1,7 @@
 # Local-only work files
 /AGENTS.md
+/.claude/
+/.opencode/
 /docs/ODROID_ACCESS.md
 /docs/ai-shared/
 /docs/dev/
