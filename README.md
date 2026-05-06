@@ -1,6 +1,6 @@
 # ODROID M1S Umbrel 설치 방법
 
-[English guide](README.en.md)
+## [English guide](README.en.md)
 
 > **비공식 안내 / Disclaimer**
 >
