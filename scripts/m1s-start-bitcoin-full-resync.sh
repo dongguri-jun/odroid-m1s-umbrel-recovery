@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+SCRIPT_VERSION="0.5.5"
+DRY_RUN=0
+
+usage() {
+  cat <<'EOF'
+ODROID M1S Umbrel — start Bitcoin full resync
+
+Usage:
+  sudo bash scripts/m1s-start-bitcoin-full-resync.sh [options]
+
+Options:
+  --dry-run      Show actions without changing anything.
+  --version      Print script version and exit.
+  -h, --help     Show this help.
+
+What this mode does:
+  - Stops the live Bitcoin app container.
+  - Removes Bitcoin block/index/chainstate data from the host.
+  - Starts the Bitcoin app container again so it redownloads from scratch.
+
+After this command finishes, monitor the result with:
+  sudo bash scripts/m1s-check-bitcoin-recovery-status.sh
+EOF
+}
+
+parse_args() {
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --dry-run)
+        DRY_RUN=1
+        ;;
+      --version)
+        printf '%s\n' "$SCRIPT_VERSION"
+        exit 0
+        ;;
+      -h|--help)
+        usage
+        exit 0
+        ;;
+      *)
+        err "Unknown argument: $1"
+        usage
+        exit 1
+        ;;
+    esac
+    shift
+  done
+}
+
+# shellcheck source=scripts/bitcoin-recovery-common.sh
+source "$(dirname "${BASH_SOURCE[0]}")/bitcoin-recovery-common.sh"
+
+main() {
+  parse_args "$@"
+  run_recovery_start "full-resync" "m1s-start-bitcoin-full-resync.sh"
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi
