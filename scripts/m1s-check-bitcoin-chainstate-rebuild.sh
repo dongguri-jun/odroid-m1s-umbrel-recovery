@@ -5,6 +5,8 @@ SCRIPT_VERSION="0.5.5"
 DATA_DIR="/mnt/fullnode"
 STATE_DIR="/etc/umbrel-recovery"
 REQUEST_STATE_FILE="$STATE_DIR/bitcoin-chainstate-rebuild.json"
+MANAGED_BEGIN="# m1s-bitcoin-chainstate-rebuild: begin"
+MANAGED_END="# m1s-bitcoin-chainstate-rebuild: end"
 
 log() {
   printf '[%s] %s\n' "$1" "$2"
@@ -26,15 +28,15 @@ Options:
   -h, --help     Show this help.
 
 What this script checks:
-  1. local request marker under /etc/umbrel-recovery
+  1. local rebuild state under /etc/umbrel-recovery
   2. effective bitcoin.conf / umbrel-bitcoin.conf request state
-  3. recent debug.log startup evidence after the request time
+  3. bounded debug.log startup evidence
   4. live RPC status via bitcoin-cli inside the Bitcoin app container, if reachable
 
-Status order:
-  - RPC is treated as the strongest live signal.
-  - Logs are only used as bounded fallback hints.
-  - Config/marker state means "requested", not necessarily "started".
+Host-shell note:
+  - Run this from the ODROID host shell.
+  - In Umbrel web UI Terminal, first enter host shell with:
+      sudo nsenter -t 1 -m -u -i -n -p -- bash
 EOF
 }
 
@@ -133,8 +135,6 @@ import sys
 umbrel_conf = Path(sys.argv[1])
 bitcoin_conf = Path(sys.argv[2])
 managed_begin = '# m1s-bitcoin-chainstate-rebuild: begin'
-managed_end = '# m1s-bitcoin-chainstate-rebuild: end'
-
 keys = {'prune', 'reindex', 'reindex-chainstate'}
 values = {key: '' for key in keys}
 managed_present = False
@@ -209,7 +209,7 @@ recent_chainstate_start_after_request() {
   [[ -f "$DEBUG_LOG" ]] || return 1
   python3 - "$DEBUG_LOG" "$request_epoch" <<'PY'
 from pathlib import Path
-import os
+import re
 import sys
 
 path = Path(sys.argv[1])
@@ -221,8 +221,21 @@ except FileNotFoundError:
 if int(stat.st_mtime) < request_epoch:
     sys.exit(1)
 text = path.read_text(encoding='utf-8', errors='replace')
-needle = 'Initializing chainstate '
-sys.exit(0 if needle in text else 1)
+marker = 'Initializing chainstate '
+for line in reversed(text.splitlines()):
+    if marker not in line:
+        continue
+    match = re.match(r'^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})Z', line)
+    if not match:
+        continue
+    try:
+        import datetime as dt
+        ts = dt.datetime.strptime(match.group(1), '%Y-%m-%dT%H:%M:%S').replace(tzinfo=dt.timezone.utc)
+    except ValueError:
+        continue
+    if int(ts.timestamp()) >= request_epoch:
+        sys.exit(0)
+sys.exit(1)
 PY
 }
 
@@ -331,22 +344,104 @@ print(f'{value:.2f}%')
 PY
 }
 
+clear_request_block() {
+  python3 - "$BITCOIN_CONF" "$MANAGED_BEGIN" "$MANAGED_END" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+managed_begin = sys.argv[2]
+managed_end = sys.argv[3]
+text = path.read_text(encoding='utf-8')
+lines = text.splitlines()
+output = []
+in_managed = False
+removed = False
+
+for line in lines:
+    stripped = line.strip()
+    if stripped == managed_begin:
+        in_managed = True
+        removed = True
+        continue
+    if stripped == managed_end:
+        in_managed = False
+        continue
+    if in_managed:
+        continue
+    if stripped.startswith('reindex-chainstate=') and stripped.split('=', 1)[1].split('#', 1)[0].strip() == '1':
+        removed = True
+        continue
+    output.append(line)
+
+while len(output) >= 2 and output[-1] == '' and output[-2] == '':
+    output.pop()
+
+path.write_text('\n'.join(output) + '\n', encoding='utf-8')
+print('removed' if removed else 'not-present')
+PY
+}
+
+mark_request_consumed() {
+  local observed_state="$1"
+  python3 - "$REQUEST_STATE_FILE" "$observed_state" <<'PY'
+from pathlib import Path
+import datetime as dt
+import json
+import time
+import sys
+
+path = Path(sys.argv[1])
+observed_state = sys.argv[2]
+if not path.exists():
+    raise SystemExit(0)
+payload = json.loads(path.read_text(encoding='utf-8'))
+now = dt.datetime.now(dt.timezone.utc)
+payload['active_request'] = False
+payload['request_consumed_at_epoch'] = int(time.time())
+payload['request_consumed_at_iso'] = now.isoformat()
+payload['last_observed_state'] = observed_state
+path.write_text(json.dumps(payload, indent=2, sort_keys=True) + '\n', encoding='utf-8')
+PY
+}
+
+record_last_observed_state() {
+  local observed_state="$1"
+  [[ -f "$REQUEST_STATE_FILE" ]] || return 0
+  python3 - "$REQUEST_STATE_FILE" "$observed_state" <<'PY'
+from pathlib import Path
+import json
+import sys
+
+path = Path(sys.argv[1])
+observed_state = sys.argv[2]
+payload = json.loads(path.read_text(encoding='utf-8'))
+payload['last_observed_state'] = observed_state
+path.write_text(json.dumps(payload, indent=2, sort_keys=True) + '\n', encoding='utf-8')
+PY
+}
+
 resolve_rebuild_state() {
-  local request_evidence="$1"
+  local active_request="$1"
   local rpc_rebuild="$2"
   local log_started="$3"
-  local live_validation_without_request="$4"
+  local had_prior_request="$4"
+  local live_validation_without_request="$5"
 
-  if [[ "$rpc_rebuild" -eq 1 && "$request_evidence" -eq 1 ]]; then
+  if [[ "$rpc_rebuild" -eq 1 ]]; then
     printf 'rebuild-in-progress\n'
     return 0
   fi
-  if [[ "$log_started" -eq 1 && "$request_evidence" -eq 1 ]]; then
+  if [[ "$log_started" -eq 1 && "$active_request" -eq 1 ]]; then
     printf 'rebuild-started-progress-unavailable\n'
     return 0
   fi
-  if [[ "$request_evidence" -eq 1 ]]; then
+  if [[ "$active_request" -eq 1 ]]; then
     printf 'requested-awaiting-restart\n'
+    return 0
+  fi
+  if [[ "$had_prior_request" -eq 1 ]]; then
+    printf 'rebuild-not-currently-detected\n'
     return 0
   fi
   if [[ "$live_validation_without_request" -eq 1 ]]; then
@@ -365,7 +460,10 @@ print_human_state() {
       printf 'Current status: rebuild appears to have started, but live progress is unavailable\n'
       ;;
     requested-awaiting-restart)
-      printf 'Current status: request recorded, restart not yet confirmed\n'
+      printf 'Current status: rebuild request recorded, restart not yet confirmed\n'
+      ;;
+    rebuild-not-currently-detected)
+      printf 'Current status: no active rebuild is visible right now\n'
       ;;
     live-validation-unconfirmed)
       printf 'Current status: live validation activity detected, but this script cannot prove it is the requested chainstate rebuild\n'
@@ -385,11 +483,13 @@ main() {
   settings_json="$(read_effective_settings_json)"
 
   REQUEST_STATE_JSON="$(read_request_state_json || true)"
-  local marker_present=0 request_epoch="0"
+  local state_file_present=0 request_epoch="0" active_request=0 had_prior_request=0
   if [[ -n "$REQUEST_STATE_JSON" ]]; then
-    marker_present=1
+    state_file_present=1
+    had_prior_request=1
     request_epoch="$(request_state_field 'data.get("requested_at_epoch", 0)')"
     [[ -n "$request_epoch" ]] || request_epoch="0"
+    active_request="$(request_state_field '1 if data.get("active_request") else 0')"
   fi
 
   local config_request_present managed_present includeconf_present
@@ -397,9 +497,9 @@ main() {
   managed_present="$(json_field "$settings_json" 'data["managed_present"]')"
   includeconf_present="$(json_field "$settings_json" 'data["includeconf_present"]')"
 
-  local request_evidence=0
-  if [[ "$marker_present" -eq 1 || "$config_request_present" -eq 1 ]]; then
-    request_evidence=1
+  if [[ "$config_request_present" -eq 1 ]]; then
+    active_request=1
+    had_prior_request=1
   fi
 
   local log_started=0
@@ -427,12 +527,22 @@ main() {
     rpc_ibd="$(json_field "$blockchain_summary" '1 if data.get("initialblockdownload") else 0')"
   fi
 
-  if [[ "$request_evidence" -eq 0 && ( "$rpc_rebuild" -eq 1 || "$rpc_ibd" -eq 1 ) ]]; then
+  if [[ "$had_prior_request" -eq 0 && ( "$rpc_rebuild" -eq 1 || "$rpc_ibd" -eq 1 ) ]]; then
     live_validation_without_request=1
   fi
 
+  if [[ "$active_request" -eq 1 && ( "$rpc_rebuild" -eq 1 || "$log_started" -eq 1 ) ]]; then
+    clear_request_block >/dev/null
+    mark_request_consumed "consumed-by-check"
+    active_request=0
+    config_request_present=0
+    managed_present=0
+    REQUEST_STATE_JSON="$(read_request_state_json || true)"
+  fi
+
   local state
-  state="$(resolve_rebuild_state "$request_evidence" "$rpc_rebuild" "$log_started" "$live_validation_without_request")"
+  state="$(resolve_rebuild_state "$active_request" "$rpc_rebuild" "$log_started" "$had_prior_request" "$live_validation_without_request")"
+  record_last_observed_state "$state"
 
   echo
   echo "=== ODROID M1S Bitcoin chainstate rebuild status ==="
@@ -441,10 +551,12 @@ main() {
   echo "bitcoin.conf:             $BITCOIN_CONF"
   echo "umbrel-bitcoin.conf:      $UMBREL_BITCOIN_CONF"
   echo "debug.log:                $DEBUG_LOG"
-  echo "Request state file:       $REQUEST_STATE_FILE"
-  echo "Request marker present:   $marker_present"
-  if [[ "$marker_present" -eq 1 ]]; then
+  echo "State file:               $REQUEST_STATE_FILE"
+  echo "State file present:       $state_file_present"
+  if [[ "$state_file_present" -eq 1 ]]; then
     echo "Requested at:             $(request_state_field 'data.get("requested_at_iso", "")')"
+    echo "Active request:           $(request_state_field '1 if data.get("active_request") else 0')"
+    echo "Last observed state:      $(request_state_field 'data.get("last_observed_state", "")')"
   fi
   echo "Include banner present:   $includeconf_present"
   echo "Config request present:   $config_request_present"
@@ -468,24 +580,27 @@ main() {
   case "$state" in
     rebuild-in-progress)
       echo "Use this same command again later to watch the live progress estimate."
-      echo "Do not clear the request yet if you want to avoid any ambiguity during the current run."
       ;;
     rebuild-started-progress-unavailable)
       echo "The node appears to have started the rebuild, but live RPC progress is not reachable yet."
       echo "Retry this command after the Bitcoin app settles a bit more."
       ;;
     requested-awaiting-restart)
-      echo "The request exists in config/marker state, but this script cannot prove that the Bitcoin app has consumed it yet."
-      echo "Restart the Bitcoin app once from the Umbrel web UI, then run this check again."
+      echo "The rebuild request exists, but this script cannot prove that the Bitcoin app has consumed it yet."
+      echo "If you just ran the start command, wait a bit and run this check again."
+      ;;
+    rebuild-not-currently-detected)
+      echo "A previous rebuild request exists in the local state file, but no active rebuild is visible right now."
+      echo "If the Bitcoin app is healthy, the rebuild may already be finished or no longer active."
       ;;
     live-validation-unconfirmed)
-      echo "The node is doing live validation work, but there is no matching local request marker or config request."
+      echo "The node is doing live validation work, but there is no matching local rebuild request state."
       echo "This could be normal sync or another validation path, so this script stays conservative."
       ;;
     no-request-detected)
-      echo "No local request marker or effective reindex-chainstate request is visible right now."
-      echo "If you need to request one, run:"
-      echo "  sudo bash scripts/m1s-request-bitcoin-chainstate-rebuild.sh"
+      echo "No local rebuild request or active chainstate rebuild is visible right now."
+      echo "If you need to start one, run:"
+      echo "  sudo bash scripts/m1s-start-bitcoin-chainstate-rebuild.sh"
       ;;
   esac
 }
