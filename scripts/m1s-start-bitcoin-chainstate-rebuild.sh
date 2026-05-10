@@ -142,6 +142,7 @@ require_single_bitcoin_config_dir() {
   fi
 
   BITCOIN_CONFIG_DIR="$matches"
+  BITCOIN_APP_DATA_DIR="$(dirname "$BITCOIN_CONFIG_DIR")"
   BITCOIN_CONF="$BITCOIN_CONFIG_DIR/bitcoin.conf"
   UMBREL_BITCOIN_CONF="$BITCOIN_CONFIG_DIR/umbrel-bitcoin.conf"
   DEBUG_LOG="$BITCOIN_CONFIG_DIR/debug.log"
@@ -359,7 +360,8 @@ locate_bitcoin_container() {
     [[ -n "$container_name" ]] || continue
     local result
     result="$(docker inspect "$container_name" 2>/dev/null | python3 -c 'import json, sys
-config_dir = sys.argv[1]
+app_data_dir = sys.argv[1]
+config_dir = sys.argv[2]
 try:
     payload = json.load(sys.stdin)
 except json.JSONDecodeError:
@@ -372,15 +374,16 @@ for mount in container.get("Mounts", []):
     dst = mount.get("Destination") or ""
     if not src or not dst:
         continue
-    if config_dir == src or config_dir.startswith(src.rstrip("/") + "/"):
-        rel = config_dir[len(src):].lstrip("/")
-        inside = dst.rstrip("/")
-        if rel:
-            inside = f"{inside}/{rel}"
-        print(container.get("Name", "").lstrip("/"))
-        print(inside)
-        raise SystemExit(0)
-raise SystemExit(1)' "$BITCOIN_CONFIG_DIR")" || continue
+    if src != app_data_dir:
+        continue
+    rel = config_dir[len(src):].lstrip("/")
+    inside = dst.rstrip("/")
+    if rel:
+        inside = f"{inside}/{rel}"
+    print(container.get("Name", "").lstrip("/"))
+    print(inside)
+    raise SystemExit(0)
+raise SystemExit(1)' "$BITCOIN_APP_DATA_DIR" "$BITCOIN_CONFIG_DIR")" || continue
     if [[ -n "$result" ]]; then
       printf '%s\n' "$result"
       return 0

@@ -121,6 +121,7 @@ require_single_bitcoin_config_dir() {
   fi
 
   BITCOIN_CONFIG_DIR="$matches"
+  BITCOIN_APP_DATA_DIR="$(dirname "$BITCOIN_CONFIG_DIR")"
   BITCOIN_CONF="$BITCOIN_CONFIG_DIR/bitcoin.conf"
   UMBREL_BITCOIN_CONF="$BITCOIN_CONFIG_DIR/umbrel-bitcoin.conf"
   DEBUG_LOG="$BITCOIN_CONFIG_DIR/debug.log"
@@ -247,7 +248,8 @@ locate_bitcoin_container() {
     [[ -n "$container_name" ]] || continue
     local result
     result="$(docker inspect "$container_name" 2>/dev/null | python3 -c 'import json, sys
-config_dir = sys.argv[1]
+app_data_dir = sys.argv[1]
+config_dir = sys.argv[2]
 try:
     payload = json.load(sys.stdin)
 except json.JSONDecodeError:
@@ -260,15 +262,16 @@ for mount in container.get("Mounts", []):
     dst = mount.get("Destination") or ""
     if not src or not dst:
         continue
-    if config_dir == src or config_dir.startswith(src.rstrip("/") + "/"):
-        rel = config_dir[len(src):].lstrip("/")
-        inside = dst.rstrip("/")
-        if rel:
-            inside = f"{inside}/{rel}"
-        print(container.get("Name", "").lstrip("/"))
-        print(inside)
-        raise SystemExit(0)
-raise SystemExit(1)' "$BITCOIN_CONFIG_DIR")" || continue
+    if src != app_data_dir:
+        continue
+    rel = config_dir[len(src):].lstrip("/")
+    inside = dst.rstrip("/")
+    if rel:
+        inside = f"{inside}/{rel}"
+    print(container.get("Name", "").lstrip("/"))
+    print(inside)
+    raise SystemExit(0)
+raise SystemExit(1)' "$BITCOIN_APP_DATA_DIR" "$BITCOIN_CONFIG_DIR")" || continue
     if [[ -n "$result" ]]; then
       printf '%s\n' "$result"
       return 0
@@ -423,12 +426,12 @@ PY
 
 resolve_rebuild_state() {
   local active_request="$1"
-  local rpc_rebuild="$2"
+  local live_rebuild_evidence="$2"
   local log_started="$3"
   local had_prior_request="$4"
   local live_validation_without_request="$5"
 
-  if [[ "$rpc_rebuild" -eq 1 ]]; then
+  if [[ "$live_rebuild_evidence" -eq 1 ]]; then
     printf 'rebuild-in-progress\n'
     return 0
   fi
@@ -507,7 +510,7 @@ main() {
     log_started=1
   fi
 
-  local rpc_chainstates_ok=0 rpc_rebuild=0 rpc_progress="" rpc_blockchaininfo_ok=0 rpc_ibd=0
+  local rpc_chainstates_ok=0 rpc_rebuild=0 rpc_progress="" rpc_blockchaininfo_ok=0 rpc_ibd=0 live_rebuild_evidence=0
   local live_validation_without_request=0
   local chainstates_raw blockchaininfo_raw chainstates_summary blockchain_summary
 
@@ -527,11 +530,15 @@ main() {
     rpc_ibd="$(json_field "$blockchain_summary" '1 if data.get("initialblockdownload") else 0')"
   fi
 
+  if [[ "$had_prior_request" -eq 1 && ( "$rpc_rebuild" -eq 1 || "$rpc_ibd" -eq 1 ) ]]; then
+    live_rebuild_evidence=1
+  fi
+
   if [[ "$had_prior_request" -eq 0 && ( "$rpc_rebuild" -eq 1 || "$rpc_ibd" -eq 1 ) ]]; then
     live_validation_without_request=1
   fi
 
-  if [[ "$active_request" -eq 1 && ( "$rpc_rebuild" -eq 1 || "$log_started" -eq 1 ) ]]; then
+  if [[ "$active_request" -eq 1 && ( "$rpc_rebuild" -eq 1 || "$rpc_ibd" -eq 1 || "$log_started" -eq 1 ) ]]; then
     clear_request_block >/dev/null
     mark_request_consumed "consumed-by-check"
     active_request=0
@@ -541,7 +548,11 @@ main() {
   fi
 
   local state
-  state="$(resolve_rebuild_state "$active_request" "$rpc_rebuild" "$log_started" "$had_prior_request" "$live_validation_without_request")"
+  if [[ "$had_prior_request" -eq 1 && "$active_request" -eq 0 && ( "$rpc_rebuild" -eq 1 || "$rpc_ibd" -eq 1 ) ]]; then
+    live_rebuild_evidence=1
+  fi
+
+  state="$(resolve_rebuild_state "$active_request" "$live_rebuild_evidence" "$log_started" "$had_prior_request" "$live_validation_without_request")"
   record_last_observed_state "$state"
 
   echo
