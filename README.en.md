@@ -16,11 +16,13 @@
 
 This guide explains how to install Umbrel on an ODROID M1S in a way that **non-technical users can follow step by step**.
 
-This repository uses the following 3 files in practice.
+This repository most commonly uses the following 5 files.
 
 - `scripts/m1s-clean-install-umbrel.sh` — Umbrel installation script
 - `scripts/m1s-initial-setup.sh` — initial setup script for account and hostname configuration
 - `scripts/m1s-update-umbrel.sh` — update script for bringing an already-installed device up to the latest version
+- `scripts/m1s-start-bitcoin-chainstate-rebuild.sh` — helper for starting a Bitcoin chainstate rebuild
+- `scripts/m1s-check-bitcoin-chainstate-rebuild.sh` — helper for checking Bitcoin chainstate rebuild status
 
 These scripts have been tested on real ODROID M1S hardware.
 
@@ -335,34 +337,6 @@ When the Umbrel screen opens in your browser, proceed in this order.
 
 ---
 
-## 9-1. When using the Tailscale app
-
-If you install the **Tailscale** app from the Umbrel App Store, the login screen opens as a separate Tailscale web page instead of inside the main Umbrel screen.
-
-Unlike ordinary Umbrel apps, this app directly uses **port 8240**.
-
-To make the behavior closer to Umbrel Home, the latest install/update scripts in this project **disable UFW** so Docker bridge / app proxy / host-network apps are not blocked by the host firewall.
-
-If you click the Tailscale app and a new window shows something like this:
-
-```text
-This site can't be reached
-ERR_CONNECTION_TIMED_OUT
-```
-
-First run the update procedure below.
-
-```bash
-cd /home/*/odroid-m1s-umbrel-recovery
-sudo git -c safe.directory='*' fetch origin
-sudo git -c safe.directory='*' reset --hard origin/main
-sudo bash scripts/m1s-update-umbrel.sh
-```
-
-Then open the Tailscale app from the Umbrel screen again and log in.
-
----
-
 ## 10. Install the Bitcoin node app
 
 After creating your Umbrel account, install the **Bitcoin node app** from the App Store.
@@ -383,6 +357,175 @@ Bitcoin Core also performs a lot of computation during **IBD (Initial Block Down
 In real use, when synchronization takes a long time, placing **a small portable fan so it blows air over the top of the board** may help cool it faster.
 
 Lower temperatures may help reduce throttling, so in some cases synchronization can become more stable and faster.
+
+## 10-1. Recovering Bitcoin data
+
+When the Bitcoin node suddenly stops or disconnects, proceed in the following order.
+
+### 1) First, determine which recovery is appropriate
+
+There are three recovery methods.
+
+- **chainstate rebuild** — Keep block data and only rebuild chainstate (try this first)
+- **reindex** — Keep blocks but rescan block index and chainstate more broadly
+- **full resync** — Remove all data and download from scratch again (last resort)
+
+If you are unsure, copy the Bitcoin/Umbrel error log into an AI chat and ask something like this:
+
+```text
+Looking at this error log,
+1) chainstate rebuild
+2) reindex
+3) full resync
+which recovery is appropriate?
+And which command should I type in the Umbrel Terminal?
+```
+
+If possible, copy from where the error starts to the final message.
+
+### 2) Run the recovery command (SSH)
+
+Pick the command that matches the recovery mode the AI recommended from the three options below.
+
+**chainstate rebuild**
+
+```bash
+sudo bash scripts/m1s-start-bitcoin-chainstate-rebuild.sh
+sudo bash scripts/m1s-check-bitcoin-recovery-status.sh
+```
+
+**reindex**
+
+```bash
+sudo bash scripts/m1s-start-bitcoin-reindex.sh
+sudo bash scripts/m1s-check-bitcoin-recovery-status.sh
+```
+
+**full resync**
+
+```bash
+sudo bash scripts/m1s-start-bitcoin-full-resync.sh
+sudo bash scripts/m1s-check-bitcoin-recovery-status.sh
+```
+
+### 3) If you are using the Umbrel web UI Terminal
+
+The Umbrel web UI Terminal starts inside the Umbrel container, so you must enter the host shell first.
+
+1. Log in to the Umbrel web UI.
+2. Go to **Settings → Advanced settings → Terminal**.
+3. When the terminal opens, enter this first.
+
+```bash
+sudo nsenter -t 1 -m -u -i -n -p -- bash
+```
+
+Once the prompt changes to `root@umbrel:/#`, you are on the host shell. Then run the commands below exactly as written.
+
+```bash
+cd /home/*/odroid-m1s-umbrel-recovery
+sudo git -c safe.directory='*' fetch origin main --prune
+sudo git -c safe.directory='*' reset --hard FETCH_HEAD
+```
+
+Then pick the command that matches the recovery mode the AI recommended from the three options below.
+
+**chainstate rebuild**
+
+```bash
+sudo bash scripts/m1s-start-bitcoin-chainstate-rebuild.sh
+sudo bash scripts/m1s-check-bitcoin-recovery-status.sh
+```
+
+**reindex**
+
+```bash
+sudo bash scripts/m1s-start-bitcoin-reindex.sh
+sudo bash scripts/m1s-check-bitcoin-recovery-status.sh
+```
+
+**full resync**
+
+```bash
+sudo bash scripts/m1s-start-bitcoin-full-resync.sh
+sudo bash scripts/m1s-check-bitcoin-recovery-status.sh
+```
+
+### Shared health check
+
+After starting recovery, repeat the command below to check status.
+
+```bash
+sudo bash scripts/m1s-check-bitcoin-recovery-status.sh
+```
+
+When run, the output looks like this.
+
+```text
+=== ODROID M1S Bitcoin recovery status ===
+Script version:           0.5.5
+Recovery mode:            reindex
+Bitcoin config dir:       /mnt/fullnode/app-data/bitcoin/data/bitcoin
+bitcoin.conf:             /mnt/fullnode/app-data/bitcoin/data/bitcoin/bitcoin.conf
+umbrel-bitcoin.conf:      /mnt/fullnode/app-data/bitcoin/data/bitcoin/umbrel-bitcoin.conf
+debug.log:                /mnt/fullnode/app-data/bitcoin/data/bitcoin/debug.log
+State file:               /etc/umbrel-recovery/bitcoin-recovery.json
+State file present:       1
+Requested at:             2026-05-11T09:08:36.719946+00:00
+Active request:           0
+Last observed state:      recovery-in-progress
+Include banner present:   0
+Config reindex present:   0
+Config chainstate present:0
+Managed request block:    0
+Log mode hint:            reindex
+Runtime mode hint:        none
+Recent startup evidence:  1
+RPC getchainstates:       1
+RPC getblockchaininfo:    1
+Blocks / headers:         0 / 576166
+Approx progress:          0.00%
+Reindex blk file:         blk01743.dat / blk01799.dat
+Reindex file progress:    96.89%
+Last file load blocks:    250
+
+Current status: recovery in progress
+
+Use this same command again later to watch the live progress estimate.
+```
+
+Each field means the following.
+
+- Script version: version of this script
+- **Recovery mode**: detected recovery mode (chainstate rebuild / reindex / full resync / unknown)
+- Bitcoin config dir: directory containing Bitcoin Core config files
+- bitcoin.conf: path to the main Bitcoin Core config file
+- umbrel-bitcoin.conf: path to the Umbrel-generated Bitcoin config file
+- debug.log: path to the Bitcoin Core runtime log file
+- State file present: 1 if a recovery state file exists, 0 otherwise
+- Requested at: timestamp when recovery was requested
+- Active request: 1 if an unprocessed recovery request is still active, 0 otherwise
+- Last observed state: last recorded recovery state
+- Config reindex present: 1 if reindex=1 is found in the config files
+- Config chainstate present: 1 if reindex-chainstate=1 is found in the config files
+- Log mode hint: recovery mode inferred from debug.log
+- Runtime mode hint: recovery mode inferred from live RPC/runtime signals
+- Recent startup evidence: 1 if the log shows Bitcoin restarted after the request
+- RPC getchainstates: whether the bitcoin-cli getchainstates call succeeded
+- RPC getblockchaininfo: whether the bitcoin-cli getblockchaininfo call succeeded
+- **Blocks / headers**: currently synced block count / total known header count
+- **Approx progress**: approximate block sync progress percentage
+- Reindex blk file: current `blkXXXXX.dat` file being re-read / last `blkXXXXX.dat` file present on disk
+- Reindex file progress: approximate reindex position based on Bitcoin block files
+- Last file load blocks: number of blocks loaded from the most recent `blkXXXXX.dat` file
+- **Current status**: human-readable summary of the current recovery state
+
+### Real-device validation coverage
+
+- **chainstate rebuild** — real execution verified
+- **reindex** — real execution verified
+- **shared health check** — real execution verified
+- **full resync** — `--dry-run` verified only (actual destructive execution not yet verified)
 
 ---
 

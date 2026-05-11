@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.5
+
+- Add `scripts/m1s-start-bitcoin-chainstate-rebuild.sh`, a host-side Umbrel helper that safely records a temporary `reindex-chainstate=1` request in the custom `bitcoin.conf` section, refuses prune-mode or conflicting full-reindex configs, and automatically restarts the live Bitcoin app container so the public flow stays at `start + check`.
+- Keep `scripts/m1s-request-bitcoin-chainstate-rebuild.sh` only as a compatibility wrapper that points older instructions to the new `m1s-start-bitcoin-chainstate-rebuild.sh` entrypoint.
+- Add `scripts/m1s-check-bitcoin-chainstate-rebuild.sh`, a conservative status checker that separates `request recorded`, `started`, `in progress`, and `no active rebuild visible` states using local state/config evidence plus bounded `debug.log` hints and live `bitcoin-cli` RPC when the Bitcoin app container is reachable.
+- Extend script verification and unit tests for the simplified chainstate helper flow, and document both the SSH path and the README 12-1 style Umbrel web UI Terminal path in Korean and English guides.
+
 ## 0.5.4
 
 - Add `README.en.md`, a full English translation of the Korean ODROID M1S Umbrel installation guide for non-Korean readers.
