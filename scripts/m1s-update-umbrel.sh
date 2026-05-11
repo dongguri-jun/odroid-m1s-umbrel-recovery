@@ -16,7 +16,7 @@ set -Eeuo pipefail
 #   --version      Print script version and exit.
 #   -h, --help     Show this help.
 
-SCRIPT_VERSION="0.5.5"
+SCRIPT_VERSION="0.5.6"
 INSTALL_STATE_DIR="/etc/umbrel-recovery"
 INSTALL_STATE_FILE="$INSTALL_STATE_DIR/installed.json"
 DATA_DIR="/mnt/fullnode"
@@ -54,6 +54,7 @@ MIGRATIONS=(
   "0.5.2_to_0.5.3"
   "0.5.3_to_0.5.4"
   "0.5.4_to_0.5.5"
+  "0.5.5_to_0.5.6"
 )
 
 log() {
@@ -1620,6 +1621,10 @@ postcheck_0_5_3_to_0_5_4() { return 0; }
 precheck_0_5_4_to_0_5_5() { precheck_common_canonical_install; }
 apply_0_5_4_to_0_5_5() { info "0.5.5 adds operator-side chainstate helper scripts; no host mutation required."; }
 postcheck_0_5_4_to_0_5_5() { return 0; }
+
+precheck_0_5_5_to_0_5_6() { precheck_common_canonical_install; }
+apply_0_5_5_to_0_5_6() { info "0.5.6 is a documentation-only release; no host changes required."; }
+postcheck_0_5_5_to_0_5_6() { return 0; }
 
 # ---------------------------------------------------------------------------
 # Main flow
