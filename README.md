@@ -394,7 +394,7 @@ Bitcoin 노드가 갑자기 멈추거나 연결이 끊겼을 때, 아래 순서�
 
 ### 2) 복구 명령 실행하기 (SSH)
 
-AI가 추천한 복구 방식에 맞는 명령을 아래 3가지 중에서 고르세요.
+먼저 아래 **12번의 최신 업데이트 방법**으로 저장소와 스크립트를 최신 상태로 맞춘 뒤, AI가 추천한 복구 방식에 맞는 명령을 아래 3가지 중에서 고르세요.
 
 **chainstate rebuild**
 
@@ -429,15 +429,7 @@ Umbrel 웹 화면 안의 Terminal은 처음에는 **Umbrel 컨테이너 안**이
 sudo nsenter -t 1 -m -u -i -n -p -- bash
 ```
 
-프롬프트가 `root@umbrel:/#` 형태로 바뀌면 host shell입니다. 그다음 아래 명령을 그대로 입력하세요.
-
-```bash
-cd /home/*/odroid-m1s-umbrel-recovery
-sudo git -c safe.directory='*' fetch origin main --prune
-sudo git -c safe.directory='*' reset --hard FETCH_HEAD
-```
-
-그 다음 AI가 추천한 복구 방식에 맞는 명령을 아래 3가지 중에서 고르세요.
+프롬프트가 `root@umbrel:/#` 형태로 바뀌면 host shell입니다. 그다음 아래 **12번의 최신 업데이트 방법**으로 저장소와 스크립트를 최신 상태로 맞춘 뒤, AI가 추천한 복구 방식에 맞는 명령을 아래 3가지 중에서 고르세요.
 
 **chainstate rebuild**
 

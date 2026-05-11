@@ -385,7 +385,7 @@ If possible, copy from where the error starts to the final message.
 
 ### 2) Run the recovery command (SSH)
 
-Pick the command that matches the recovery mode the AI recommended from the three options below.
+First, follow **section 12 below** to bring the repository and scripts up to date, then pick the command that matches the recovery mode the AI recommended from the three options below.
 
 **chainstate rebuild**
 
@@ -420,15 +420,7 @@ The Umbrel web UI Terminal starts inside the Umbrel container, so you must enter
 sudo nsenter -t 1 -m -u -i -n -p -- bash
 ```
 
-Once the prompt changes to `root@umbrel:/#`, you are on the host shell. Then run the commands below exactly as written.
-
-```bash
-cd /home/*/odroid-m1s-umbrel-recovery
-sudo git -c safe.directory='*' fetch origin main --prune
-sudo git -c safe.directory='*' reset --hard FETCH_HEAD
-```
-
-Then pick the command that matches the recovery mode the AI recommended from the three options below.
+Once the prompt changes to `root@umbrel:/#`, you are on the host shell. Then follow **section 12 below** to bring the repository and scripts up to date, and then pick the command that matches the recovery mode the AI recommended from the three options below.
 
 **chainstate rebuild**
 
