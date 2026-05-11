@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.7
+
+- Make `scripts/m1s-update-umbrel.sh` refresh its own repository from `origin/main` before planning or applying migrations, so users can keep running the same updater command without separate `git fetch` / `git reset` steps.
+- Re-execute the freshly synced updater once when the repository changed, then continue with `--skip-sync` to avoid loops while still using the latest published script logic.
+- Simplify the Korean and English update guide sections to the three commands users now need: enter the repository, run `--check`, then run the updater.
+
 ## 0.5.6
 
 - Remove the real-device validation coverage note from the public Korean and English recovery guides so the health-check section stays focused on what the user should actually type and read during recovery.
