@@ -40,7 +40,7 @@ mode_display_name() {
   case "$1" in
     chainstate-rebuild) printf 'chainstate rebuild\n' ;;
     reindex) printf 'reindex\n' ;;
-    full-resync) printf 'full resync\n' ;;
+    full-resync|full-download) printf 'full download\n' ;;
     *) printf '%s\n' "$1" ;;
   esac
 }
@@ -575,6 +575,89 @@ sys.exit(1)
 PY
 }
 
+summarize_reindex_log_progress() {
+  local request_epoch="$1"
+  local blocks_dir="$BITCOIN_CONFIG_DIR/blocks"
+  [[ -f "$DEBUG_LOG" ]] || return 1
+  python3 - "$DEBUG_LOG" "$request_epoch" "$blocks_dir" <<'PY'
+from pathlib import Path
+import datetime as dt
+import json
+import re
+import sys
+
+debug_log = Path(sys.argv[1])
+request_epoch = int(sys.argv[2])
+blocks_dir = Path(sys.argv[3])
+
+timestamp_re = re.compile(r'^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})Z')
+reindex_re = re.compile(r'Reindexing block file (blk(\d{5})\.dat)\.\.\.')
+loaded_re = re.compile(r'Loaded (\d+) blocks from external file')
+
+def parse_ts(line: str):
+    match = timestamp_re.match(line)
+    if not match:
+        return None
+    try:
+        return dt.datetime.strptime(match.group(1), '%Y-%m-%dT%H:%M:%S').replace(tzinfo=dt.timezone.utc)
+    except ValueError:
+        return None
+
+try:
+    text = debug_log.read_text(encoding='utf-8', errors='replace')
+except FileNotFoundError:
+    raise SystemExit(1)
+
+latest_file_name = ''
+latest_file_index = ''
+latest_file_epoch = ''
+latest_loaded_blocks = ''
+
+for line in text.splitlines():
+    ts = parse_ts(line)
+    if ts is not None and request_epoch > 0 and int(ts.timestamp()) < request_epoch:
+        continue
+    reindex_match = reindex_re.search(line)
+    if reindex_match:
+        latest_file_name = reindex_match.group(1)
+        latest_file_index = reindex_match.group(2)
+        latest_loaded_blocks = ''
+        if ts is not None:
+            latest_file_epoch = str(int(ts.timestamp()))
+        continue
+    if latest_file_name:
+        loaded_match = loaded_re.search(line)
+        if loaded_match:
+            latest_loaded_blocks = loaded_match.group(1)
+
+max_file_name = ''
+max_file_index = ''
+if blocks_dir.is_dir():
+    block_files = sorted(blocks_dir.glob('blk*.dat'))
+    if block_files:
+        max_file = max(block_files, key=lambda p: p.name)
+        max_file_name = max_file.name
+        max_file_index = max_file.name[3:8]
+
+progress_ratio = ''
+if latest_file_index and max_file_index:
+    current = int(latest_file_index)
+    maximum = int(max_file_index)
+    if maximum >= 0:
+        progress_ratio = f'{(current + 1) / (maximum + 1):.6f}'
+
+print(json.dumps({
+    'latest_file_name': latest_file_name,
+    'latest_file_index': latest_file_index,
+    'latest_file_epoch': latest_file_epoch,
+    'latest_loaded_blocks': latest_loaded_blocks,
+    'max_file_name': max_file_name,
+    'max_file_index': max_file_index,
+    'progress_ratio': progress_ratio,
+}))
+PY
+}
+
 summarize_chainstates_rpc() {
   local chainstates_json="$1"
   python3 -c 'import json, sys
@@ -793,6 +876,7 @@ resolve_recovery_mode() {
   local config_reindex="$2"
   local config_reindex_chainstate="$3"
   local log_mode="${4:-}"
+  local runtime_mode="${5:-}"
 
   if [[ -n "$state_mode" && "$state_mode" != "unknown" ]]; then
     printf '%s\n' "$state_mode"
@@ -808,6 +892,10 @@ resolve_recovery_mode() {
   fi
   if [[ -n "$log_mode" ]]; then
     printf '%s\n' "$log_mode"
+    return 0
+  fi
+  if [[ -n "$runtime_mode" ]]; then
+    printf '%s\n' "$runtime_mode"
     return 0
   fi
   printf 'unknown\n'
@@ -844,9 +932,15 @@ resolve_recovery_status() {
 }
 
 print_human_status() {
-  case "$1" in
+  local status="$1"
+  local mode="$2"
+  case "$status" in
     recovery-in-progress)
-      printf 'Current status: recovery in progress\n'
+      if [[ "$mode" == "full-resync" || "$mode" == "full-download" ]]; then
+        printf 'Current status: full download in progress\n'
+      else
+        printf 'Current status: recovery in progress\n'
+      fi
       ;;
     recovery-started-progress-unavailable)
       printf 'Current status: recovery appears to have started, but live progress is unavailable\n'
@@ -858,7 +952,11 @@ print_human_status() {
       printf 'Current status: no active recovery is visible right now\n'
       ;;
     recovery-inferred-from-runtime)
-      printf 'Current status: recovery appears to be in progress based on live runtime evidence\n'
+      if [[ "$mode" == "full-resync" || "$mode" == "full-download" ]]; then
+        printf 'Current status: full download appears to be in progress based on live runtime evidence\n'
+      else
+        printf 'Current status: recovery appears to be in progress based on live runtime evidence\n'
+      fi
       ;;
     *)
       printf 'Current status: no active recovery request detected\n'
@@ -870,10 +968,11 @@ run_recovery_status_check() {
   require_root
   require_single_bitcoin_config_dir
   local settings_json config_reindex config_reindex_chainstate includeconf_present managed_present
-  local state_file_present=0 request_epoch=0 active_request=0 had_prior_request=0 mode="unknown" log_mode=""
+  local state_file_present=0 request_epoch=0 active_request=0 had_prior_request=0 mode="unknown" log_mode="" runtime_mode=""
   local log_started=0 rpc_chainstates_ok=0 rpc_rebuild=0 rpc_progress="" rpc_blockchaininfo_ok=0 rpc_ibd=0 mode_known=0
   local blocks="" headers="" live_recovery_evidence=0 state status
   local chainstates_raw blockchaininfo_raw chainstates_summary blockchain_summary
+  local reindex_log_json="" reindex_latest_file="" reindex_max_file="" reindex_progress_ratio="" reindex_loaded_blocks=""
 
   settings_json="$(read_effective_settings_json)"
   RECOVERY_STATE_JSON="$(read_recovery_state_json || true)"
@@ -897,7 +996,6 @@ run_recovery_status_check() {
   fi
 
   log_mode="$(infer_recovery_mode_from_log "$request_epoch" 2>/dev/null || true)"
-  mode="$(resolve_recovery_mode "$mode" "$config_reindex" "$config_reindex_chainstate" "$log_mode")"
   if [[ "$mode" != "unknown" ]]; then
     mode_known=1
   fi
@@ -924,6 +1022,17 @@ run_recovery_status_check() {
     headers="$(json_field "$blockchain_summary" 'data.get("headers", "")')"
   fi
 
+  if [[ -z "$mode" || "$mode" == "unknown" ]]; then
+    if [[ "$rpc_ibd" -eq 1 && -n "$blocks" && -n "$headers" && "$headers" != "0" ]]; then
+      runtime_mode="full-download"
+    fi
+  fi
+
+  mode="$(resolve_recovery_mode "$mode" "$config_reindex" "$config_reindex_chainstate" "$log_mode" "$runtime_mode")"
+  if [[ "$mode" != "unknown" ]]; then
+    mode_known=1
+  fi
+
   if [[ "$mode_known" -eq 1 && ( "$rpc_rebuild" -eq 1 || "$rpc_ibd" -eq 1 ) ]]; then
     live_recovery_evidence=1
   fi
@@ -943,6 +1052,16 @@ run_recovery_status_check() {
 
   status="$(resolve_recovery_status "$active_request" "$live_recovery_evidence" "$log_started" "$had_prior_request" "$mode_known")"
   record_last_observed_state "$status"
+
+  if [[ "$mode" == "reindex" || "$log_mode" == "reindex" || "$config_reindex" -eq 1 ]]; then
+    reindex_log_json="$(summarize_reindex_log_progress "$request_epoch" 2>/dev/null || true)"
+    if [[ -n "$reindex_log_json" ]]; then
+      reindex_latest_file="$(json_field "$reindex_log_json" 'data.get("latest_file_name", "")')"
+      reindex_max_file="$(json_field "$reindex_log_json" 'data.get("max_file_name", "")')"
+      reindex_progress_ratio="$(json_field "$reindex_log_json" 'data.get("progress_ratio", "")')"
+      reindex_loaded_blocks="$(json_field "$reindex_log_json" 'data.get("latest_loaded_blocks", "")')"
+    fi
+  fi
 
   echo
   echo "=== ODROID M1S Bitcoin recovery status ==="
@@ -964,6 +1083,7 @@ run_recovery_status_check() {
   echo "Config chainstate present:$config_reindex_chainstate"
   echo "Managed request block:    $managed_present"
   echo "Log mode hint:            ${log_mode:-none}"
+  echo "Runtime mode hint:        ${runtime_mode:-none}"
   echo "Recent startup evidence:  $log_started"
   echo "RPC getchainstates:       $rpc_chainstates_ok"
   echo "RPC getblockchaininfo:    $rpc_blockchaininfo_ok"
@@ -979,8 +1099,17 @@ run_recovery_status_check() {
   else
     echo "Approx progress:          unavailable"
   fi
+  if [[ -n "$reindex_latest_file" || -n "$reindex_max_file" ]]; then
+    echo "Reindex blk file:         ${reindex_latest_file:-unknown} / ${reindex_max_file:-unknown}"
+  fi
+  if [[ -n "$reindex_progress_ratio" ]]; then
+    echo "Reindex file progress:    $(format_progress_percent "$reindex_progress_ratio")"
+  fi
+  if [[ -n "$reindex_loaded_blocks" ]]; then
+    echo "Last file load blocks:    $reindex_loaded_blocks"
+  fi
   echo
-  print_human_status "$status"
+  print_human_status "$status" "$mode"
   echo
 
   case "$status" in
