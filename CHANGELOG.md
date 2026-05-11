@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.6
+
+- Remove the real-device validation coverage note from the public Korean and English recovery guides so the health-check section stays focused on what the user should actually type and read during recovery.
+- Clarify the reindex-progress interpretation text in both guides so users know to trust `Reindex blk file`, `Reindex file progress`, and `Current status` when the generic RPC progress field remains at `0.00%` for a long time.
+
 ## 0.5.5
 
 - Add `scripts/m1s-start-bitcoin-chainstate-rebuild.sh`, a host-side Umbrel helper that safely records a temporary `reindex-chainstate=1` request in the custom `bitcoin.conf` section, refuses prune-mode or conflicting full-reindex configs, and automatically restarts the live Bitcoin app container so the public flow stays at `start + check`.

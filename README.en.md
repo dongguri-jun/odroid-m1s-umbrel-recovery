@@ -523,13 +523,6 @@ Each field means the following.
 - Last file load blocks: number of blocks loaded from the most recent `blkXXXXX.dat` file
 - **Current status**: human-readable summary of the current recovery state
 
-### Real-device validation coverage
-
-- **chainstate rebuild** — real execution verified
-- **reindex** — real execution verified
-- **shared health check** — real execution verified
-- **full resync** — `--dry-run` verified only (actual destructive execution not yet verified)
-
 ---
 
 ## 11. Safe shutdown
