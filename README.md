@@ -581,6 +581,13 @@ sudo bash scripts/m1s-update-umbrel.sh
 2. `sudo bash scripts/m1s-update-umbrel.sh --check` — 먼저 저장소를 GitHub의 최신 `origin/main` 상태와 똑같이 맞춘 뒤, 아무것도 바꾸지 않고 **현재 설치된 버전 · 최신 버전 · 적용될 수정 목록**만 보여 줍니다. 이미 최신이면 “No migrations needed” 처럼 안내됩니다.
 3. `sudo bash scripts/m1s-update-umbrel.sh` — 저장소를 다시 최신 상태로 맞춘 뒤 실제 업데이트를 적용합니다. 이미 최신이면 아무 작업 없이 끝납니다.
 
+만약 `--check` 결과의 `Script version` 이 `0.5.6` 이하로 나오고 바로 “No migrations needed” 로 끝나면, 그 장비에는 아직 자동 동기화 기능 자체가 없는 상태입니다. 이 경우에만 아래 두 줄을 **처음 한 번만** 실행한 뒤, 위 3줄을 다시 실행하세요.
+
+```bash
+sudo git -c safe.directory="$(pwd)" fetch origin
+sudo git -c safe.directory="$(pwd)" reset --hard origin/main
+```
+
 업데이트 중에는 Umbrel 화면이 잠시 열리지 않을 수 있습니다. 스크립트는 SSD가 `/mnt/fullnode`에 정상 연결되어 있는지 먼저 확인한 뒤, 기존 데이터 위치를 그대로 유지한 상태에서 필요한 부분만 갱신합니다.
 
 내부적으로는 현재 설치 버전에서 최신 버전까지 필요한 단계를 순서대로 적용합니다. 중간에 실패하면 성공한 단계까지만 기록한 뒤 멈추므로, 문제를 해결한 뒤 같은 명령을 다시 실행하면 안전하게 이어집니다.

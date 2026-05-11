@@ -572,6 +572,13 @@ What each line does:
 2. `sudo bash scripts/m1s-update-umbrel.sh --check` — first synchronizes the repository to the latest GitHub `origin/main`, then changes nothing and only shows the **currently installed version, latest version, and list of changes that will be applied**. If it is already up to date, it will show a message like “No migrations needed.”
 3. `sudo bash scripts/m1s-update-umbrel.sh` — synchronizes the repository again, then actually applies the update. If it is already up to date, it exits without doing anything.
 
+If the `--check` output says `Script version` is `0.5.6` or older and immediately exits with “No migrations needed,” that device does not have the auto-sync updater yet. In that case only, run the following two lines **once**, then run the 3-line updater flow above again.
+
+```bash
+sudo git -c safe.directory="$(pwd)" fetch origin
+sudo git -c safe.directory="$(pwd)" reset --hard origin/main
+```
+
 During the update, the Umbrel screen may not open for a short time. The script first checks that the SSD is properly connected at `/mnt/fullnode`, then updates only the necessary parts while keeping the existing data location intact.
 
 Internally, it applies the required steps from the currently installed version to the latest version in order. If a step fails, it records the steps that already succeeded and stops. After fixing the problem, you can safely run the same command again to continue.

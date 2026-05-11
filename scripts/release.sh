@@ -151,12 +151,19 @@ print(f'''## Highlights
 
 ## Upgrade path for existing installations
 
-Existing hosts can update in place with the usual updater command set. The updater now refreshes its repository from `origin/main` automatically:
+Existing hosts can update in place with the usual updater command set. On `0.5.7` and newer, the updater refreshes its repository from `origin/main` automatically:
 
 ```bash
 cd /home/*/odroid-m1s-umbrel-recovery
 sudo bash scripts/m1s-update-umbrel.sh --check
 sudo bash scripts/m1s-update-umbrel.sh
+```
+
+If the local updater is still `0.5.6` or older and exits with “No migrations needed,” run this one-time repository sync first, then rerun the updater commands above:
+
+```bash
+sudo git -c safe.directory="$(pwd)" fetch origin
+sudo git -c safe.directory="$(pwd)" reset --hard origin/main
 ```
 
 ## Verification
