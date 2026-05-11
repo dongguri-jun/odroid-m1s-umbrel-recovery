@@ -13,18 +13,22 @@ set -Eeuo pipefail
 # Options:
 #   --check        Print current/target versions and planned patches, then exit.
 #   --dry-run      Show actions without changing anything.
+#   --skip-sync    Do not refresh this repository from origin/main before updating.
 #   --version      Print script version and exit.
 #   -h, --help     Show this help.
 
-SCRIPT_VERSION="0.5.6"
+SCRIPT_VERSION="0.5.7"
 INSTALL_STATE_DIR="/etc/umbrel-recovery"
 INSTALL_STATE_FILE="$INSTALL_STATE_DIR/installed.json"
 DATA_DIR="/mnt/fullnode"
 UMBREL_IMAGE="dockurr/umbrel:1.5.0@sha256:4631e3da4ede19f0d6fc21f304d9994db5adba4ed3df786f9d249ee26733381a"
 SAFE_SHUTDOWN_SERVICE="/etc/systemd/system/m1s-umbrel-autostart.service"
+OFFICIAL_REPO_SLUG="dongguri-jun/odroid-m1s-umbrel-recovery"
 
 DRY_RUN=0
 CHECK_ONLY=0
+AUTO_SYNC=1
+SELF_SYNC_REEXECED=0
 
 MIGRATIONS=(
   "0.1.0_to_0.2.0"
@@ -55,6 +59,7 @@ MIGRATIONS=(
   "0.5.3_to_0.5.4"
   "0.5.4_to_0.5.5"
   "0.5.5_to_0.5.6"
+  "0.5.6_to_0.5.7"
 )
 
 log() {
@@ -75,6 +80,109 @@ run_cmd() {
     return 0
   fi
   "$@"
+}
+
+script_path() {
+  local source_path="${BASH_SOURCE[0]}"
+  if [[ "$source_path" == */* ]]; then
+    printf '%s/%s\n' "$(cd "$(dirname "$source_path")" && pwd -P)" "$(basename "$source_path")"
+  else
+    command -v -- "$source_path"
+  fi
+}
+
+script_dir() {
+  cd "$(dirname "$(script_path)")" && pwd -P
+}
+
+repo_root_from_script() {
+  if [[ -n "${AUTO_SYNC_REPO_ROOT_OVERRIDE:-}" ]]; then
+    cd "$AUTO_SYNC_REPO_ROOT_OVERRIDE" && pwd -P
+    return 0
+  fi
+
+  local dir
+  dir="$(script_dir)"
+  cd "$dir/.." && pwd -P
+}
+
+origin_url_is_official() {
+  local url="$1"
+  case "$url" in
+    "https://github.com/$OFFICIAL_REPO_SLUG"|\
+    "https://github.com/$OFFICIAL_REPO_SLUG.git"|\
+    "git@github.com:$OFFICIAL_REPO_SLUG.git"|\
+    "ssh://git@github.com/$OFFICIAL_REPO_SLUG.git")
+      return 0
+      ;;
+  esac
+  return 1
+}
+
+sync_repository_to_origin_main() {
+  [[ "$AUTO_SYNC" -eq 1 ]] || return 0
+
+  local repo_root current_head origin_head updated_script safe_directory origin_url
+  repo_root="$(repo_root_from_script)"
+
+  if [[ ! -d "$repo_root/.git" ]]; then
+    warn "Repository auto-sync skipped: $repo_root is not a git checkout."
+    warn "Continuing with the updater script already present on this device."
+    return 0
+  fi
+
+  if ! command -v git >/dev/null 2>&1; then
+    err "Repository auto-sync requires git, but git is not installed."
+    return 1
+  fi
+
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    echo "[DRY-RUN] git -c safe.directory=$repo_root -C $repo_root fetch origin"
+    echo "[DRY-RUN] git -c safe.directory=$repo_root -C $repo_root reset --hard origin/main"
+    return 0
+  fi
+
+  info "Syncing updater repository to origin/main before checking host migrations..."
+
+  safe_directory="safe.directory=$repo_root"
+  current_head="$(git -c "$safe_directory" -C "$repo_root" rev-parse HEAD 2>/dev/null || printf 'unknown')"
+
+  if ! origin_url="$(git -c "$safe_directory" -C "$repo_root" remote get-url origin 2>/dev/null)"; then
+    err "Repository auto-sync failed: git remote 'origin' is missing."
+    err "Run this updater from the official odroid-m1s-umbrel-recovery clone."
+    return 1
+  fi
+
+  if ! origin_url_is_official "$origin_url"; then
+    err "Repository auto-sync refused: origin does not point to the official repository."
+    err "Current origin: $origin_url"
+    err "Expected: https://github.com/$OFFICIAL_REPO_SLUG.git"
+    return 1
+  fi
+
+  git -c "$safe_directory" -C "$repo_root" fetch origin || {
+    err "Repository auto-sync failed while fetching origin/main. Check network connectivity, then rerun this updater."
+    return 1
+  }
+
+  origin_head="$(git -c "$safe_directory" -C "$repo_root" rev-parse origin/main 2>/dev/null || true)"
+  if [[ -z "$origin_head" ]]; then
+    err "Repository auto-sync failed: origin/main was not found after fetch."
+    return 1
+  fi
+
+  git -c "$safe_directory" -C "$repo_root" reset --hard origin/main || {
+    err "Repository auto-sync failed while resetting to origin/main."
+    return 1
+  }
+
+  if [[ "$current_head" != "$origin_head" && "$SELF_SYNC_REEXECED" -eq 0 ]]; then
+    updated_script="$repo_root/scripts/$(basename "$(script_path)")"
+    if [[ -f "$updated_script" ]]; then
+      info "Repository changed during auto-sync; restarting the latest updater script."
+      SELF_SYNC_REEXECED=1 exec bash "$updated_script" --skip-sync "$@"
+    fi
+  fi
 }
 
 ufw_is_active() {
@@ -153,6 +261,7 @@ Usage:
 Options:
   --check        Print current/target versions and planned patches, then exit.
   --dry-run      Show actions without changing anything.
+  --skip-sync    Do not refresh this repository from origin/main before updating.
   --version      Print script version and exit.
   -h, --help     Show this help.
 
@@ -161,6 +270,8 @@ Notes:
   - The updater never formats disks and never deletes user data. It may refresh
     the Umbrel system container only after validating that /data is backed by
     the existing /mnt/fullnode data mount.
+  - By default, the updater first refreshes this repository to origin/main, so
+    the same command keeps using the latest published script.
   - Safe to run repeatedly (idempotent).
 EOF
 }
@@ -173,6 +284,9 @@ parse_args() {
         ;;
       --dry-run)
         DRY_RUN=1
+        ;;
+      --skip-sync)
+        AUTO_SYNC=0
         ;;
       --version)
         printf '%s\n' "$SCRIPT_VERSION"
@@ -1626,6 +1740,10 @@ precheck_0_5_5_to_0_5_6() { precheck_common_canonical_install; }
 apply_0_5_5_to_0_5_6() { info "0.5.6 is a documentation-only release; no host changes required."; }
 postcheck_0_5_5_to_0_5_6() { return 0; }
 
+precheck_0_5_6_to_0_5_7() { precheck_common_canonical_install; }
+apply_0_5_6_to_0_5_7() { info "0.5.7 adds updater repository auto-sync; no host mutation required."; }
+postcheck_0_5_6_to_0_5_7() { return 0; }
+
 # ---------------------------------------------------------------------------
 # Main flow
 # ---------------------------------------------------------------------------
@@ -1633,6 +1751,7 @@ postcheck_0_5_5_to_0_5_6() { return 0; }
 main() {
   parse_args "$@"
   require_root
+  sync_repository_to_origin_main "$@"
 
   TARGET_VERSION="$SCRIPT_VERSION"
   CURRENT_VERSION="$(detect_installed_version)"
