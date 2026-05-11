@@ -562,8 +562,6 @@ This is how to bring an ODROID M1S that was already installed once up to the lat
 
 ```bash
 cd /home/*/odroid-m1s-umbrel-recovery
-sudo git -c safe.directory='*' fetch origin
-sudo git -c safe.directory='*' reset --hard origin/main
 sudo bash scripts/m1s-update-umbrel.sh --check
 sudo bash scripts/m1s-update-umbrel.sh
 ```
@@ -571,9 +569,8 @@ sudo bash scripts/m1s-update-umbrel.sh
 What each line does:
 
 1. `cd /home/*/odroid-m1s-umbrel-recovery` — moves into the repository folder downloaded during the first installation. The asterisk (`*`) means “automatically find any username,” so you do not need to type the username manually.
-2. `sudo git ... fetch origin` + `sudo git ... reset --hard origin/main` — makes the repository exactly match the latest version on GitHub. This guide repository is not meant to be manually edited by the user, so each update synchronizes it back to the original state.
-3. `sudo bash scripts/m1s-update-umbrel.sh --check` — changes nothing and only shows the **currently installed version, latest version, and list of changes that will be applied**. If it is already up to date, it will show a message like “No migrations needed.”
-4. `sudo bash scripts/m1s-update-umbrel.sh` — actually applies the update. If it is already up to date, it exits without doing anything.
+2. `sudo bash scripts/m1s-update-umbrel.sh --check` — first synchronizes the repository to the latest GitHub `origin/main`, then changes nothing and only shows the **currently installed version, latest version, and list of changes that will be applied**. If it is already up to date, it will show a message like “No migrations needed.”
+3. `sudo bash scripts/m1s-update-umbrel.sh` — synchronizes the repository again, then actually applies the update. If it is already up to date, it exits without doing anything.
 
 During the update, the Umbrel screen may not open for a short time. The script first checks that the SSD is properly connected at `/mnt/fullnode`, then updates only the necessary parts while keeping the existing data location intact.
 
@@ -617,8 +614,6 @@ From this state, enter **the same commands from step 12** exactly as shown. The 
 
 ```bash
 cd /home/*/odroid-m1s-umbrel-recovery
-sudo git -c safe.directory='*' fetch origin
-sudo git -c safe.directory='*' reset --hard origin/main
 sudo bash scripts/m1s-update-umbrel.sh --check
 sudo bash scripts/m1s-update-umbrel.sh
 ```

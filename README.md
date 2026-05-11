@@ -571,8 +571,6 @@ http://umbrel.local
 
 ```bash
 cd /home/*/odroid-m1s-umbrel-recovery
-sudo git -c safe.directory='*' fetch origin
-sudo git -c safe.directory='*' reset --hard origin/main
 sudo bash scripts/m1s-update-umbrel.sh --check
 sudo bash scripts/m1s-update-umbrel.sh
 ```
@@ -580,9 +578,8 @@ sudo bash scripts/m1s-update-umbrel.sh
 각 줄이 하는 일:
 
 1. `cd /home/*/odroid-m1s-umbrel-recovery` — 처음 설치할 때 받아 둔 저장소 폴더로 이동합니다. 별표(`*`)는 “어떤 사용자 이름이든 자동으로 찾기”를 의미하므로, 사용자 이름을 직접 입력할 필요가 없습니다.
-2. `sudo git ... fetch origin` + `sudo git ... reset --hard origin/main` — 저장소를 GitHub의 최신 상태와 똑같이 맞춥니다. 사용자가 손댄 적 없는 가이드 저장소이므로, 매번 “원본 그대로”로 동기화됩니다.
-3. `sudo bash scripts/m1s-update-umbrel.sh --check` — 아무것도 바꾸지 않고, **현재 설치된 버전 · 최신 버전 · 적용될 수정 목록**만 보여 줍니다. 이미 최신이면 “No migrations needed” 처럼 안내됩니다.
-4. `sudo bash scripts/m1s-update-umbrel.sh` — 실제로 업데이트를 적용합니다. 이미 최신이면 아무 작업 없이 끝납니다.
+2. `sudo bash scripts/m1s-update-umbrel.sh --check` — 먼저 저장소를 GitHub의 최신 `origin/main` 상태와 똑같이 맞춘 뒤, 아무것도 바꾸지 않고 **현재 설치된 버전 · 최신 버전 · 적용될 수정 목록**만 보여 줍니다. 이미 최신이면 “No migrations needed” 처럼 안내됩니다.
+3. `sudo bash scripts/m1s-update-umbrel.sh` — 저장소를 다시 최신 상태로 맞춘 뒤 실제 업데이트를 적용합니다. 이미 최신이면 아무 작업 없이 끝납니다.
 
 업데이트 중에는 Umbrel 화면이 잠시 열리지 않을 수 있습니다. 스크립트는 SSD가 `/mnt/fullnode`에 정상 연결되어 있는지 먼저 확인한 뒤, 기존 데이터 위치를 그대로 유지한 상태에서 필요한 부분만 갱신합니다.
 
@@ -626,8 +623,6 @@ root@umbrel:/#
 
 ```bash
 cd /home/*/odroid-m1s-umbrel-recovery
-sudo git -c safe.directory='*' fetch origin
-sudo git -c safe.directory='*' reset --hard origin/main
 sudo bash scripts/m1s-update-umbrel.sh --check
 sudo bash scripts/m1s-update-umbrel.sh
 ```
