@@ -151,12 +151,10 @@ print(f'''## Highlights
 
 ## Upgrade path for existing installations
 
-Existing hosts can update in place with the usual five-line command set:
+Existing hosts can update in place with the usual updater command set. The updater now refreshes its repository from `origin/main` automatically:
 
 ```bash
 cd /home/*/odroid-m1s-umbrel-recovery
-sudo git -c safe.directory='*' fetch origin
-sudo git -c safe.directory='*' reset --hard origin/main
 sudo bash scripts/m1s-update-umbrel.sh --check
 sudo bash scripts/m1s-update-umbrel.sh
 ```
