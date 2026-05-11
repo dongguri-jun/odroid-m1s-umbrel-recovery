@@ -753,12 +753,48 @@ run_recovery_start() {
   echo "  sudo bash scripts/m1s-check-bitcoin-recovery-status.sh"
 }
 
+infer_recovery_mode_from_log() {
+  local request_epoch="${1:-0}"
+  [[ -f "$DEBUG_LOG" ]] || return 1
+  python3 - "$DEBUG_LOG" "$request_epoch" <<'PY'
+from pathlib import Path
+import datetime as dt
+import re
+import sys
+
+path = Path(sys.argv[1])
+request_epoch = int(sys.argv[2])
+text = path.read_text(encoding='utf-8', errors='replace')
+mode = None
+for line in reversed(text.splitlines()):
+    ts_match = re.match(r'^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})Z', line)
+    if ts_match and request_epoch > 0:
+        try:
+            ts = dt.datetime.strptime(ts_match.group(1), '%Y-%m-%dT%H:%M:%S').replace(tzinfo=dt.timezone.utc)
+        except ValueError:
+            ts = None
+        if ts is not None and int(ts.timestamp()) < request_epoch:
+            break
+    if 'Config file arg: reindex-chainstate="1"' in line:
+        mode = 'chainstate-rebuild'
+        break
+    if 'Config file arg: reindex="1"' in line:
+        mode = 'reindex'
+        break
+if mode:
+    print(mode)
+    raise SystemExit(0)
+raise SystemExit(1)
+PY
+}
+
 resolve_recovery_mode() {
   local state_mode="$1"
   local config_reindex="$2"
   local config_reindex_chainstate="$3"
+  local log_mode="${4:-}"
 
-  if [[ -n "$state_mode" ]]; then
+  if [[ -n "$state_mode" && "$state_mode" != "unknown" ]]; then
     printf '%s\n' "$state_mode"
     return 0
   fi
@@ -768,6 +804,10 @@ resolve_recovery_mode() {
   fi
   if [[ "$config_reindex" == "1" ]]; then
     printf 'reindex\n'
+    return 0
+  fi
+  if [[ -n "$log_mode" ]]; then
+    printf '%s\n' "$log_mode"
     return 0
   fi
   printf 'unknown\n'
@@ -830,7 +870,7 @@ run_recovery_status_check() {
   require_root
   require_single_bitcoin_config_dir
   local settings_json config_reindex config_reindex_chainstate includeconf_present managed_present
-  local state_file_present=0 request_epoch=0 active_request=0 had_prior_request=0 mode="unknown"
+  local state_file_present=0 request_epoch=0 active_request=0 had_prior_request=0 mode="unknown" log_mode=""
   local log_started=0 rpc_chainstates_ok=0 rpc_rebuild=0 rpc_progress="" rpc_blockchaininfo_ok=0 rpc_ibd=0
   local blocks="" headers="" live_recovery_evidence=0 live_validation_without_request=0 state status
   local chainstates_raw blockchaininfo_raw chainstates_summary blockchain_summary
@@ -856,7 +896,8 @@ run_recovery_status_check() {
     had_prior_request=1
   fi
 
-  mode="$(resolve_recovery_mode "$mode" "$config_reindex" "$config_reindex_chainstate")"
+  log_mode="$(infer_recovery_mode_from_log "$request_epoch" 2>/dev/null || true)"
+  mode="$(resolve_recovery_mode "$mode" "$config_reindex" "$config_reindex_chainstate" "$log_mode")"
 
   if [[ "$request_epoch" =~ ^[0-9]+$ ]] && (( request_epoch > 0 )) && recent_recovery_start_after_request "$request_epoch"; then
     log_started=1
@@ -922,6 +963,7 @@ run_recovery_status_check() {
   echo "Config reindex present:   $config_reindex"
   echo "Config chainstate present:$config_reindex_chainstate"
   echo "Managed request block:    $managed_present"
+  echo "Log mode hint:            ${log_mode:-none}"
   echo "Recent startup evidence:  $log_started"
   echo "RPC getchainstates:       $rpc_chainstates_ok"
   echo "RPC getblockchaininfo:    $rpc_blockchaininfo_ok"
