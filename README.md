@@ -16,11 +16,13 @@
 
 이 문서는 **비개발자도 순서대로 따라할 수 있게** ODROID M1S에 Umbrel을 설치하는 방법을 정리한 가이드입니다.
 
-이 저장소에서 실제로 사용하는 파일은 아래 3개입니다.
+이 저장소에서 실제로 자주 사용하는 파일은 아래 5개입니다.
 
 - `scripts/m1s-clean-install-umbrel.sh` — Umbrel 설치 스크립트
 - `scripts/m1s-initial-setup.sh` — 초기 설정 스크립트 (계정/호스트 이름)
 - `scripts/m1s-update-umbrel.sh` — 이미 설치된 장비를 최신 버전으로 올리는 업데이트 스크립트
+- `scripts/m1s-start-bitcoin-chainstate-rebuild.sh` — Bitcoin chainstate 재구축 시작 스크립트
+- `scripts/m1s-check-bitcoin-chainstate-rebuild.sh` — Bitcoin chainstate 재구축 상태 확인 스크립트
 
 이 스크립트는 실제 ODROID M1S 실기기에서 테스트했습니다.
 
@@ -344,34 +346,6 @@ http://192.168.0.10
 
 ---
 
-## 9-1. Tailscale 앱을 사용할 때
-
-Umbrel App Store에서 **Tailscale** 앱을 설치하면, 로그인 화면은 Umbrel 메인 화면 안이 아니라 별도의 Tailscale 웹 화면으로 열립니다.
-
-이 앱은 일반적인 Umbrel 앱과 달리 **8240번 포트**를 직접 사용합니다.
-
-Umbrel Home과 비슷한 동작을 맞추기 위해, 이 프로젝트의 최신 설치/업데이트 스크립트는 **UFW를 비활성화**해서 Docker bridge / app proxy / host-network 앱이 host firewall에 막히지 않게 합니다.
-
-만약 Tailscale 앱을 눌렀을 때 새 창에서 아래처럼 보이면:
-
-```text
-사이트에 연결할 수 없음
-ERR_CONNECTION_TIMED_OUT
-```
-
-먼저 아래 업데이트 절차를 실행해 주세요.
-
-```bash
-cd /home/*/odroid-m1s-umbrel-recovery
-sudo git -c safe.directory='*' fetch origin
-sudo git -c safe.directory='*' reset --hard origin/main
-sudo bash scripts/m1s-update-umbrel.sh
-```
-
-그 다음 다시 Umbrel 화면에서 Tailscale 앱을 열어 로그인하면 됩니다.
-
----
-
 ## 10. Bitcoin 노드 앱 설치
 
 Umbrel 계정을 만든 뒤에는 App Store에서 **Bitcoin 노드 앱**을 설치합니다.
@@ -392,6 +366,179 @@ Umbrel 계정을 만든 뒤에는 App Store에서 **Bitcoin 노드 앱**을 설�
 실사용 기준으로는 동기화가 길어질 때 **작은 손선풍기를 메인보드 위쪽으로 바람이 가게 얹어 두면**, 열을 더 빨리 식히는 데 도움이 될 수 있습니다.
 
 발열이 낮아지면 스로틀링을 줄이는 데 도움이 될 수 있으므로, 경우에 따라 동기화가 더 안정적이고 빠르게 진행될 수 있습니다.
+
+## 10-1. Bitcoin 데이터 복구하기
+
+Bitcoin 노드가 갑자기 멈추거나 연결이 끊겼을 때, 아래 순서로 진행합니다.
+
+### 1) 먼저 어떤 복구가 맞는지 판단하기
+
+복구 방식은 3가지가 있습니다.
+
+- **chainstate rebuild** — 블록 데이터는 살리고 chainstate만 다시 만들 때 (가장 먼저 시도)
+- **reindex** — blocks는 유지하되 index/chainstate를 더 크게 다시 훑을 때
+- **full resync** — 모든 데이터를 지우고 처음부터 다시 받을 때 (가장 마지막 수단)
+
+잘 모르겠다면 Bitcoin/Umbrel 오류 로그를 AI에게 복사해서 붙여 넣고 아래처럼 물어보세요.
+
+```text
+이 오류 로그를 보면
+1) chainstate rebuild
+2) reindex
+3) full resync
+중 어떤 복구가 맞아?
+그리고 Umbrel Terminal에서 어떤 명령어를 입력하면 돼?
+```
+
+가능하면 에러가 시작되는 부분부터 종료 메시지까지 함께 복사하세요.
+
+### 2) 복구 명령 실행하기 (SSH)
+
+AI가 추천한 복구 방식에 맞는 명령을 아래 3가지 중에서 고르세요.
+
+**chainstate rebuild**
+
+```bash
+sudo bash scripts/m1s-start-bitcoin-chainstate-rebuild.sh
+sudo bash scripts/m1s-check-bitcoin-recovery-status.sh
+```
+
+**reindex**
+
+```bash
+sudo bash scripts/m1s-start-bitcoin-reindex.sh
+sudo bash scripts/m1s-check-bitcoin-recovery-status.sh
+```
+
+**full resync**
+
+```bash
+sudo bash scripts/m1s-start-bitcoin-full-resync.sh
+sudo bash scripts/m1s-check-bitcoin-recovery-status.sh
+```
+
+### 3) Umbrel 웹 Terminal에서 실행하는 경우
+
+Umbrel 웹 화면 안의 Terminal은 처음에는 **Umbrel 컨테이너 안**이므로, 먼저 host shell로 들어가야 합니다.
+
+1. Umbrel 웹 화면에 로그인
+2. **Settings → Advanced settings → Terminal** 로 이동 (한국어: 설정 → 고급 설정 → 터미널)
+3. 터미널이 열리면 가장 먼저 아래를 입력
+
+```bash
+sudo nsenter -t 1 -m -u -i -n -p -- bash
+```
+
+프롬프트가 `root@umbrel:/#` 형태로 바뀌면 host shell입니다. 그다음 아래 명령을 그대로 입력하세요.
+
+```bash
+cd /home/*/odroid-m1s-umbrel-recovery
+sudo git -c safe.directory='*' fetch origin main --prune
+sudo git -c safe.directory='*' reset --hard FETCH_HEAD
+```
+
+그 다음 AI가 추천한 복구 방식에 맞는 명령을 아래 3가지 중에서 고르세요.
+
+**chainstate rebuild**
+
+```bash
+sudo bash scripts/m1s-start-bitcoin-chainstate-rebuild.sh
+sudo bash scripts/m1s-check-bitcoin-recovery-status.sh
+```
+
+**reindex**
+
+```bash
+sudo bash scripts/m1s-start-bitcoin-reindex.sh
+sudo bash scripts/m1s-check-bitcoin-recovery-status.sh
+```
+
+**full resync**
+
+```bash
+sudo bash scripts/m1s-start-bitcoin-full-resync.sh
+sudo bash scripts/m1s-check-bitcoin-recovery-status.sh
+```
+
+### 공용 헬스체크
+
+복구를 시작한 뒤에는 아래 명령으로 상태를 반복 확인하면 됩니다.
+
+```bash
+sudo bash scripts/m1s-check-bitcoin-recovery-status.sh
+```
+
+실제 실행하면 이런 식으로 나옵니다.
+
+```text
+=== ODROID M1S Bitcoin recovery status ===
+Script version:           0.5.5
+Recovery mode:            reindex
+Bitcoin config dir:       /mnt/fullnode/app-data/bitcoin/data/bitcoin
+bitcoin.conf:             /mnt/fullnode/app-data/bitcoin/data/bitcoin/bitcoin.conf
+umbrel-bitcoin.conf:      /mnt/fullnode/app-data/bitcoin/data/bitcoin/umbrel-bitcoin.conf
+debug.log:                /mnt/fullnode/app-data/bitcoin/data/bitcoin/debug.log
+State file:               /etc/umbrel-recovery/bitcoin-recovery.json
+State file present:       1
+Requested at:             2026-05-11T09:08:36.719946+00:00
+Active request:           0
+Last observed state:      recovery-in-progress
+Include banner present:   0
+Config reindex present:   0
+Config chainstate present:0
+Managed request block:    0
+Log mode hint:            reindex
+Runtime mode hint:        none
+Recent startup evidence:  1
+RPC getchainstates:       1
+RPC getblockchaininfo:    1
+Blocks / headers:         0 / 576166
+Approx progress:          0.00%
+Reindex blk file:         blk01743.dat / blk01799.dat
+Reindex file progress:    96.89%
+Last file load blocks:    250
+
+Current status: recovery in progress
+
+Use this same command again later to watch the live progress estimate.
+```
+
+각 항목은 다음과 같습니다.
+
+- Script version: 이 스크립트의 버전
+- **Recovery mode**: 현재 감지된 복구 방식 (chainstate rebuild / reindex / full resync / unknown)
+- Bitcoin config dir: Bitcoin Core 설정 파일이 있는 디렉터리 경로
+- bitcoin.conf: Bitcoin Core 메인 설정 파일 경로
+- umbrel-bitcoin.conf: Umbrel이 자동 생성한 Bitcoin 설정 파일 경로
+- debug.log: Bitcoin Core 실행 로그 파일 경로
+- State file present: 복구 요청 상태 파일이 존재하면 1, 없으면 0
+- Requested at: 복구를 요청한 시각
+- Active request: 아직 처리되지 않은 활성 복구 요청이 있으면 1, 없으면 0
+- Last observed state: 마지막으로 기록된 복구 상태
+- Config reindex present: 설정 파일에 reindex=1이 있으면 1
+- Config chainstate present: 설정 파일에 reindex-chainstate=1이 있으면 1
+- Log mode hint: debug.log에서 추론한 복구 모드
+- Runtime mode hint: 실시간 RPC 값으로 추론한 복구 모드
+- Recent startup evidence: 요청 이후 Bitcoin이 실제로 재시작된 로그 증거가 있으면 1
+- RPC getchainstates: bitcoin-cli getchainstates 호출 성공 여부
+- RPC getblockchaininfo: bitcoin-cli getblockchaininfo 호출 성공 여부
+- **Blocks / headers**: 현재 동기화된 블록 수 / 전체 알려진 헤더 수
+- **Approx progress**: 블록 동기화 대략적인 진행률
+- Reindex blk file: 현재 다시 읽는 `blkXXXXX.dat` 파일 / 디스크에 있는 마지막 `blkXXXXX.dat` 파일
+- Reindex file progress: 리인덱스가 block 파일 기준으로 어디까지 왔는지 보여주는 대략적인 진행률
+- Last file load blocks: 가장 최근 `blkXXXXX.dat` 파일에서 읽은 블록 수
+- **Current status**: 현재 복구 상태를 사람이 읽을 수 있는 문장으로 요약
+
+### 실기 검증 범위
+
+실기기 ODROID M1S 기준으로 현재까지 확인된 범위는 아래와 같습니다.
+
+- **chainstate rebuild** — 실제 실행 검증 완료
+- **reindex** — 실제 실행 검증 완료
+- **공용 헬스체크** — 실제 실행 검증 완료
+- **full resync** — `--dry-run` 검증만 완료 (실제 destructive 실행은 아직 미검증)
+
+즉, chainstate rebuild와 reindex는 현재 실사용 가능한 수준까지 확인했고, full resync는 더 강한 주의가 필요합니다.
 
 ---
 
