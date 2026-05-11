@@ -9,6 +9,12 @@ test_scripts=(tests/*.sh)
 git_hooks=(.githooks/*)
 installer="scripts/m1s-clean-install-umbrel.sh"
 updater="scripts/m1s-update-umbrel.sh"
+chainstate_starter="scripts/m1s-start-bitcoin-chainstate-rebuild.sh"
+reindex_starter="scripts/m1s-start-bitcoin-reindex.sh"
+full_resync_starter="scripts/m1s-start-bitcoin-full-resync.sh"
+chainstate_requester="scripts/m1s-request-bitcoin-chainstate-rebuild.sh"
+recovery_checker="scripts/m1s-check-bitcoin-recovery-status.sh"
+chainstate_checker="scripts/m1s-check-bitcoin-chainstate-rebuild.sh"
 
 printf '[verify] bash syntax\n'
 for script in "${scripts[@]}" "${test_scripts[@]}" "${git_hooks[@]}"; do
@@ -25,7 +31,7 @@ else
 fi
 
 printf '[verify] script version flags\n'
-for script in "$installer" "$updater"; do
+for script in "$installer" "$updater" "$chainstate_starter" "$reindex_starter" "$full_resync_starter" "$chainstate_requester" "$recovery_checker" "$chainstate_checker"; do
   bash "$script" --version >/dev/null
   printf '  ok bash %s --version\n' "$script"
 done
@@ -36,7 +42,16 @@ from pathlib import Path
 import re
 
 version = Path('VERSION').read_text(encoding='utf-8').strip()
-for path in [Path('scripts/m1s-clean-install-umbrel.sh'), Path('scripts/m1s-update-umbrel.sh')]:
+for path in [
+    Path('scripts/m1s-clean-install-umbrel.sh'),
+    Path('scripts/m1s-update-umbrel.sh'),
+    Path('scripts/m1s-start-bitcoin-chainstate-rebuild.sh'),
+    Path('scripts/m1s-start-bitcoin-reindex.sh'),
+    Path('scripts/m1s-start-bitcoin-full-resync.sh'),
+    Path('scripts/m1s-request-bitcoin-chainstate-rebuild.sh'),
+    Path('scripts/m1s-check-bitcoin-recovery-status.sh'),
+    Path('scripts/m1s-check-bitcoin-chainstate-rebuild.sh'),
+]:
     text = path.read_text(encoding='utf-8')
     match = re.search(r'^SCRIPT_VERSION="([^"]+)"', text, flags=re.M)
     if not match:
@@ -259,10 +274,18 @@ required = [
     'apply_0_5_1_to_0_5_2',
     'postcheck_0_5_1_to_0_5_2',
     '"0.5.2_to_0.5.3"',
+    '"0.5.3_to_0.5.4"',
+    '"0.5.4_to_0.5.5"',
     'remove_pwm_fan_config',
     'precheck_0_5_2_to_0_5_3',
     'apply_0_5_2_to_0_5_3',
     'postcheck_0_5_2_to_0_5_3',
+    'precheck_0_5_3_to_0_5_4',
+    'apply_0_5_3_to_0_5_4',
+    'postcheck_0_5_3_to_0_5_4',
+    'precheck_0_5_4_to_0_5_5',
+    'apply_0_5_4_to_0_5_5',
+    'postcheck_0_5_4_to_0_5_5',
     '/boot/config.ini',
     '[overlay_pwm]',
     'overlay_profile',

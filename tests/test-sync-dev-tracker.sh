@@ -38,11 +38,12 @@ print(Path(sys.argv[1]).read_text(encoding='utf-8'))
 PY
 )"
 current_branch="$(git branch --show-current)"
+current_version="$(<VERSION)"
 expected_branch_line="Branch: \`${current_branch}\`"
+expected_version_line="Working version: \`${current_version}\`"
 assert_contains "$tracker_text" '## Current branch' 'Tracker heading should remain present'
 assert_contains "$tracker_text" "$expected_branch_line" 'Tracker should reflect the current branch'
-# shellcheck disable=SC2016
-assert_contains "$tracker_text" 'Working version: `0.5.3`' 'Tracker should reflect VERSION'
+assert_contains "$tracker_text" "$expected_version_line" 'Tracker should reflect VERSION'
 assert_contains "$tracker_text" 'scripts/sync-dev-tracker.sh' 'Tracker status should mention tracker automation when script itself is modified'
 assert_contains "$tracker_text" 'Non-destructive preview on target ODROID M1S' 'Pending device tests should include the standard checklist'
 cp "$sync_script_backup" scripts/sync-dev-tracker.sh
