@@ -818,13 +818,13 @@ resolve_recovery_status() {
   local live_recovery_evidence="$2"
   local log_started="$3"
   local had_prior_request="$4"
-  local live_validation_without_request="$5"
+  local mode_known="$5"
 
   if [[ "$live_recovery_evidence" -eq 1 ]]; then
     printf 'recovery-in-progress\n'
     return 0
   fi
-  if [[ "$log_started" -eq 1 && "$active_request" -eq 1 ]]; then
+  if [[ "$log_started" -eq 1 && ( "$active_request" -eq 1 || "$mode_known" -eq 1 ) ]]; then
     printf 'recovery-started-progress-unavailable\n'
     return 0
   fi
@@ -836,8 +836,8 @@ resolve_recovery_status() {
     printf 'recovery-not-currently-detected\n'
     return 0
   fi
-  if [[ "$live_validation_without_request" -eq 1 ]]; then
-    printf 'live-validation-unconfirmed\n'
+  if [[ "$mode_known" -eq 1 ]]; then
+    printf 'recovery-inferred-from-runtime\n'
     return 0
   fi
   printf 'no-recovery-detected\n'
@@ -857,8 +857,8 @@ print_human_status() {
     recovery-not-currently-detected)
       printf 'Current status: no active recovery is visible right now\n'
       ;;
-    live-validation-unconfirmed)
-      printf 'Current status: live validation activity detected, but this script cannot prove it belongs to a tracked recovery mode\n'
+    recovery-inferred-from-runtime)
+      printf 'Current status: recovery appears to be in progress based on live runtime evidence\n'
       ;;
     *)
       printf 'Current status: no active recovery request detected\n'
@@ -871,8 +871,8 @@ run_recovery_status_check() {
   require_single_bitcoin_config_dir
   local settings_json config_reindex config_reindex_chainstate includeconf_present managed_present
   local state_file_present=0 request_epoch=0 active_request=0 had_prior_request=0 mode="unknown" log_mode=""
-  local log_started=0 rpc_chainstates_ok=0 rpc_rebuild=0 rpc_progress="" rpc_blockchaininfo_ok=0 rpc_ibd=0
-  local blocks="" headers="" live_recovery_evidence=0 live_validation_without_request=0 state status
+  local log_started=0 rpc_chainstates_ok=0 rpc_rebuild=0 rpc_progress="" rpc_blockchaininfo_ok=0 rpc_ibd=0 mode_known=0
+  local blocks="" headers="" live_recovery_evidence=0 state status
   local chainstates_raw blockchaininfo_raw chainstates_summary blockchain_summary
 
   settings_json="$(read_effective_settings_json)"
@@ -898,6 +898,9 @@ run_recovery_status_check() {
 
   log_mode="$(infer_recovery_mode_from_log "$request_epoch" 2>/dev/null || true)"
   mode="$(resolve_recovery_mode "$mode" "$config_reindex" "$config_reindex_chainstate" "$log_mode")"
+  if [[ "$mode" != "unknown" ]]; then
+    mode_known=1
+  fi
 
   if [[ "$request_epoch" =~ ^[0-9]+$ ]] && (( request_epoch > 0 )) && recent_recovery_start_after_request "$request_epoch"; then
     log_started=1
@@ -921,11 +924,8 @@ run_recovery_status_check() {
     headers="$(json_field "$blockchain_summary" 'data.get("headers", "")')"
   fi
 
-  if [[ "$had_prior_request" -eq 1 && ( "$rpc_rebuild" -eq 1 || "$rpc_ibd" -eq 1 ) ]]; then
+  if [[ "$mode_known" -eq 1 && ( "$rpc_rebuild" -eq 1 || "$rpc_ibd" -eq 1 ) ]]; then
     live_recovery_evidence=1
-  fi
-  if [[ "$had_prior_request" -eq 0 && ( "$rpc_rebuild" -eq 1 || "$rpc_ibd" -eq 1 ) ]]; then
-    live_validation_without_request=1
   fi
 
   if [[ "$active_request" -eq 1 && ( "$rpc_rebuild" -eq 1 || "$rpc_ibd" -eq 1 || "$log_started" -eq 1 ) ]]; then
@@ -941,7 +941,7 @@ run_recovery_status_check() {
     live_recovery_evidence=1
   fi
 
-  status="$(resolve_recovery_status "$active_request" "$live_recovery_evidence" "$log_started" "$had_prior_request" "$live_validation_without_request")"
+  status="$(resolve_recovery_status "$active_request" "$live_recovery_evidence" "$log_started" "$had_prior_request" "$mode_known")"
   record_last_observed_state "$status"
 
   echo
@@ -999,8 +999,9 @@ run_recovery_status_check() {
       echo "A previous recovery request exists in the local state file, but no active recovery is visible right now."
       echo "If the Bitcoin app is healthy, the recovery may already be finished or no longer active."
       ;;
-    live-validation-unconfirmed)
-      echo "The node is doing live validation work, but there is no matching tracked recovery request."
+    recovery-inferred-from-runtime)
+      echo "The node is showing runtime evidence that matches the inferred recovery mode above."
+      echo "This usually means the recovery was started outside the new tracked scripts, but is still in progress."
       ;;
     no-recovery-detected)
       echo "No tracked Bitcoin recovery mode is visible right now."
