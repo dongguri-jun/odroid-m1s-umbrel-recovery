@@ -82,89 +82,167 @@ with_test_state() {
   new_test_state
 }
 
+new_auto_sync_test_repo() {
+  TEST_TMPDIR="$(mktemp -d)"
+  AUTO_SYNC_REPO_ROOT_OVERRIDE="$TEST_TMPDIR/repo"
+  mkdir -p "$AUTO_SYNC_REPO_ROOT_OVERRIDE/.git" "$AUTO_SYNC_REPO_ROOT_OVERRIDE/scripts" "$TEST_TMPDIR/bin"
+  : > "$AUTO_SYNC_REPO_ROOT_OVERRIDE/scripts/m1s-update-umbrel.sh"
+  export AUTO_SYNC_REPO_ROOT_OVERRIDE
+  export FAKE_GIT_LOG="$TEST_TMPDIR/git.log"
+  export FAKE_BASH_LOG="$TEST_TMPDIR/bash.log"
+  export FAKE_ORIGIN_URL="https://github.com/dongguri-jun/odroid-m1s-umbrel-recovery.git"
+  export FAKE_HEAD="old-head"
+  export FAKE_ORIGIN_HEAD="old-head"
+  export FAKE_FETCH_FAIL=0
+  export FAKE_ORIGIN_MAIN_MISSING=0
+  : > "$FAKE_GIT_LOG"
+  : > "$FAKE_BASH_LOG"
+  cat > "$TEST_TMPDIR/bin/git" <<'EOF'
+#!/bin/bash
+set -Eeuo pipefail
+printf '%s\n' "$*" >> "$FAKE_GIT_LOG"
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -c)
+      shift 2
+      ;;
+    -C)
+      shift 2
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
+case "${1:-}" in
+  rev-parse)
+    case "${2:-}" in
+      HEAD)
+        printf '%s\n' "$FAKE_HEAD"
+        ;;
+      origin/main)
+        [[ "${FAKE_ORIGIN_MAIN_MISSING:-0}" -eq 0 ]] || exit 1
+        printf '%s\n' "$FAKE_ORIGIN_HEAD"
+        ;;
+      *)
+        exit 1
+        ;;
+    esac
+    ;;
+  remote)
+    [[ "${2:-}" == "get-url" && "${3:-}" == "origin" ]] || exit 1
+    printf '%s\n' "$FAKE_ORIGIN_URL"
+    ;;
+  fetch)
+    [[ "${FAKE_FETCH_FAIL:-0}" -eq 0 ]] || exit 1
+    [[ "${2:-}" == "origin" ]] || exit 1
+    ;;
+  reset)
+    [[ "${2:-}" == "--hard" && "${3:-}" == "origin/main" ]] || exit 1
+    ;;
+  *)
+    exit 1
+    ;;
+esac
+EOF
+  cat > "$TEST_TMPDIR/bin/bash" <<'EOF'
+#!/bin/bash
+set -Eeuo pipefail
+printf '%s\n' "$*" > "$FAKE_BASH_LOG"
+exit 42
+EOF
+  chmod +x "$TEST_TMPDIR/bin/git" "$TEST_TMPDIR/bin/bash"
+  PATH="$TEST_TMPDIR/bin:$PATH"
+  export PATH
+}
+
 printf '[unit] updater migration plan\n'
 with_test_state
 build_migration_plan "0.1.0"
-assert_eq "28" "${#PLANNED_MIGRATIONS[@]}" "0.1.0 should plan every post-0.1 migration"
+assert_eq "29" "${#PLANNED_MIGRATIONS[@]}" "0.1.0 should plan every post-0.1 migration"
 assert_eq "0.1.0_to_0.2.0" "${PLANNED_MIGRATIONS[0]}" "first planned migration from 0.1.0"
-assert_eq "0.5.5_to_0.5.6" "${PLANNED_MIGRATIONS[27]}" "last planned migration from 0.1.0"
+assert_eq "0.5.6_to_0.5.7" "${PLANNED_MIGRATIONS[28]}" "last planned migration from 0.1.0"
 build_migration_plan "0.4.5"
-assert_eq "20" "${#PLANNED_MIGRATIONS[@]}" "0.4.5 should plan bookkeeping, shutdown safety steps, and later documentation/history steps"
+assert_eq "21" "${#PLANNED_MIGRATIONS[@]}" "0.4.5 should plan bookkeeping, shutdown safety steps, and later documentation/history steps"
 assert_eq "0.4.5_to_0.4.6" "${PLANNED_MIGRATIONS[0]}" "0.4.5 first planned migration"
-assert_eq "0.5.5_to_0.5.6" "${PLANNED_MIGRATIONS[19]}" "0.4.5 final planned migration"
+assert_eq "0.5.6_to_0.5.7" "${PLANNED_MIGRATIONS[20]}" "0.4.5 final planned migration"
 build_migration_plan "0.4.7"
-assert_eq "18" "${#PLANNED_MIGRATIONS[@]}" "0.4.7 should plan backend-delay, frontend cleanup, stabilization, browser-neutral container-stop, Tailscale firewall migrations, UFW disable parity migration, PWM cleanup, and later history steps"
+assert_eq "19" "${#PLANNED_MIGRATIONS[@]}" "0.4.7 should plan backend-delay, frontend cleanup, stabilization, browser-neutral container-stop, Tailscale firewall migrations, UFW disable parity migration, PWM cleanup, and later history steps"
 assert_eq "0.4.7_to_0.4.8" "${PLANNED_MIGRATIONS[0]}" "0.4.7 first planned migration"
-assert_eq "0.5.5_to_0.5.6" "${PLANNED_MIGRATIONS[17]}" "0.4.7 final planned migration"
+assert_eq "0.5.6_to_0.5.7" "${PLANNED_MIGRATIONS[18]}" "0.4.7 final planned migration"
 build_migration_plan "0.4.8"
-assert_eq "17" "${#PLANNED_MIGRATIONS[@]}" "0.4.8 should plan frontend experiments, stabilization, browser-neutral container-stop, Tailscale firewall migrations, UFW disable parity migration, PWM cleanup, and later history steps"
+assert_eq "18" "${#PLANNED_MIGRATIONS[@]}" "0.4.8 should plan frontend experiments, stabilization, browser-neutral container-stop, Tailscale firewall migrations, UFW disable parity migration, PWM cleanup, and later history steps"
 assert_eq "0.4.8_to_0.4.9" "${PLANNED_MIGRATIONS[0]}" "0.4.8 first planned migration"
-assert_eq "0.5.5_to_0.5.6" "${PLANNED_MIGRATIONS[16]}" "0.4.8 final planned migration"
+assert_eq "0.5.6_to_0.5.7" "${PLANNED_MIGRATIONS[17]}" "0.4.8 final planned migration"
 build_migration_plan "0.4.9"
-assert_eq "16" "${#PLANNED_MIGRATIONS[@]}" "0.4.9 should plan cache-bust, stabilization, browser-neutral container-stop, Tailscale firewall migrations, UFW disable parity migration, PWM cleanup, and later history steps"
+assert_eq "17" "${#PLANNED_MIGRATIONS[@]}" "0.4.9 should plan cache-bust, stabilization, browser-neutral container-stop, Tailscale firewall migrations, UFW disable parity migration, PWM cleanup, and later history steps"
 assert_eq "0.4.9_to_0.4.10" "${PLANNED_MIGRATIONS[0]}" "0.4.9 first planned migration"
-assert_eq "0.5.5_to_0.5.6" "${PLANNED_MIGRATIONS[15]}" "0.4.9 final planned migration"
+assert_eq "0.5.6_to_0.5.7" "${PLANNED_MIGRATIONS[16]}" "0.4.9 final planned migration"
 build_migration_plan "0.4.10"
-assert_eq "15" "${#PLANNED_MIGRATIONS[@]}" "0.4.10 should plan stabilization, browser-neutral container-stop, Tailscale firewall migrations, UFW disable parity migration, PWM cleanup, and later history steps"
+assert_eq "16" "${#PLANNED_MIGRATIONS[@]}" "0.4.10 should plan stabilization, browser-neutral container-stop, Tailscale firewall migrations, UFW disable parity migration, PWM cleanup, and later history steps"
 assert_eq "0.4.10_to_0.4.11" "${PLANNED_MIGRATIONS[0]}" "0.4.10 first planned migration"
-assert_eq "0.5.5_to_0.5.6" "${PLANNED_MIGRATIONS[14]}" "0.4.10 final planned migration"
+assert_eq "0.5.6_to_0.5.7" "${PLANNED_MIGRATIONS[15]}" "0.4.10 final planned migration"
 build_migration_plan "0.4.11"
-assert_eq "14" "${#PLANNED_MIGRATIONS[@]}" "0.4.11 should plan browser-neutral container-stop, Tailscale firewall migrations, UFW disable parity migration, PWM cleanup, and later history steps"
+assert_eq "15" "${#PLANNED_MIGRATIONS[@]}" "0.4.11 should plan browser-neutral container-stop, Tailscale firewall migrations, UFW disable parity migration, PWM cleanup, and later history steps"
 assert_eq "0.4.11_to_0.4.12" "${PLANNED_MIGRATIONS[0]}" "0.4.11 first planned migration"
-assert_eq "0.5.5_to_0.5.6" "${PLANNED_MIGRATIONS[13]}" "0.4.11 final planned migration"
+assert_eq "0.5.6_to_0.5.7" "${PLANNED_MIGRATIONS[14]}" "0.4.11 final planned migration"
 build_migration_plan "0.4.12"
-assert_eq "13" "${#PLANNED_MIGRATIONS[@]}" "0.4.12 should plan documentation, installer-only history, Tailscale firewall migrations, UFW disable parity migration, PWM cleanup, and later history steps"
+assert_eq "14" "${#PLANNED_MIGRATIONS[@]}" "0.4.12 should plan documentation, installer-only history, Tailscale firewall migrations, UFW disable parity migration, PWM cleanup, and later history steps"
 assert_eq "0.4.12_to_0.4.13" "${PLANNED_MIGRATIONS[0]}" "0.4.12 first planned migration"
-assert_eq "0.5.5_to_0.5.6" "${PLANNED_MIGRATIONS[12]}" "0.4.12 final planned migration"
+assert_eq "0.5.6_to_0.5.7" "${PLANNED_MIGRATIONS[13]}" "0.4.12 final planned migration"
 build_migration_plan "0.4.13"
-assert_eq "12" "${#PLANNED_MIGRATIONS[@]}" "0.4.13 should plan installer-only history, Tailscale firewall migrations, UFW disable parity migration, PWM cleanup, and later history steps"
+assert_eq "13" "${#PLANNED_MIGRATIONS[@]}" "0.4.13 should plan installer-only history, Tailscale firewall migrations, UFW disable parity migration, PWM cleanup, and later history steps"
 assert_eq "0.4.13_to_0.4.14" "${PLANNED_MIGRATIONS[0]}" "0.4.13 first planned migration"
-assert_eq "0.5.5_to_0.5.6" "${PLANNED_MIGRATIONS[11]}" "0.4.13 final planned migration"
+assert_eq "0.5.6_to_0.5.7" "${PLANNED_MIGRATIONS[12]}" "0.4.13 final planned migration"
 build_migration_plan "0.4.14"
-assert_eq "11" "${#PLANNED_MIGRATIONS[@]}" "0.4.14 should plan installer-only history, Tailscale firewall migrations, UFW disable parity migration, PWM cleanup, and later history steps"
+assert_eq "12" "${#PLANNED_MIGRATIONS[@]}" "0.4.14 should plan installer-only history, Tailscale firewall migrations, UFW disable parity migration, PWM cleanup, and later history steps"
 assert_eq "0.4.14_to_0.4.15" "${PLANNED_MIGRATIONS[0]}" "0.4.14 first planned migration"
-assert_eq "0.5.5_to_0.5.6" "${PLANNED_MIGRATIONS[10]}" "0.4.14 final planned migration"
+assert_eq "0.5.6_to_0.5.7" "${PLANNED_MIGRATIONS[11]}" "0.4.14 final planned migration"
 build_migration_plan "0.4.15"
-assert_eq "10" "${#PLANNED_MIGRATIONS[@]}" "0.4.15 should plan target-scoped SSD busy cleanup, Tailscale firewall migrations, UFW disable parity migration, PWM cleanup, and later history steps"
+assert_eq "11" "${#PLANNED_MIGRATIONS[@]}" "0.4.15 should plan target-scoped SSD busy cleanup, Tailscale firewall migrations, UFW disable parity migration, PWM cleanup, and later history steps"
 assert_eq "0.4.15_to_0.4.16" "${PLANNED_MIGRATIONS[0]}" "0.4.15 first planned migration"
-assert_eq "0.5.5_to_0.5.6" "${PLANNED_MIGRATIONS[9]}" "0.4.15 final planned migration"
+assert_eq "0.5.6_to_0.5.7" "${PLANNED_MIGRATIONS[10]}" "0.4.15 final planned migration"
 build_migration_plan "0.4.16"
-assert_eq "9" "${#PLANNED_MIGRATIONS[@]}" "0.4.16 should plan the 0.4.17, 0.4.18, 0.5.0, 0.5.1, 0.5.2, 0.5.3, 0.5.4, 0.5.5, and 0.5.6 history steps"
+assert_eq "10" "${#PLANNED_MIGRATIONS[@]}" "0.4.16 should plan the 0.4.17, 0.4.18, 0.5.0, 0.5.1, 0.5.2, 0.5.3, 0.5.4, 0.5.5, and 0.5.6 history steps"
 assert_eq "0.4.16_to_0.4.17" "${PLANNED_MIGRATIONS[0]}" "0.4.16 first planned migration"
-assert_eq "0.5.5_to_0.5.6" "${PLANNED_MIGRATIONS[8]}" "0.4.16 final planned migration"
+assert_eq "0.5.6_to_0.5.7" "${PLANNED_MIGRATIONS[9]}" "0.4.16 final planned migration"
 build_migration_plan "0.4.17"
-assert_eq "8" "${#PLANNED_MIGRATIONS[@]}" "0.4.17 should plan the 0.4.18, 0.5.0, 0.5.1, 0.5.2, 0.5.3, 0.5.4, 0.5.5, and 0.5.6 history steps"
+assert_eq "9" "${#PLANNED_MIGRATIONS[@]}" "0.4.17 should plan the 0.4.18, 0.5.0, 0.5.1, 0.5.2, 0.5.3, 0.5.4, 0.5.5, and 0.5.6 history steps"
 assert_eq "0.4.17_to_0.4.18" "${PLANNED_MIGRATIONS[0]}" "0.4.17 first planned migration"
-assert_eq "0.5.5_to_0.5.6" "${PLANNED_MIGRATIONS[7]}" "0.4.17 final planned migration"
+assert_eq "0.5.6_to_0.5.7" "${PLANNED_MIGRATIONS[8]}" "0.4.17 final planned migration"
 build_migration_plan "0.4.18"
-assert_eq "7" "${#PLANNED_MIGRATIONS[@]}" "0.4.18 should plan the 0.5.0, 0.5.1, 0.5.2, 0.5.3, 0.5.4, 0.5.5, and 0.5.6 history steps"
+assert_eq "8" "${#PLANNED_MIGRATIONS[@]}" "0.4.18 should plan the 0.5.0, 0.5.1, 0.5.2, 0.5.3, 0.5.4, 0.5.5, and 0.5.6 history steps"
 assert_eq "0.4.18_to_0.5.0" "${PLANNED_MIGRATIONS[0]}" "0.4.18 first planned migration"
-assert_eq "0.5.5_to_0.5.6" "${PLANNED_MIGRATIONS[6]}" "0.4.18 final planned migration"
+assert_eq "0.5.6_to_0.5.7" "${PLANNED_MIGRATIONS[7]}" "0.4.18 final planned migration"
 build_migration_plan "0.5.0"
-assert_eq "6" "${#PLANNED_MIGRATIONS[@]}" "0.5.0 should plan both Umbrel networking simplification steps, PWM cleanup, and later history steps"
+assert_eq "7" "${#PLANNED_MIGRATIONS[@]}" "0.5.0 should plan both Umbrel networking simplification steps, PWM cleanup, and later history steps"
 assert_eq "0.5.0_to_0.5.1" "${PLANNED_MIGRATIONS[0]}" "0.5.0 first planned migration"
-assert_eq "0.5.5_to_0.5.6" "${PLANNED_MIGRATIONS[5]}" "0.5.0 final planned migration"
+assert_eq "0.5.6_to_0.5.7" "${PLANNED_MIGRATIONS[6]}" "0.5.0 final planned migration"
 build_migration_plan "0.5.1"
-assert_eq "5" "${#PLANNED_MIGRATIONS[@]}" "0.5.1 should plan the UFW disable networking simplification step, PWM cleanup, and later history steps"
+assert_eq "6" "${#PLANNED_MIGRATIONS[@]}" "0.5.1 should plan the UFW disable networking simplification step, PWM cleanup, and later history steps"
 assert_eq "0.5.1_to_0.5.2" "${PLANNED_MIGRATIONS[0]}" "0.5.1 first planned migration"
-assert_eq "0.5.5_to_0.5.6" "${PLANNED_MIGRATIONS[4]}" "0.5.1 final planned migration"
+assert_eq "0.5.6_to_0.5.7" "${PLANNED_MIGRATIONS[5]}" "0.5.1 final planned migration"
 build_migration_plan "0.5.2"
-assert_eq "4" "${#PLANNED_MIGRATIONS[@]}" "0.5.2 should plan the PWM cleanup migration plus later history steps"
+assert_eq "5" "${#PLANNED_MIGRATIONS[@]}" "0.5.2 should plan the PWM cleanup migration plus later history steps"
 assert_eq "0.5.2_to_0.5.3" "${PLANNED_MIGRATIONS[0]}" "0.5.2 first planned migration"
-assert_eq "0.5.5_to_0.5.6" "${PLANNED_MIGRATIONS[3]}" "0.5.2 final planned migration"
+assert_eq "0.5.6_to_0.5.7" "${PLANNED_MIGRATIONS[4]}" "0.5.2 final planned migration"
 build_migration_plan "0.5.3"
-assert_eq "3" "${#PLANNED_MIGRATIONS[@]}" "0.5.3 should plan the later history steps"
+assert_eq "4" "${#PLANNED_MIGRATIONS[@]}" "0.5.3 should plan the later history steps"
 assert_eq "0.5.3_to_0.5.4" "${PLANNED_MIGRATIONS[0]}" "0.5.3 first planned migration"
-assert_eq "0.5.5_to_0.5.6" "${PLANNED_MIGRATIONS[2]}" "0.5.3 final planned migration"
+assert_eq "0.5.6_to_0.5.7" "${PLANNED_MIGRATIONS[3]}" "0.5.3 final planned migration"
 build_migration_plan "0.5.4"
-assert_eq "2" "${#PLANNED_MIGRATIONS[@]}" "0.5.4 should plan the latest helper-script history steps"
+assert_eq "3" "${#PLANNED_MIGRATIONS[@]}" "0.5.4 should plan the latest helper-script history steps"
 assert_eq "0.5.4_to_0.5.5" "${PLANNED_MIGRATIONS[0]}" "0.5.4 first planned migration"
-assert_eq "0.5.5_to_0.5.6" "${PLANNED_MIGRATIONS[1]}" "0.5.4 final planned migration"
+assert_eq "0.5.6_to_0.5.7" "${PLANNED_MIGRATIONS[2]}" "0.5.4 final planned migration"
 build_migration_plan "0.5.5"
-assert_eq "1" "${#PLANNED_MIGRATIONS[@]}" "0.5.5 should plan the latest documentation history step"
-assert_eq "0.5.5_to_0.5.6" "${PLANNED_MIGRATIONS[0]}" "0.5.5 final planned migration"
+assert_eq "2" "${#PLANNED_MIGRATIONS[@]}" "0.5.5 should plan the latest documentation and updater auto-sync history steps"
+assert_eq "0.5.5_to_0.5.6" "${PLANNED_MIGRATIONS[0]}" "0.5.5 first planned migration"
+assert_eq "0.5.6_to_0.5.7" "${PLANNED_MIGRATIONS[1]}" "0.5.5 final planned migration"
 build_migration_plan "0.5.6"
-assert_eq "0" "${#PLANNED_MIGRATIONS[@]}" "0.5.6 should plan no migrations"
+assert_eq "1" "${#PLANNED_MIGRATIONS[@]}" "0.5.6 should plan the updater auto-sync history step"
+assert_eq "0.5.6_to_0.5.7" "${PLANNED_MIGRATIONS[0]}" "0.5.6 final planned migration"
+build_migration_plan "0.5.7"
+assert_eq "0" "${#PLANNED_MIGRATIONS[@]}" "0.5.7 should plan no migrations"
 pass "build_migration_plan covers full, partial, and current installs"
 
 printf '[unit] install state transitions\n'
@@ -253,10 +331,66 @@ pass "run_migration_step records apply and postcheck failures without final vers
 printf '[unit] CLI argument parsing\n'
 DRY_RUN=0
 CHECK_ONLY=0
-parse_args --check --dry-run
+AUTO_SYNC=1
+parse_args --check --dry-run --skip-sync
 assert_eq "1" "$CHECK_ONLY" "--check sets CHECK_ONLY"
 assert_eq "1" "$DRY_RUN" "--dry-run sets DRY_RUN"
-pass "parse_args handles check and dry-run flags"
+assert_eq "0" "$AUTO_SYNC" "--skip-sync disables repository auto-sync"
+pass "parse_args handles check, dry-run, and skip-sync flags"
+
+printf '[unit] updater repository auto-sync\n'
+cleanup_test_state
+new_auto_sync_test_repo
+DRY_RUN=1
+AUTO_SYNC=1
+sync_repository_to_origin_main --check > "$TEST_TMPDIR/dry-run.out"
+assert_eq "" "$(cat "$FAKE_GIT_LOG")" "dry-run should not invoke git"
+grep -q 'fetch origin' "$TEST_TMPDIR/dry-run.out" || fail "dry-run should show fetch origin"
+grep -q 'reset --hard origin/main' "$TEST_TMPDIR/dry-run.out" || fail "dry-run should show reset to origin/main"
+
+DRY_RUN=0
+FAKE_HEAD="same-head"
+FAKE_ORIGIN_HEAD="same-head"
+: > "$FAKE_GIT_LOG"
+sync_repository_to_origin_main --check
+if [[ -s "$FAKE_BASH_LOG" ]]; then
+  fail "same-head sync should not re-exec the updater"
+fi
+grep -q -- '-c safe.directory='"$AUTO_SYNC_REPO_ROOT_OVERRIDE" "$FAKE_GIT_LOG" || fail "sync should scope safe.directory to this repo"
+grep -q -- 'fetch origin' "$FAKE_GIT_LOG" || fail "sync should fetch origin"
+grep -q -- 'reset --hard origin/main' "$FAKE_GIT_LOG" || fail "sync should reset to origin/main"
+
+FAKE_ORIGIN_URL="https://example.com/attacker/repo.git"
+: > "$FAKE_GIT_LOG"
+if sync_repository_to_origin_main --check 2>/dev/null; then
+  fail "sync should reject non-official origin URL"
+fi
+if grep -q -- 'fetch origin' "$FAKE_GIT_LOG"; then
+  fail "sync should reject non-official origin before fetch"
+fi
+
+FAKE_ORIGIN_URL="https://github.com/dongguri-jun/odroid-m1s-umbrel-recovery.git"
+FAKE_FETCH_FAIL=1
+if sync_repository_to_origin_main --check 2>/dev/null; then
+  fail "sync should fail when fetch fails"
+fi
+FAKE_FETCH_FAIL=0
+FAKE_ORIGIN_MAIN_MISSING=1
+if sync_repository_to_origin_main --check 2>/dev/null; then
+  fail "sync should fail when origin/main is missing"
+fi
+FAKE_ORIGIN_MAIN_MISSING=0
+
+FAKE_HEAD="old-head"
+FAKE_ORIGIN_HEAD="new-head"
+: > "$FAKE_BASH_LOG"
+set +e
+/bin/bash -c 'set -Eeuo pipefail; source scripts/m1s-update-umbrel.sh; DRY_RUN=0; AUTO_SYNC=1; sync_repository_to_origin_main --check --dry-run'
+reexec_status=$?
+set -e
+assert_eq "42" "$reexec_status" "changed-head sync should exec the latest updater"
+assert_eq "$AUTO_SYNC_REPO_ROOT_OVERRIDE/scripts/m1s-update-umbrel.sh --skip-sync --check --dry-run" "$(cat "$FAKE_BASH_LOG")" "re-exec preserves original arguments after --skip-sync"
+pass "repository auto-sync validates origin, scopes safe.directory, handles failures, and re-execs safely"
 
 cleanup_test_state
 printf '[unit] updater migration tests complete\n'
