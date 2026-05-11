@@ -455,6 +455,9 @@ sudo bash scripts/m1s-check-bitcoin-recovery-status.sh
 
 After starting recovery, repeat the command below to check status.
 
+During reindex, look at **Reindex blk file**, **Reindex file progress**, and **Current status** first.  
+If these values go up when you run the same command again a few minutes later, the reindex is actually moving forward.
+
 ```bash
 sudo bash scripts/m1s-check-bitcoin-recovery-status.sh
 ```
@@ -514,9 +517,9 @@ Each field means the following.
 - RPC getchainstates: whether the bitcoin-cli getchainstates call succeeded
 - RPC getblockchaininfo: whether the bitcoin-cli getblockchaininfo call succeeded
 - **Blocks / headers**: currently synced block count / total known header count
-- **Approx progress**: approximate block sync progress percentage
+- **Approx progress**: approximate block sync progress percentage. During reindex, this value may stay at `0.00%` for a long time, so in that case it is more accurate to check **Reindex blk file** and **Reindex file progress** together.
 - Reindex blk file: current `blkXXXXX.dat` file being re-read / last `blkXXXXX.dat` file present on disk
-- Reindex file progress: approximate reindex position based on Bitcoin block files
+- Reindex file progress: approximate reindex position based on Bitcoin block files. If this value rises over time, the reindex is actually moving forward.
 - Last file load blocks: number of blocks loaded from the most recent `blkXXXXX.dat` file
 - **Current status**: human-readable summary of the current recovery state
 
