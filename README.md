@@ -532,17 +532,6 @@ Use this same command again later to watch the live progress estimate.
 - Last file load blocks: 가장 최근 `blkXXXXX.dat` 파일에서 읽은 블록 수
 - **Current status**: 현재 복구 상태를 사람이 읽을 수 있는 문장으로 요약
 
-### 실기 검증 범위
-
-실기기 ODROID M1S 기준으로 현재까지 확인된 범위는 아래와 같습니다.
-
-- **chainstate rebuild** — 실제 실행 검증 완료
-- **reindex** — 실제 실행 검증 완료
-- **공용 헬스체크** — 실제 실행 검증 완료
-- **full resync** — `--dry-run` 검증만 완료 (실제 destructive 실행은 아직 미검증)
-
-즉, chainstate rebuild와 reindex는 현재 실사용 가능한 수준까지 확인했고, full resync는 더 강한 주의가 필요합니다.
-
 ---
 
 ## 11. 안전하게 종료하기
