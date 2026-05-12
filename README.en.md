@@ -562,9 +562,19 @@ This is how to bring an ODROID M1S that was already installed once up to the lat
 
 ```bash
 cd /home/*/odroid-m1s-umbrel-recovery
+sudo git -c safe.directory="$(pwd)" fetch origin
+sudo git -c safe.directory="$(pwd)" reset --hard origin/main
 sudo bash scripts/m1s-update-umbrel.sh --check
 sudo bash scripts/m1s-update-umbrel.sh
 ```
+
+What each line does:
+
+1. `cd /home/*/odroid-m1s-umbrel-recovery` — moves into the repository folder downloaded during the first installation. The asterisk (`*`) means "automatically find any username," so you do not need to type the username manually.
+2. `sudo git -c safe.directory="$(pwd)" fetch origin` — fetches the latest changes from the GitHub remote repository.
+3. `sudo git -c safe.directory="$(pwd)" reset --hard origin/main` — resets the local files to match the latest GitHub `origin/main`. This also replaces the local updater script itself with the latest version.
+4. `sudo bash scripts/m1s-update-umbrel.sh --check` — changes nothing and only shows the **currently installed version, latest version, and list of changes that will be applied**. If it is already up to date, it will show a message like "No migrations needed."
+5. `sudo bash scripts/m1s-update-umbrel.sh` — actually applies the update. If it is already up to date, it exits without doing anything.
 
 What each line does:
 
@@ -617,10 +627,12 @@ If the password is correct, the prompt changes to something like `root@umbrel:/#
 root@umbrel:/#
 ```
 
-From this state, enter **the same commands from step 12** exactly as shown. The commands are designed so you do not need to know the username or home directory location, so you can copy and paste them without modification.
+From this state, enter the commands below exactly as shown. This is the same command set used in the SSH method.
 
 ```bash
 cd /home/*/odroid-m1s-umbrel-recovery
+sudo git -c safe.directory="$(pwd)" fetch origin
+sudo git -c safe.directory="$(pwd)" reset --hard origin/main
 sudo bash scripts/m1s-update-umbrel.sh --check
 sudo bash scripts/m1s-update-umbrel.sh
 ```

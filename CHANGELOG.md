@@ -5,6 +5,7 @@
 - Make `scripts/m1s-update-umbrel.sh` refresh its own repository from `origin/main` before planning or applying migrations, so users can keep running the same updater command without separate `git fetch` / `git reset` steps.
 - Re-execute the freshly synced updater once when the repository changed, then continue with `--skip-sync` to avoid loops while still using the latest published script logic.
 - Simplify the Korean and English update guide sections to the three commands users need on `0.5.7` and newer, while documenting the one-time manual sync required for devices whose local updater is still `0.5.6` or older.
+- Unify the update command flow in both README.md and README.en.md so sections 12 and 12-1 explicitly include `git fetch origin && git reset --hard origin/main` upfront, removing the conditional branch that confused users on older local scripts. Users on any version now run the same 5-line command set.
 
 ## 0.5.6
 

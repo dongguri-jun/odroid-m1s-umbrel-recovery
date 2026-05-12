@@ -571,9 +571,19 @@ http://umbrel.local
 
 ```bash
 cd /home/*/odroid-m1s-umbrel-recovery
+sudo git -c safe.directory="$(pwd)" fetch origin
+sudo git -c safe.directory="$(pwd)" reset --hard origin/main
 sudo bash scripts/m1s-update-umbrel.sh --check
 sudo bash scripts/m1s-update-umbrel.sh
 ```
+
+각 줄이 하는 일:
+
+1. `cd /home/*/odroid-m1s-umbrel-recovery` — 처음 설치할 때 받아 둔 저장소 폴[...]더로 이동합니다. 별표(`*`)는 "어떤 사용자 이름이든 자동으로 찾기"를 의미하므로, 사용자 이름을 직접 입력할 필요가 없습니다.
+2. `sudo git -c safe.directory="$(pwd)" fetch origin` — GitHub 원격 저장소의 최신 변경 내역을 가져옵니다.
+3. `sudo git -c safe.directory="$(pwd)" reset --hard origin/main` — 로컬 파일을 GitHub의 최신 `origin/main` 상태와 똑같이 맞춥니다. 이 과정에서 로컬의 업데이트 스크립트 자신도 최신 버전으로 교첼됩니다.
+4. `sudo bash scripts/m1s-update-umbrel.sh --check` — 아무것도 바꾸지 않고 **현재 설치된 버전 · 최신 버전 · 적용될 수정 목록**만 보여 줍니다. 이미 최신이면 "No migrations needed" 처럼 안납니다.
+5. `sudo bash scripts/m1s-update-umbrel.sh` — 실제 업데이트를 적용합니다. 이미 최신이면 아무 작업 없이 끝납니다.
 
 각 줄이 하는 일:
 
@@ -626,10 +636,12 @@ sudo nsenter -t 1 -m -u -i -n -p -- bash
 root@umbrel:/#
 ```
 
-이 상태에서는 **위 12번의 명령들을 그대로 입력**하면 됩니다. 사용자 이름이나 홈 디렉터리 위치를 따로 알 필요가 없도록 명령이 만들어져 있어서, 별다른 수정 없이 그대로 복사해서 붙여 넣으시면 됩니다.
+이 상태에서는 아래 명령을 그대로 입력하면 됩니다. SSH로 접속했을 때와 동일한 명령 세트입니다.
 
 ```bash
 cd /home/*/odroid-m1s-umbrel-recovery
+sudo git -c safe.directory="$(pwd)" fetch origin
+sudo git -c safe.directory="$(pwd)" reset --hard origin/main
 sudo bash scripts/m1s-update-umbrel.sh --check
 sudo bash scripts/m1s-update-umbrel.sh
 ```
