@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SCRIPT_VERSION="0.5.7"
+SCRIPT_VERSION="0.5.8"
 INSTALL_STATE_DIR="/etc/umbrel-recovery"
 INSTALL_STATE_FILE="$INSTALL_STATE_DIR/installed.json"
 PREINSTALL_RESUME_STATE_FILE="$INSTALL_STATE_DIR/preinstall-resume.json"
@@ -577,6 +577,26 @@ nvme_rescan_runtime() {
   return 0
 }
 
+nvme_pci_remove_rescan() {
+  local nvme_pci_remove_path="/sys/bus/pci/devices/0000:01:00.0/remove"
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    echo "[DRY-RUN] echo 1 > $nvme_pci_remove_path"
+    echo "[DRY-RUN] echo 1 > /sys/bus/pci/rescan"
+    echo "[DRY-RUN] udevadm settle"
+    return 0
+  fi
+  [[ -w "$nvme_pci_remove_path" ]] || return 1
+  [[ -w /sys/bus/pci/rescan ]] || return 1
+  printf '1\n' > "$nvme_pci_remove_path"
+  sleep 2
+  printf '1\n' > /sys/bus/pci/rescan
+  if command -v udevadm >/dev/null 2>&1; then
+    udevadm settle || true
+  fi
+  sleep 3
+  return 0
+}
+
 nvme_target_missing_preflight() {
   local parent=""
   if [[ -n "$TARGET_INPUT" ]]; then
@@ -836,6 +856,13 @@ maybe_recover_missing_nvme() {
       return 0
     fi
 
+    warn "Runtime PCI rescan did not restore NVMe visibility. Attempting device-level PCI remove + rescan."
+    nvme_pci_remove_rescan || true
+    if nvme_disk_visible; then
+      info "Recovered NVMe visibility via device-level PCI remove + rescan. Continuing installation."
+      return 0
+    fi
+
     if preinstall_resume_attempted; then
       clear_preinstall_resume_state
       err "NVMe is still missing after one automatic recovery reboot."
@@ -843,7 +870,7 @@ maybe_recover_missing_nvme() {
       exit 1
     fi
 
-    warn "Runtime PCI rescan did not restore NVMe visibility. Applying boot-time NVMe mitigation and rebooting once."
+    warn "Device-level PCI remove + rescan did not restore NVMe visibility. Applying boot-time NVMe mitigation and rebooting once."
     apply_nvme_boot_mitigation
     write_preinstall_resume_state
     install_preinstall_resume_unit
@@ -868,6 +895,13 @@ maybe_recover_missing_nvme() {
     return 0
   fi
 
+  warn "Runtime PCI rescan did not restore NVMe target visibility. Attempting device-level PCI remove + rescan."
+  nvme_pci_remove_rescan || true
+  if ! nvme_target_missing_preflight; then
+    info "Recovered NVMe target visibility via device-level PCI remove + rescan. Continuing installation."
+    return 0
+  fi
+
   if preinstall_resume_attempted; then
     clear_preinstall_resume_state
     err "NVMe target is still missing after one automatic recovery reboot."
@@ -875,7 +909,7 @@ maybe_recover_missing_nvme() {
     exit 1
   fi
 
-  warn "Runtime PCI rescan did not restore NVMe visibility. Applying boot-time NVMe mitigation and rebooting once."
+  warn "Device-level PCI remove + rescan did not restore NVMe target visibility. Applying boot-time NVMe mitigation and rebooting once."
   apply_nvme_boot_mitigation
   write_preinstall_resume_state
   install_preinstall_resume_unit

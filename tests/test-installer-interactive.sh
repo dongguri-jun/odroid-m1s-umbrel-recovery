@@ -92,6 +92,17 @@ M1S_INSTALLER_LIB_ONLY=1 source scripts/m1s-clean-install-umbrel.sh
 ROOT_DISK="mmcblk0"
 TARGET_INPUT=""
 
+printf '[unit] installer device-level PCI remove + rescan dry-run\n'
+DRY_RUN=1
+set +e
+device_rescan_output="$(nvme_pci_remove_rescan 2>&1)"
+device_rescan_status=$?
+set -e
+assert_eq "0" "$device_rescan_status" "Device-level PCI remove + rescan helper should succeed in dry-run mode"
+assert_contains "$device_rescan_output" "[DRY-RUN] echo 1 > /sys/bus/pci/devices/0000:01:00.0/remove" "Dry-run should show the PCI remove command"
+assert_contains "$device_rescan_output" "[DRY-RUN] echo 1 > /sys/bus/pci/rescan" "Dry-run should show the PCI rescan command"
+pass "Device-level PCI remove + rescan helper emits the expected dry-run commands"
+
 printf '[unit] installer NVMe-only candidate filtering\n'
 selection_output_file="$TEST_TMPDIR/selection-output.txt"
 exec 3<<<$'1\n'
@@ -174,6 +185,10 @@ nvme_rescan_runtime() {
   nvme_visible_state="missing"
   return 0
 }
+nvme_pci_remove_rescan() {
+  printf 'nvme_pci_remove_rescan\n'
+  return 0
+}
 preinstall_resume_attempted() {
   [[ "$resume_attempted_state" -eq 1 ]]
 }
@@ -194,13 +209,44 @@ one_command_recovery_output="$(maybe_recover_missing_nvme 2>&1)"
 one_command_recovery_status=$?
 set -e
 assert_eq "0" "$one_command_recovery_status" "Missing NVMe without explicit target should enter automatic recovery dry-run path"
-assert_contains "$one_command_recovery_output" "Applying boot-time NVMe mitigation and rebooting once" "One-command flow should promise automatic reboot recovery"
+assert_contains "$one_command_recovery_output" "Attempting device-level PCI remove + rescan" "One-command flow should attempt device-level PCI recovery after a failed runtime rescan"
+assert_contains "$one_command_recovery_output" "nvme_pci_remove_rescan" "One-command flow should call the device-level PCI remove + rescan helper"
+assert_contains "$one_command_recovery_output" "Device-level PCI remove + rescan did not restore NVMe visibility. Applying boot-time NVMe mitigation and rebooting once." "One-command flow should promise automatic reboot recovery after the new PCI recovery step"
 assert_contains "$one_command_recovery_output" "apply_nvme_boot_mitigation" "One-command flow should apply NVMe mitigation before reboot"
 assert_contains "$one_command_recovery_output" "write_preinstall_resume_state" "One-command flow should persist resume state"
 assert_contains "$one_command_recovery_output" "install_preinstall_resume_unit" "One-command flow should install the resume unit"
 assert_contains "$one_command_recovery_output" "[DRY-RUN] systemctl reboot" "One-command flow should reboot automatically in dry-run"
 assert_not_contains "$one_command_recovery_output" "explicit /dev/nvme0n1 target is supplied" "One-command flow must not require an explicit target anymore"
 pass "Missing NVMe now triggers automatic one-command recovery without an explicit target"
+
+printf '[unit] installer device-level PCI recovery short-circuit\n'
+TARGET_INPUT=""
+DRY_RUN=1
+nvme_visible_state="missing"
+resume_attempted_state=0
+nvme_disk_visible() {
+  [[ "$nvme_visible_state" == "visible" ]]
+}
+nvme_rescan_runtime() {
+  nvme_visible_state="missing"
+  return 0
+}
+nvme_pci_remove_rescan() {
+  nvme_visible_state="visible"
+  printf 'nvme_pci_remove_rescan_recovered\n'
+  return 0
+}
+preinstall_resume_attempted() {
+  [[ "$resume_attempted_state" -eq 1 ]]
+}
+set +e
+short_circuit_recovery_output="$(maybe_recover_missing_nvme 2>&1)"
+short_circuit_recovery_status=$?
+set -e
+assert_eq "0" "$short_circuit_recovery_status" "Device-level PCI remove + rescan should let the installer continue without reboot"
+assert_contains "$short_circuit_recovery_output" "Recovered NVMe visibility via device-level PCI remove + rescan" "Short-circuit flow should report successful PCI remove + rescan recovery"
+assert_not_contains "$short_circuit_recovery_output" "Applying boot-time NVMe mitigation" "Short-circuit flow should not escalate to boot-time mitigation"
+pass "Device-level PCI remove + rescan can recover visibility before reboot"
 
 printf '[unit] installer resume cleanup timing\n'
 installer_text="$(<scripts/m1s-clean-install-umbrel.sh)"
