@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.8
+
+- Extend the fresh installer NVMe recovery ladder with a device-level PCI remove + rescan step after the global PCI rescan fails, based on real-device ODROID M1S validation where `echo 1 > /sys/bus/pci/devices/0000:01:00.0/remove` followed by `/sys/bus/pci/rescan` revived a `CSTS=0x0` NVMe probe failure without manual reseating.
+- Add installer regression coverage for the new device-level PCI recovery path, including a dry-run assertion and a short-circuit test that proves the installer can continue without escalating to boot-time mitigation when the PCI remove + rescan recovers visibility.
+
 ## 0.5.7
 
 - Make `scripts/m1s-update-umbrel.sh` refresh its own repository from `origin/main` before planning or applying migrations, so users can keep running the same updater command without separate `git fetch` / `git reset` steps.
