@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.9
+
+- Include the raw NVMe disk path itself in the SSD-holder scan so stale `docker compose` / Umbrel processes that reopen `/dev/nvme0n1` are treated as killable blockers before repartitioning.
+- Re-run SSD-holder cleanup immediately before `sfdisk` on raw-disk installs, closing the real-device path where NVMe recovery succeeded but a late `/data` compose holder still triggered `This disk is currently in use`.
+- Extend installer regression coverage for raw-disk holders and the final pre-`sfdisk` cleanup guard.
+
 ## 0.5.8
 
 - Extend the fresh installer NVMe recovery ladder with a device-level PCI remove + rescan step after the global PCI rescan fails, based on real-device ODROID M1S validation where `echo 1 > /sys/bus/pci/devices/0000:01:00.0/remove` followed by `/sys/bus/pci/rescan` revived a `CSTS=0x0` NVMe probe failure without manual reseating.
