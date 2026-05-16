@@ -313,6 +313,7 @@ pass "Exactly one NVMe candidate is auto-selected for one-command installs"
 printf '[unit] installer target-scoped SSD busy process cleanup\n'
 TARGET_MOUNT_PATHS=("/mnt/fullnode" "/mnt/old-fullnode")
 TARGET_EXISTING_PARTITIONS=("/dev/nvme0n1p1")
+TARGET_DISK_PATH="/dev/nvme0n1"
 TARGET_PARTITION="/dev/nvme0n1p1"
 DATA_DIR="/mnt/fullnode"
 DRY_RUN=0
@@ -328,6 +329,11 @@ fuser() {
         printf '1234 2222 1234 3333 4444\n'
       else
         printf '2222 3333 4444\n'
+      fi
+      ;;
+    /dev/nvme0n1)
+      if [[ "$FUSER_PHASE" == "initial" ]]; then
+        printf '5555\n'
       fi
       ;;
   esac
@@ -364,6 +370,9 @@ ps() {
     comm:4444) printf 'bash\n' ;;
     args:4444) printf 'bash /tmp/m1s-clean-install-umbrel.sh --release\n' ;;
     ppid:4444) printf '1\n' ;;
+    comm:5555) printf 'docker\n' ;;
+    args:5555) printf 'docker compose --project-directory /data up -d\n' ;;
+    ppid:5555) printf '1\n' ;;
     ppid:*) printf '0\n' ;;
   esac
 }
@@ -379,17 +388,25 @@ sleep() {
 }
 
 busy_pids="$(collect_target_busy_pids | paste -sd ' ' -)"
-assert_eq "1234 2222 3333 4444" "$busy_pids" "Busy PID collection should deduplicate target-scoped holders"
-killable_pids="$(filter_killable_target_pids 1234 2222 3333 4444 2>/dev/null | paste -sd ' ' -)"
-assert_eq "1234 2222" "$killable_pids" "Protected SSH and installer PIDs should not be killable"
+assert_eq "1234 2222 3333 4444 5555" "$busy_pids" "Busy PID collection should deduplicate target-scoped holders and include raw-disk users"
+killable_pids="$(filter_killable_target_pids 1234 2222 3333 4444 5555 2>/dev/null | paste -sd ' ' -)"
+assert_eq "1234 2222 5555" "$killable_pids" "Protected SSH and installer PIDs should not be killable, but raw-disk docker holders should be"
 stop_target_busy_processes >/dev/null 2>&1
 kill_log="$(<"$KILL_LOG")"
 assert_contains "$kill_log" "-TERM 1234" "First pass should send SIGTERM to the first killable SSD holder"
 assert_contains "$kill_log" "-TERM 2222" "First pass should send SIGTERM to the second killable SSD holder"
+assert_contains "$kill_log" "-TERM 5555" "First pass should send SIGTERM to raw-disk docker compose holders"
 assert_not_contains "$kill_log" "-TERM 3333" "Protected sshd PID must not receive SIGTERM"
 assert_not_contains "$kill_log" "-TERM 4444" "Installer PID must not receive SIGTERM"
 assert_not_contains "$kill_log" "-KILL 1234" "PID gone after TERM must not receive SIGKILL"
 assert_contains "$kill_log" "-KILL 2222" "Only the remaining killable SSD holder should receive SIGKILL"
-pass "Target-scoped SSD busy cleanup uses TERM before scoped KILL and preserves protected PIDs"
+pass "Target-scoped SSD busy cleanup uses TERM before scoped KILL, includes raw-disk holders, and preserves protected PIDs"
+
+printf '[unit] installer raw-disk repartition re-check\n'
+installer_text="$(<scripts/m1s-clean-install-umbrel.sh)"
+assert_contains "$installer_text" 'Re-checking for stale SSD holders immediately before repartitioning the raw NVMe disk' 'Raw-disk repartition should re-check for stale SSD holders right before sfdisk'
+assert_contains "$installer_text" 'stop_target_busy_processes
+  if ! command -v sfdisk' 'Raw-disk repartition should run holder cleanup immediately before sfdisk'
+pass "Raw-disk repartition path performs a final stale-holder cleanup before sfdisk"
 
 printf '[unit] installer interactive tests complete\n'

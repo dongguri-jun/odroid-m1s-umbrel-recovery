@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SCRIPT_VERSION="0.5.8"
+SCRIPT_VERSION="0.5.9"
 INSTALL_STATE_DIR="/etc/umbrel-recovery"
 INSTALL_STATE_FILE="$INSTALL_STATE_DIR/installed.json"
 PREINSTALL_RESUME_STATE_FILE="$INSTALL_STATE_DIR/preinstall-resume.json"
@@ -219,7 +219,7 @@ collect_target_busy_pids() {
 
   local paths=()
   local path raw pid
-  for path in "${TARGET_MOUNT_PATHS[@]}" "${TARGET_EXISTING_PARTITIONS[@]}" "$TARGET_PARTITION" "$DATA_DIR"; do
+  for path in "${TARGET_MOUNT_PATHS[@]}" "${TARGET_EXISTING_PARTITIONS[@]}" "$TARGET_DISK_PATH" "$TARGET_PARTITION" "$DATA_DIR"; do
     [[ -n "$path" ]] || continue
     if append_unique "$path" "${paths[@]}"; then
       paths+=("$path")
@@ -1954,6 +1954,8 @@ fi
 
 if [[ "$TARGET_MODE" == "raw-disk" ]]; then
   info "Creating a fresh GPT partition on raw SSD $TARGET_DISK_PATH"
+  info "Re-checking for stale SSD holders immediately before repartitioning the raw NVMe disk"
+  stop_target_busy_processes
   if ! command -v sfdisk >/dev/null 2>&1; then
     err "sfdisk is required to create a partition on raw SSD targets, but it is not installed."
     exit 1
