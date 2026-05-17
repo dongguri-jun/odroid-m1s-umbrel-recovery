@@ -17,7 +17,7 @@ set -Eeuo pipefail
 #   --version      Print script version and exit.
 #   -h, --help     Show this help.
 
-SCRIPT_VERSION="0.5.7"
+SCRIPT_VERSION="0.5.9"
 INSTALL_STATE_DIR="/etc/umbrel-recovery"
 INSTALL_STATE_FILE="$INSTALL_STATE_DIR/installed.json"
 DATA_DIR="/mnt/fullnode"
@@ -60,6 +60,8 @@ MIGRATIONS=(
   "0.5.4_to_0.5.5"
   "0.5.5_to_0.5.6"
   "0.5.6_to_0.5.7"
+  "0.5.7_to_0.5.8"
+  "0.5.8_to_0.5.9"
 )
 
 log() {
@@ -1743,6 +1745,14 @@ postcheck_0_5_5_to_0_5_6() { return 0; }
 precheck_0_5_6_to_0_5_7() { precheck_common_canonical_install; }
 apply_0_5_6_to_0_5_7() { info "0.5.7 adds updater repository auto-sync; no host mutation required."; }
 postcheck_0_5_6_to_0_5_7() { return 0; }
+
+precheck_0_5_7_to_0_5_8() { precheck_common_canonical_install; }
+apply_0_5_7_to_0_5_8() { info "0.5.8 extends fresh-installer NVMe recovery; no host mutation required."; }
+postcheck_0_5_7_to_0_5_8() { return 0; }
+
+precheck_0_5_8_to_0_5_9() { precheck_common_canonical_install; }
+apply_0_5_8_to_0_5_9() { info "0.5.9 extends fresh-installer SSD-holder cleanup; no host mutation required."; }
+postcheck_0_5_8_to_0_5_9() { return 0; }
 
 # ---------------------------------------------------------------------------
 # Main flow
