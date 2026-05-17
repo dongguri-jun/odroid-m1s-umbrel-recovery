@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.10
+
+- Move generated dev-tracker state to `.local/dev-tracker.md` so public metadata no longer names private tracker or shared-memory paths.
+- Remove device access details from the tracker bootstrap template, keeping MAC addresses, private IPs, SSH users, and internal access-note paths out of public files.
+- Add a no-op updater history step for existing installations so version tracking remains linear without changing host state.
+
 ## 0.5.9
 
 - Include the raw NVMe disk path itself in the SSD-holder scan so stale `docker compose` / Umbrel processes that reopen `/dev/nvme0n1` are treated as killable blockers before repartitioning.

@@ -7,6 +7,9 @@
 /docs/dev/
 /docs/private/
 
+# Local generated tracker state
+/.local/
+
 # OS/editor noise
 .DS_Store
 *.swp

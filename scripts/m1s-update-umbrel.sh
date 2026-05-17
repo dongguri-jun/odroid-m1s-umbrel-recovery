@@ -17,7 +17,7 @@ set -Eeuo pipefail
 #   --version      Print script version and exit.
 #   -h, --help     Show this help.
 
-SCRIPT_VERSION="0.5.9"
+SCRIPT_VERSION="0.5.10"
 INSTALL_STATE_DIR="/etc/umbrel-recovery"
 INSTALL_STATE_FILE="$INSTALL_STATE_DIR/installed.json"
 DATA_DIR="/mnt/fullnode"
@@ -62,6 +62,7 @@ MIGRATIONS=(
   "0.5.6_to_0.5.7"
   "0.5.7_to_0.5.8"
   "0.5.8_to_0.5.9"
+  "0.5.9_to_0.5.10"
 )
 
 log() {
@@ -1753,6 +1754,10 @@ postcheck_0_5_7_to_0_5_8() { return 0; }
 precheck_0_5_8_to_0_5_9() { precheck_common_canonical_install; }
 apply_0_5_8_to_0_5_9() { info "0.5.9 extends fresh-installer SSD-holder cleanup; no host mutation required."; }
 postcheck_0_5_8_to_0_5_9() { return 0; }
+
+precheck_0_5_9_to_0_5_10() { precheck_common_canonical_install; }
+apply_0_5_9_to_0_5_10() { info "0.5.10 keeps public tracker metadata free of device access details; no host mutation required."; }
+postcheck_0_5_9_to_0_5_10() { return 0; }
 
 # ---------------------------------------------------------------------------
 # Main flow

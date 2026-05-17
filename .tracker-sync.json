@@ -1,5 +1,5 @@
 {
-  "tracker_path": "docs/dev/dev-tracker.md",
+  "tracker_path": ".local/dev-tracker.md",
   "debounce_seconds": 45,
   "include_globs": [
     ".tracker-sync.json",
@@ -10,8 +10,7 @@
     "VERSION"
   ],
   "exclude_globs": [
-    "docs/dev/dev-tracker.md",
-    "docs/ai-shared/MEMORY.md",
+    ".local/**",
     ".git/**",
     ".sisyphus/**",
     "**/*.log",
@@ -19,7 +18,7 @@
     "**/*.swp"
   ],
   "notes": {
-    "auto_hook": "A global Claude Code PostToolUse hook at ~/.claude/hooks/posttooluse-sync-dev-tracker.sh schedules sync-dev-tracker.sh after tracked Edit/Write/MultiEdit events.",
+    "auto_hook": "A local editor/agent hook may schedule sync-dev-tracker.sh after tracked file changes.",
     "manual_fallback": "Run `bash scripts/sync-dev-tracker.sh` any time you want an immediate refresh, or `bash scripts/sync-dev-tracker.sh --run-local-gates` after the local verifier succeeds."
   },
   "pending_checks": [

@@ -309,6 +309,9 @@ required = [
     'precheck_0_5_8_to_0_5_9',
     'apply_0_5_8_to_0_5_9',
     'postcheck_0_5_8_to_0_5_9',
+    'precheck_0_5_9_to_0_5_10',
+    'apply_0_5_9_to_0_5_10',
+    'postcheck_0_5_9_to_0_5_10',
     '/boot/config.ini',
     '[overlay_pwm]',
     'overlay_profile',
@@ -316,6 +319,7 @@ required = [
     'pwm2',
     '0.5.7_to_0.5.8',
     '0.5.8_to_0.5.9',
+    '0.5.9_to_0.5.10',
   ]
 missing = [needle for needle in required if needle not in text]
 if missing:

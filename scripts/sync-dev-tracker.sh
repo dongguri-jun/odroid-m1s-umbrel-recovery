@@ -150,7 +150,7 @@ config = json.loads(CONFIG_PATH.read_text(encoding='utf-8'))
 include_globs = config.get('include_globs', [])
 exclude_globs = config.get('exclude_globs', [])
 pending_checks = config.get('pending_checks', [])
-tracker_path = Path(os.environ['TRACKER_PATH_OVERRIDE'] or config.get('tracker_path', 'docs/dev/dev-tracker.md'))
+tracker_path = Path(os.environ['TRACKER_PATH_OVERRIDE'] or config.get('tracker_path', '.local/dev-tracker.md'))
 if not include_globs:
     raise SystemExit('tracker sync config must define include_globs')
 
@@ -196,14 +196,9 @@ def bootstrap_tracker(path: Path) -> None:
     pending_lines = '\n'.join(f'- [ ] {label}' for _, label in DEVICE_CHECKS) or '- [x] No remaining checks are configured.'
     text = f"""# Dev Tracker
 
-## Device access convention
-- ODROID devices are tracked by MAC address first.
-- Connection details live in `docs/ODROID_ACCESS.md`.
-- Active ODROID test device:
-  - MAC: `00:1E:06:53:68:5D`
-  - IP: `192.168.45.71`
-  - SSH user: `nordin`
-  - Role: ODROID M1S Umbrel installer validation box
+## Device validation convention
+- ODROID device access details are kept in local private notes, not in the public tracker.
+- Public tracker entries should describe validation scope only, without MAC addresses, private IPs, SSH users, or host-specific identifiers.
 
 ## Auto-updated project status
 <!-- AUTO:BEGIN last-updated -->
