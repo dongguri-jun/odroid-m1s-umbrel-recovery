@@ -499,6 +499,51 @@ Last file load blocks:    250
 
 Current status: recovery in progress
 
+Recent Bitcoin error hints:
+  2026-05-16T02:58:27Z [error] Fatal LevelDB error: IO error: /data/bitcoin/indexes/txindex/048611.ldb: Input/output error
+
+=== System diagnostics ===
+Uptime and load:
+  19:42:10 up 3 days,  load average: 1.20, 1.05, 0.98
+
+Memory usage:
+  Mem:           7.6Gi       3.2Gi       1.1Gi       3.3Gi
+  Swap:          4.0Gi       512Mi       3.5Gi
+
+Active swap:
+  NAME                    TYPE SIZE USED PRIO
+  /mnt/fullnode/swapfile  file   4G 512M   -2
+
+Docker service state:
+  active
+  active
+
+Recent NVMe timeout snapshots:
+  snapshot directory unavailable
+
+=== Storage diagnostics ===
+Data dir target:          /mnt/fullnode
+Mount source:             /dev/nvme0n1p1
+Mount filesystem:         ext4
+Mount options:            rw,relatime
+Parent block device:      /dev/nvme0n1
+
+Disk space usage:
+  Filesystem      Size  Used Avail Use% Mounted on
+  /dev/nvme0n1p1  1.8T  870G  850G  51% /mnt/fullnode
+
+Inode usage:
+  Filesystem        Inodes IUsed     IFree IUse% Mounted on
+  /dev/nvme0n1p1 122101760 98000 122003760    1% /mnt/fullnode
+
+Block device summary:
+  NAME        TYPE  SIZE FSTYPE MODEL           SERIAL      MOUNTPOINTS
+  nvme0n1     disk  1.8T        Example NVMe    REDACTED
+  └─nvme0n1p1 part  1.8T ext4                               /mnt/fullnode
+
+Recent kernel storage hints:
+  none visible in recent kernel logs, or kernel log access is restricted
+
 Use this same command again later to watch the live progress estimate.
 ```
 
@@ -527,6 +572,10 @@ Use this same command again later to watch the live progress estimate.
 - Reindex file progress: 리인덱스가 block 파일 기준으로 어디까지 왔는지 보여주는 대략적인 진행률입니다. 이 값이 시간이 지나면서 올라가면 리인덱스가 실제로 앞으로 진행 중이라는 뜻입니다.
 - Last file load blocks: 가장 최근 `blkXXXXX.dat` 파일에서 읽은 블록 수
 - **Current status**: 현재 복구 상태를 사람이 읽을 수 있는 문장으로 요약
+- **Recent Bitcoin error hints**: `debug.log` 끝부분에서 LevelDB, txindex, chainstate, Fatal, I/O error 같은 최근 오류 줄만 추려 보여 줍니다.
+- **System diagnostics**: 부하, 메모리, swap, Docker 서비스 상태, 기존 NVMe timeout snapshot 존재 여부를 보여 줘서 리소스 압박이나 Docker 문제를 함께 판단할 수 있게 합니다.
+- **Storage diagnostics**: `/mnt/fullnode`가 어떤 장치에 마운트되어 있는지, 디스크/아이노드 여유가 있는지, 블록 장치가 무엇인지, 가능한 경우 NVMe/SMART 상태와 커널 저장장치 힌트를 함께 보여 줍니다.
+- **Recent kernel storage hints**: 여기에 NVMe timeout / reset / I/O error / EXT4 error가 보이면 Bitcoin 인덱스만의 문제가 아니라 SSD/NVMe/파일시스템 문제일 수 있으므로, 출력 전체를 복사해서 확인해야 합니다.
 
 ---
 

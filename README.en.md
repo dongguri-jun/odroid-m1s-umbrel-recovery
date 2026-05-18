@@ -486,6 +486,51 @@ Last file load blocks:    250
 
 Current status: recovery in progress
 
+Recent Bitcoin error hints:
+  2026-05-16T02:58:27Z [error] Fatal LevelDB error: IO error: /data/bitcoin/indexes/txindex/048611.ldb: Input/output error
+
+=== System diagnostics ===
+Uptime and load:
+  19:42:10 up 3 days,  load average: 1.20, 1.05, 0.98
+
+Memory usage:
+  Mem:           7.6Gi       3.2Gi       1.1Gi       3.3Gi
+  Swap:          4.0Gi       512Mi       3.5Gi
+
+Active swap:
+  NAME                    TYPE SIZE USED PRIO
+  /mnt/fullnode/swapfile  file   4G 512M   -2
+
+Docker service state:
+  active
+  active
+
+Recent NVMe timeout snapshots:
+  snapshot directory unavailable
+
+=== Storage diagnostics ===
+Data dir target:          /mnt/fullnode
+Mount source:             /dev/nvme0n1p1
+Mount filesystem:         ext4
+Mount options:            rw,relatime
+Parent block device:      /dev/nvme0n1
+
+Disk space usage:
+  Filesystem      Size  Used Avail Use% Mounted on
+  /dev/nvme0n1p1  1.8T  870G  850G  51% /mnt/fullnode
+
+Inode usage:
+  Filesystem        Inodes IUsed     IFree IUse% Mounted on
+  /dev/nvme0n1p1 122101760 98000 122003760    1% /mnt/fullnode
+
+Block device summary:
+  NAME        TYPE  SIZE FSTYPE MODEL           SERIAL      MOUNTPOINTS
+  nvme0n1     disk  1.8T        Example NVMe    REDACTED
+  └─nvme0n1p1 part  1.8T ext4                               /mnt/fullnode
+
+Recent kernel storage hints:
+  none visible in recent kernel logs, or kernel log access is restricted
+
 Use this same command again later to watch the live progress estimate.
 ```
 
@@ -514,6 +559,10 @@ Each field means the following.
 - Reindex file progress: approximate reindex position based on Bitcoin block files. If this value rises over time, the reindex is actually moving forward.
 - Last file load blocks: number of blocks loaded from the most recent `blkXXXXX.dat` file
 - **Current status**: human-readable summary of the current recovery state
+- **Recent Bitcoin error hints**: filters the end of `debug.log` for recent LevelDB, txindex, chainstate, Fatal, and I/O error lines.
+- **System diagnostics**: shows load, memory, swap, Docker service state, and whether prior NVMe timeout snapshots exist, so resource pressure or Docker-level problems can be considered too.
+- **Storage diagnostics**: shows which device backs `/mnt/fullnode`, whether disk and inode space are available, which block device is involved, and, when available, NVMe/SMART health plus recent kernel storage hints.
+- **Recent kernel storage hints**: if NVMe timeout, reset, I/O error, or EXT4 error appears here, the problem may be SSD/NVMe/filesystem-level rather than only a Bitcoin index issue. Copy the full output for diagnosis.
 
 ---
 
