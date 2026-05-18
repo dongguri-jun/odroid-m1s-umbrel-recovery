@@ -524,9 +524,9 @@ Inode usage:
   /dev/nvme0n1p1 122101760 98000 122003760    1% /mnt/fullnode
 
 Block device summary:
-  NAME        TYPE  SIZE FSTYPE MODEL           SERIAL      MOUNTPOINTS
-  nvme0n1     disk  1.8T        Example NVMe    REDACTED
-  └─nvme0n1p1 part  1.8T ext4                               /mnt/fullnode
+  NAME        TYPE  SIZE FSTYPE MODEL           MOUNTPOINTS
+  nvme0n1     disk  1.8T        Example NVMe
+  └─nvme0n1p1 part  1.8T ext4                   /mnt/fullnode
 
 Recent kernel storage hints:
   none visible in recent kernel logs, or kernel log access is restricted

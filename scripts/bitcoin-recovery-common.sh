@@ -1105,7 +1105,7 @@ print_storage_diagnostics() {
 
   if [[ -n "$parent_device" && -b "$parent_device" ]]; then
     echo "Block device summary:"
-    print_indented_command_output 'lsblk output unavailable' lsblk -o NAME,TYPE,SIZE,FSTYPE,MODEL,SERIAL,MOUNTPOINTS "$parent_device"
+    print_indented_command_output 'lsblk output unavailable' lsblk -o NAME,TYPE,SIZE,FSTYPE,MODEL,MOUNTPOINTS "$parent_device"
     echo
 
     if command -v nvme >/dev/null 2>&1 && [[ "$parent_device" == /dev/nvme* ]]; then
