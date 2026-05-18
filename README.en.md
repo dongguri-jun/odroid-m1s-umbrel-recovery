@@ -6,7 +6,7 @@
 >
 > This repository is **a non-commercial personal guide maintained by Dongguri**. It is not officially affiliated with BinariList Inc., Umbrel, ODROID, or Hardkernel.
 >
-> Umbrel is licensed under the **PolyForm Noncommercial 1.0.0** license, so please use this guide **for non-commercial purposes only**.
+> This repository's guides and scripts are released under the MIT License. Umbrel itself is separately licensed under the **PolyForm Noncommercial 1.0.0** license, so check Umbrel's non-commercial terms separately before using, operating, or supporting Umbrel or derivatives.
 >
 > The procedure in this guide **deletes all data on the storage device (SSD)**. Device damage or data loss may occur during installation. Before continuing, **back up any important data**. This guide is provided for free, and **you are responsible for the installation result**.
 >
@@ -576,13 +576,7 @@ What each line does:
 4. `sudo bash scripts/m1s-update-umbrel.sh --check` — changes nothing and only shows the **currently installed version, latest version, and list of changes that will be applied**. If it is already up to date, it will show a message like "No migrations needed."
 5. `sudo bash scripts/m1s-update-umbrel.sh` — actually applies the update. If it is already up to date, it exits without doing anything.
 
-What each line does:
-
-1. `cd /home/*/odroid-m1s-umbrel-recovery` — moves into the repository folder downloaded during the first installation. The asterisk (`*`) means “automatically find any username,” so you do not need to type the username manually.
-2. `sudo bash scripts/m1s-update-umbrel.sh --check` — first synchronizes the repository to the latest GitHub `origin/main`, then changes nothing and only shows the **currently installed version, latest version, and list of changes that will be applied**. If it is already up to date, it will show a message like “No migrations needed.”
-3. `sudo bash scripts/m1s-update-umbrel.sh` — synchronizes the repository again, then actually applies the update. If it is already up to date, it exits without doing anything.
-
-If the `--check` output says `Script version` is `0.5.6` or older and immediately exits with “No migrations needed,” that device does not have the auto-sync updater yet. In that case only, run the following two lines **once**, then run the 3-line updater flow above again.
+If the `--check` output says `Script version` is `0.5.6` or older and immediately exits with “No migrations needed,” that device does not have the auto-sync updater yet. In that case only, run the following two lines **once**, then run the 5-line updater flow above again.
 
 ```bash
 sudo git -c safe.directory="$(pwd)" fetch origin
