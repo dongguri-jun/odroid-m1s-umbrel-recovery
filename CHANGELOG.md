@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.11
+
+- Add an explicit MIT License file for this repository's guides and scripts while keeping Umbrel's separate PolyForm Noncommercial license boundary clear in the public guides.
+- Clean up the Korean and English update instructions by removing stale duplicate three-line updater explanations and fixing Korean wording typos in the current five-line flow.
+- Make release-note real-device validation wording opt-in so documentation-only or metadata-only releases do not overstate hardware validation.
+- Bring `m1s-initial-setup.sh` into the same script version and verifier checks as the other public helper scripts.
+
 ## 0.5.10
 
 - Move generated dev-tracker state to `.local/dev-tracker.md` so public metadata no longer names private tracker or shared-memory paths.
