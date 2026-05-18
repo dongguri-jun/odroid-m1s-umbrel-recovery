@@ -15,6 +15,7 @@ full_resync_starter="scripts/m1s-start-bitcoin-full-resync.sh"
 chainstate_requester="scripts/m1s-request-bitcoin-chainstate-rebuild.sh"
 recovery_checker="scripts/m1s-check-bitcoin-recovery-status.sh"
 chainstate_checker="scripts/m1s-check-bitcoin-chainstate-rebuild.sh"
+initial_setup="scripts/m1s-initial-setup.sh"
 
 printf '[verify] bash syntax\n'
 for script in "${scripts[@]}" "${test_scripts[@]}" "${git_hooks[@]}"; do
@@ -31,7 +32,7 @@ else
 fi
 
 printf '[verify] script version flags\n'
-for script in "$installer" "$updater" "$chainstate_starter" "$reindex_starter" "$full_resync_starter" "$chainstate_requester" "$recovery_checker" "$chainstate_checker"; do
+for script in "$installer" "$updater" "$initial_setup" "$chainstate_starter" "$reindex_starter" "$full_resync_starter" "$chainstate_requester" "$recovery_checker" "$chainstate_checker"; do
   bash "$script" --version >/dev/null
   printf '  ok bash %s --version\n' "$script"
 done
@@ -45,6 +46,7 @@ version = Path('VERSION').read_text(encoding='utf-8').strip()
 for path in [
     Path('scripts/m1s-clean-install-umbrel.sh'),
     Path('scripts/m1s-update-umbrel.sh'),
+    Path('scripts/m1s-initial-setup.sh'),
     Path('scripts/m1s-start-bitcoin-chainstate-rebuild.sh'),
     Path('scripts/m1s-start-bitcoin-reindex.sh'),
     Path('scripts/m1s-start-bitcoin-full-resync.sh'),
@@ -312,6 +314,9 @@ required = [
     'precheck_0_5_9_to_0_5_10',
     'apply_0_5_9_to_0_5_10',
     'postcheck_0_5_9_to_0_5_10',
+    'precheck_0_5_10_to_0_5_11',
+    'apply_0_5_10_to_0_5_11',
+    'postcheck_0_5_10_to_0_5_11',
     '/boot/config.ini',
     '[overlay_pwm]',
     'overlay_profile',
@@ -320,6 +325,7 @@ required = [
     '0.5.7_to_0.5.8',
     '0.5.8_to_0.5.9',
     '0.5.9_to_0.5.10',
+    '0.5.10_to_0.5.11',
   ]
 missing = [needle for needle in required if needle not in text]
 if missing:

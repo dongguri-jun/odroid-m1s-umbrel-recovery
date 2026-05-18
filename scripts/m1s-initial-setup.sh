@@ -7,7 +7,9 @@ set -Eeuo pipefail
 # 사용법:
 #   sudo bash m1s-initial-setup.sh
 #   sudo bash m1s-initial-setup.sh --dry-run
+#   sudo bash m1s-initial-setup.sh --version
 
+SCRIPT_VERSION="0.5.11"
 DRY_RUN=0
 NEW_HOSTNAME="odroid"
 
@@ -40,6 +42,7 @@ Usage:
 
 Options:
   --dry-run    Show actions without changing anything
+  --version    Print script version and exit
   -h, --help   Show this help
 
 이 스크립트는 Umbrel 설치 스크립트(m1s-clean-install-umbrel.sh) 실행 후에 사용합니다.
@@ -55,6 +58,10 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --dry-run)
       DRY_RUN=1
+      ;;
+    --version)
+      printf '%s\n' "$SCRIPT_VERSION"
+      exit 0
       ;;
     -h|--help)
       usage
