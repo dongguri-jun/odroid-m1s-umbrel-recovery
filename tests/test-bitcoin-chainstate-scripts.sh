@@ -58,6 +58,13 @@ EOF
   assert_eq 'reindex-chainstate=1' "$(mode_request_line chainstate-rebuild)" 'chainstate mode should map to reindex-chainstate flag'
   assert_eq 'reindex=1' "$(mode_request_line reindex)" 'reindex mode should map to reindex flag'
   assert_eq '' "$(mode_request_line full-resync)" 'full-resync should not set a config request flag'
+  assert_contains "$(declare -f print_storage_diagnostics)" 'Recent kernel storage hints' 'status check should include storage diagnostics'
+  assert_contains "$(declare -f print_storage_diagnostics)" 'Inode usage' 'storage diagnostics should include inode usage without repeating mount detail'
+  assert_contains "$(declare -f print_recent_bitcoin_error_hints)" 'LevelDB' 'status check should include recent Bitcoin error hints'
+  assert_contains "$(declare -f print_bitcoin_container_diagnostics)" 'Container state' 'status check should include container state'
+  assert_contains "$(declare -f print_system_diagnostics)" 'Memory usage' 'status check should include system resource diagnostics'
+  assert_contains "$(declare -f print_system_diagnostics)" 'Recent NVMe timeout snapshots' 'status check should include existing NVMe snapshot evidence'
+  assert_contains "$(declare -f print_missing_bitcoin_config_status)" 'Bitcoin app config unavailable' 'status check should still print diagnostics when Bitcoin config is missing'
 
   located="$(locate_bitcoin_config_dir)"
   assert_eq "$BITCOIN_CONFIG_DIR" "$located" 'locate_bitcoin_config_dir should find the synthetic Umbrel path'

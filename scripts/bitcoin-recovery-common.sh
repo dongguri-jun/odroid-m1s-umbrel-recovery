@@ -521,8 +521,6 @@ run_bitcoin_cli_rpc() {
   container_name="$(printf '%s\n' "$locate_output" | sed -n '1p')"
   data_dir="$(printf '%s\n' "$locate_output" | sed -n '2p')"
   [[ -n "$container_name" && -n "$data_dir" ]] || return 1
-  BITCOIN_CONTAINER_NAME="$container_name"
-  BITCOIN_CONTAINER_DATA_DIR="$data_dir"
 
   local output
   if output="$(docker exec "$container_name" bitcoin-cli "-datadir=$data_dir" "$method" 2>/dev/null)"; then
@@ -964,9 +962,211 @@ print_human_status() {
   esac
 }
 
+resolve_storage_parent_device() {
+  local source="$1"
+  [[ "$source" == /dev/* ]] || return 1
+
+  local device parent
+  device="$(readlink -f "$source" 2>/dev/null || printf '%s\n' "$source")"
+  [[ -b "$device" ]] || return 1
+
+  parent="$(lsblk -no PKNAME "$device" 2>/dev/null | head -n 1 || true)"
+  if [[ -n "$parent" ]]; then
+    printf '/dev/%s\n' "$parent"
+    return 0
+  fi
+
+  printf '%s\n' "$device"
+}
+
+print_indented_command_output() {
+  local unavailable_message="$1"
+  shift
+
+  local output
+  output="$({ "$@"; } 2>/dev/null || true)"
+  if [[ -n "$output" ]]; then
+    printf '%s\n' "$output" | sed 's/^/  /'
+  else
+    echo "  $unavailable_message"
+  fi
+}
+
+print_recent_storage_kernel_hints() {
+  local pattern='nvme.*(timeout|reset|abort|failed|error|critical|CSTS|Device not ready)|EXT4-fs (error|warning)|I/O error|i/o error|blk_update|buffer I/O|critical medium error|failed command'
+  local output=""
+
+  if command -v journalctl >/dev/null 2>&1; then
+    output="$({ journalctl -k -n 500 --no-pager 2>/dev/null | grep -Ei "$pattern" | tail -25; } 2>/dev/null || true)"
+  fi
+
+  if [[ -z "$output" ]]; then
+    output="$({ dmesg -T 2>/dev/null | grep -Ei "$pattern" | tail -25; } 2>/dev/null || true)"
+  fi
+
+  if [[ -n "$output" ]]; then
+    printf '%s\n' "$output" | sed 's/^/  /'
+  else
+    echo '  none visible in recent kernel logs, or kernel log access is restricted'
+  fi
+}
+
+print_recent_bitcoin_error_hints() {
+  local pattern='Fatal|EXCEPTION|LevelDB|Input/output error|I/O error|Corruption|txindex|chainstate|Error|error|Warning|warning'
+  if [[ ! -f "$DEBUG_LOG" ]]; then
+    echo '  debug.log unavailable'
+    return 0
+  fi
+
+  local output
+  output="$({ tail -400 "$DEBUG_LOG" 2>/dev/null | grep -Ei "$pattern" | tail -30; } 2>/dev/null || true)"
+  if [[ -n "$output" ]]; then
+    printf '%s\n' "$output" | sed 's/^/  /'
+  else
+    echo '  none visible in recent Bitcoin debug.log tail'
+  fi
+}
+
+print_bitcoin_container_diagnostics() {
+  local locate_output container_name container_state container_status
+  locate_output="$(locate_bitcoin_container || true)"
+  if [[ -z "$locate_output" ]]; then
+    echo 'Bitcoin container:        unavailable'
+    echo 'Container state:          unavailable'
+    return 0
+  fi
+
+  local container_data_dir
+  container_name="$(printf '%s\n' "$locate_output" | sed -n '1p')"
+  container_data_dir="$(printf '%s\n' "$locate_output" | sed -n '2p')"
+  container_state="$(docker inspect --format='{{.State.Status}}' "$container_name" 2>/dev/null || true)"
+  container_status="$(docker inspect --format='{{.State.Health.Status}}' "$container_name" 2>/dev/null || true)"
+
+  echo "Bitcoin container:        ${container_name:-unavailable}"
+  echo "Container data dir:       ${container_data_dir:-unavailable}"
+  echo "Container state:          ${container_state:-unavailable}"
+  if [[ -n "$container_status" && "$container_status" != "<no value>" ]]; then
+    echo "Container health:         $container_status"
+  fi
+}
+
+print_system_diagnostics() {
+  echo "=== System diagnostics ==="
+  echo "Uptime and load:"
+  print_indented_command_output 'uptime output unavailable' uptime
+  echo
+
+  echo "Memory usage:"
+  print_indented_command_output 'free output unavailable' free -h
+  echo
+
+  echo "Active swap:"
+  print_indented_command_output 'swapon output unavailable or no active swap' swapon --show
+  echo
+
+  echo "Docker service state:"
+  if command -v systemctl >/dev/null 2>&1; then
+    print_indented_command_output 'docker service state unavailable' systemctl --no-pager --plain is-active docker.service docker.socket
+  else
+    echo '  systemctl unavailable'
+  fi
+  echo
+
+  echo "Recent NVMe timeout snapshots:"
+  if [[ -d /var/lib/nvme-timeout-snapshot/snapshots ]]; then
+    print_indented_command_output 'no NVMe timeout snapshots visible' ls -1dt /var/lib/nvme-timeout-snapshot/snapshots/*
+  else
+    echo '  snapshot directory unavailable'
+  fi
+}
+
+print_storage_diagnostics() {
+  local mount_source mount_fstype mount_options parent_device
+  mount_source="$(findmnt -n -o SOURCE --target "$DATA_DIR" 2>/dev/null || true)"
+  mount_fstype="$(findmnt -n -o FSTYPE --target "$DATA_DIR" 2>/dev/null || true)"
+  mount_options="$(findmnt -n -o OPTIONS --target "$DATA_DIR" 2>/dev/null || true)"
+  parent_device="$(resolve_storage_parent_device "$mount_source" 2>/dev/null || true)"
+
+  echo "=== Storage diagnostics ==="
+  echo "Data dir target:          $DATA_DIR"
+  echo "Mount source:             ${mount_source:-unavailable}"
+  echo "Mount filesystem:         ${mount_fstype:-unavailable}"
+  echo "Mount options:            ${mount_options:-unavailable}"
+  echo "Parent block device:      ${parent_device:-unavailable}"
+  echo
+
+  echo "Disk space usage:"
+  print_indented_command_output 'df output unavailable' df -hP "$DATA_DIR"
+  echo
+
+  echo "Inode usage:"
+  print_indented_command_output 'df inode output unavailable' df -iP "$DATA_DIR"
+  echo
+
+  if [[ -n "$parent_device" && -b "$parent_device" ]]; then
+    echo "Block device summary:"
+    print_indented_command_output 'lsblk output unavailable' lsblk -o NAME,TYPE,SIZE,FSTYPE,MODEL,SERIAL,MOUNTPOINTS "$parent_device"
+    echo
+
+    if command -v nvme >/dev/null 2>&1 && [[ "$parent_device" == /dev/nvme* ]]; then
+      echo "NVMe SMART summary:"
+      print_indented_command_output 'nvme smart-log unavailable or not permitted' nvme smart-log "$parent_device"
+      echo
+    fi
+
+    if command -v smartctl >/dev/null 2>&1; then
+      echo "SMART health summary:"
+      print_indented_command_output 'smartctl health output unavailable or not permitted' smartctl -H "$parent_device"
+      echo
+    fi
+  fi
+
+  echo "Recent kernel storage hints:"
+  print_recent_storage_kernel_hints
+}
+
+print_missing_bitcoin_config_status() {
+  local matches="$1"
+  echo
+  echo "=== ODROID M1S Bitcoin recovery status ==="
+  echo "Script version:           ${SCRIPT_VERSION:-unknown}"
+  echo "Recovery mode:            unknown"
+  echo "Bitcoin config dir:       unavailable"
+  echo "State file:               $RECOVERY_STATE_FILE"
+  echo
+  if [[ -n "$matches" ]]; then
+    echo "Config discovery issue:   multiple candidate Bitcoin config directories found"
+    printf '%s\n' "$matches" | sed 's/^/  /'
+  else
+    echo "Config discovery issue:   no Umbrel Bitcoin config directory found under $DATA_DIR"
+  fi
+  echo
+  echo "Current status: Bitcoin app config unavailable; storage and system diagnostics follow"
+  echo
+  print_system_diagnostics
+  echo
+  print_storage_diagnostics
+  echo
+  echo "If the Bitcoin app is installed, confirm it has created bitcoin.conf and umbrel-bitcoin.conf under $DATA_DIR."
+}
+
 run_recovery_status_check() {
   require_root
-  require_single_bitcoin_config_dir
+
+  local config_matches config_count
+  config_matches="$(locate_bitcoin_config_dir || true)"
+  config_count="$(python3 -c 'import sys; print(len([line for line in sys.stdin.read().splitlines() if line.strip()]))' <<<"$config_matches")"
+  if [[ "$config_count" -ne 1 ]]; then
+    print_missing_bitcoin_config_status "$config_matches"
+    return 0
+  fi
+
+  BITCOIN_CONFIG_DIR="$config_matches"
+  BITCOIN_APP_DATA_DIR="$(dirname "$BITCOIN_CONFIG_DIR")"
+  BITCOIN_CONF="$BITCOIN_CONFIG_DIR/bitcoin.conf"
+  UMBREL_BITCOIN_CONF="$BITCOIN_CONFIG_DIR/umbrel-bitcoin.conf"
+  DEBUG_LOG="$BITCOIN_CONFIG_DIR/debug.log"
+
   local settings_json config_reindex config_reindex_chainstate includeconf_present managed_present
   local state_file_present=0 request_epoch=0 active_request=0 had_prior_request=0 mode="unknown" log_mode="" runtime_mode=""
   local log_started=0 rpc_chainstates_ok=0 rpc_rebuild=0 rpc_progress="" rpc_blockchaininfo_ok=0 rpc_ibd=0 mode_known=0
@@ -1087,10 +1287,7 @@ run_recovery_status_check() {
   echo "Recent startup evidence:  $log_started"
   echo "RPC getchainstates:       $rpc_chainstates_ok"
   echo "RPC getblockchaininfo:    $rpc_blockchaininfo_ok"
-  if [[ -n "${BITCOIN_CONTAINER_NAME:-}" ]]; then
-    echo "Bitcoin container:        $BITCOIN_CONTAINER_NAME"
-    echo "Container data dir:       $BITCOIN_CONTAINER_DATA_DIR"
-  fi
+  print_bitcoin_container_diagnostics
   if [[ -n "$blocks" || -n "$headers" ]]; then
     echo "Blocks / headers:         ${blocks:-unknown} / ${headers:-unknown}"
   fi
@@ -1110,6 +1307,13 @@ run_recovery_status_check() {
   fi
   echo
   print_human_status "$status" "$mode"
+  echo
+  echo "Recent Bitcoin error hints:"
+  print_recent_bitcoin_error_hints
+  echo
+  print_system_diagnostics
+  echo
+  print_storage_diagnostics
   echo
 
   case "$status" in
