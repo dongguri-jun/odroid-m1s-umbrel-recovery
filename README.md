@@ -6,7 +6,7 @@
 >
 > 이 저장소는 **동구리 개인이 비영리적으로 정리한 자료**입니다. 바이너리리스트(주), 제로니모 브랜드, Umbrel, ODROID(Hardkernel) 어느 쪽과도 공식적으로 무관합니다.
 >
-> Umbrel은 **PolyForm Noncommercial 1.0.0** 라이선스를 따르므로, 본 가이드 역시 **비영리 목적으로만** 활용해 주세요.
+> 이 저장소의 가이드와 스크립트는 MIT License로 공개됩니다. 단, Umbrel 자체는 **PolyForm Noncommercial 1.0.0** 라이선스를 따르므로, Umbrel 사용·파생 운영·지원 형태는 해당 라이선스의 비영리 조건을 별도로 확인해 주세요.
 >
 > 본 가이드의 절차는 **저장장치(SSD)의 데이터를 모두 삭제**합니다. 설치 과정에서 디바이스 손상이나 데이터 손실이 발생할 수 있으니, 진행 전 **중요한 데이터는 반드시 백업**해 주세요. 본 가이드는 무상 자료이며, **설치 결과에 대한 책임은 사용자 본인에게 있습니다.**
 >
@@ -579,19 +579,13 @@ sudo bash scripts/m1s-update-umbrel.sh
 
 각 줄이 하는 일:
 
-1. `cd /home/*/odroid-m1s-umbrel-recovery` — 처음 설치할 때 받아 둔 저장소 폴[...]더로 이동합니다. 별표(`*`)는 "어떤 사용자 이름이든 자동으로 찾기"를 의미하므로, 사용자 이름을 직접 입력할 필요가 없습니다.
+1. `cd /home/*/odroid-m1s-umbrel-recovery` — 처음 설치할 때 받아 둔 저장소 폴더로 이동합니다. 별표(`*`)는 "어떤 사용자 이름이든 자동으로 찾기"를 의미하므로, 사용자 이름을 직접 입력할 필요가 없습니다.
 2. `sudo git -c safe.directory="$(pwd)" fetch origin` — GitHub 원격 저장소의 최신 변경 내역을 가져옵니다.
-3. `sudo git -c safe.directory="$(pwd)" reset --hard origin/main` — 로컬 파일을 GitHub의 최신 `origin/main` 상태와 똑같이 맞춥니다. 이 과정에서 로컬의 업데이트 스크립트 자신도 최신 버전으로 교첼됩니다.
-4. `sudo bash scripts/m1s-update-umbrel.sh --check` — 아무것도 바꾸지 않고 **현재 설치된 버전 · 최신 버전 · 적용될 수정 목록**만 보여 줍니다. 이미 최신이면 "No migrations needed" 처럼 안납니다.
+3. `sudo git -c safe.directory="$(pwd)" reset --hard origin/main` — 로컬 파일을 GitHub의 최신 `origin/main` 상태와 똑같이 맞춥니다. 이 과정에서 로컬의 업데이트 스크립트 자신도 최신 버전으로 교체됩니다.
+4. `sudo bash scripts/m1s-update-umbrel.sh --check` — 아무것도 바꾸지 않고 **현재 설치된 버전 · 최신 버전 · 적용될 수정 목록**만 보여 줍니다. 이미 최신이면 "No migrations needed" 처럼 안내됩니다.
 5. `sudo bash scripts/m1s-update-umbrel.sh` — 실제 업데이트를 적용합니다. 이미 최신이면 아무 작업 없이 끝납니다.
 
-각 줄이 하는 일:
-
-1. `cd /home/*/odroid-m1s-umbrel-recovery` — 처음 설치할 때 받아 둔 저장소 폴더로 이동합니다. 별표(`*`)는 “어떤 사용자 이름이든 자동으로 찾기”를 의미하므로, 사용자 이름을 직접 입력할 필요가 없습니다.
-2. `sudo bash scripts/m1s-update-umbrel.sh --check` — 먼저 저장소를 GitHub의 최신 `origin/main` 상태와 똑같이 맞춘 뒤, 아무것도 바꾸지 않고 **현재 설치된 버전 · 최신 버전 · 적용될 수정 목록**만 보여 줍니다. 이미 최신이면 “No migrations needed” 처럼 안내됩니다.
-3. `sudo bash scripts/m1s-update-umbrel.sh` — 저장소를 다시 최신 상태로 맞춘 뒤 실제 업데이트를 적용합니다. 이미 최신이면 아무 작업 없이 끝납니다.
-
-만약 `--check` 결과의 `Script version` 이 `0.5.6` 이하로 나오고 바로 “No migrations needed” 로 끝나면, 그 장비에는 아직 자동 동기화 기능 자체가 없는 상태입니다. 이 경우에만 아래 두 줄을 **처음 한 번만** 실행한 뒤, 위 3줄을 다시 실행하세요.
+만약 `--check` 결과의 `Script version` 이 `0.5.6` 이하로 나오고 바로 “No migrations needed” 로 끝나면, 그 장비에는 아직 자동 동기화 기능 자체가 없는 상태입니다. 이 경우에만 아래 두 줄을 **처음 한 번만** 실행한 뒤, 위 5줄을 다시 실행하세요.
 
 ```bash
 sudo git -c safe.directory="$(pwd)" fetch origin
