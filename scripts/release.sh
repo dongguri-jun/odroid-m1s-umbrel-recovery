@@ -6,10 +6,11 @@ cd "$repo_root"
 
 workflow_name="Verify scripts"
 dry_run=0
+real_device_validation=0
 
 usage() {
   cat <<'USAGE'
-Usage: bash scripts/release.sh [--dry-run]
+Usage: bash scripts/release.sh [--dry-run] [--real-device-validation]
 
 Creates the Git tag and GitHub Release for the version in VERSION.
 
@@ -20,6 +21,10 @@ This script refuses to release unless:
   - the latest GitHub Actions run for HEAD succeeded,
   - CHANGELOG.md has a section for the version,
   - the tag and release do not already exist.
+
+Options:
+  --dry-run                 Show what would be released without creating anything.
+  --real-device-validation  Include the ODROID M1S real-device validation note.
 USAGE
 }
 
@@ -27,6 +32,9 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --dry-run)
       dry_run=1
+      ;;
+    --real-device-validation)
+      real_device_validation=1
       ;;
     -h|--help)
       usage
@@ -135,16 +143,25 @@ if run.get('status') != 'completed' or run.get('conclusion') != 'success':
 print(f"[release] CI success run {run.get('databaseId')} {run.get('url')}")
 PY
 
-notes="$(python3 - "$version" <<'PY'
+notes="$(REAL_DEVICE_VALIDATION="$real_device_validation" python3 - "$version" <<'PY'
 from pathlib import Path
+import os
 import re
 import sys
 version = sys.argv[1]
+real_device_validation = os.environ.get('REAL_DEVICE_VALIDATION') == '1'
 text = Path('CHANGELOG.md').read_text(encoding='utf-8')
 match = re.search(rf'^##\s+{re.escape(version)}\s*\n(?P<body>.*?)(?=^##\s+|\Z)', text, flags=re.M | re.S)
 if not match:
     raise SystemExit(f'CHANGELOG.md is missing section: ## {version}')
 body = match.group('body').strip()
+verification_lines = [
+    '- Latest GitHub Actions `Verify scripts` workflow passed for this release commit.',
+    '- `bash scripts/verify-scripts.sh` checks bash syntax, ShellCheck, version consistency, heredoc safety, installer invariants, updater safety, and workflow presence.',
+]
+if real_device_validation:
+    verification_lines.append('- Real-device validation passed on ODROID M1S hardware.')
+verification = '\n'.join(verification_lines)
 print(f'''## Highlights
 
 {body}
@@ -168,9 +185,7 @@ sudo git -c safe.directory="$(pwd)" reset --hard origin/main
 
 ## Verification
 
-- Latest GitHub Actions `Verify scripts` workflow passed for this release commit.
-- `bash scripts/verify-scripts.sh` checks bash syntax, ShellCheck, version consistency, heredoc safety, installer invariants, updater safety, and workflow presence.
-- Real-device validation passed on ODROID M1S hardware.
+{verification}
 ''')
 PY
 )"
