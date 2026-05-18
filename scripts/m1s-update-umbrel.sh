@@ -17,7 +17,7 @@ set -Eeuo pipefail
 #   --version      Print script version and exit.
 #   -h, --help     Show this help.
 
-SCRIPT_VERSION="0.5.11"
+SCRIPT_VERSION="0.5.12"
 INSTALL_STATE_DIR="/etc/umbrel-recovery"
 INSTALL_STATE_FILE="$INSTALL_STATE_DIR/installed.json"
 DATA_DIR="/mnt/fullnode"
@@ -64,6 +64,7 @@ MIGRATIONS=(
   "0.5.8_to_0.5.9"
   "0.5.9_to_0.5.10"
   "0.5.10_to_0.5.11"
+  "0.5.11_to_0.5.12"
 )
 
 log() {
@@ -1763,6 +1764,10 @@ postcheck_0_5_9_to_0_5_10() { return 0; }
 precheck_0_5_10_to_0_5_11() { precheck_common_canonical_install; }
 apply_0_5_10_to_0_5_11() { info "0.5.11 updates public documentation, license metadata, and release helper behavior; no host mutation required."; }
 postcheck_0_5_10_to_0_5_11() { return 0; }
+
+precheck_0_5_11_to_0_5_12() { precheck_common_canonical_install; }
+apply_0_5_11_to_0_5_12() { info "0.5.12 extends Bitcoin recovery health checks with remote diagnostics; no host mutation required."; }
+postcheck_0_5_11_to_0_5_12() { return 0; }
 
 # ---------------------------------------------------------------------------
 # Main flow

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.12
+
+- Extend `m1s-check-bitcoin-recovery-status.sh` with non-destructive diagnostics for remote troubleshooting: recent Bitcoin error hints, Bitcoin container state, system load/memory/swap, Docker service state, existing NVMe timeout snapshots, `/mnt/fullnode` mount details, disk and inode usage, block-device summary, available NVMe/SMART health output, and recent kernel storage error hints without repeating the same mount data twice. The checker now still prints system/storage diagnostics when the Bitcoin app config directory is missing.
+- Add a no-op updater history step for existing installations so devices can record the new diagnostic-helper release without changing host state.
+
 ## 0.5.11
 
 - Add an explicit MIT License file for this repository's guides and scripts while keeping Umbrel's separate PolyForm Noncommercial license boundary clear in the public guides.
