@@ -16,6 +16,7 @@ chainstate_requester="scripts/m1s-request-bitcoin-chainstate-rebuild.sh"
 recovery_checker="scripts/m1s-check-bitcoin-recovery-status.sh"
 chainstate_checker="scripts/m1s-check-bitcoin-chainstate-rebuild.sh"
 initial_setup="scripts/m1s-initial-setup.sh"
+system_updater="scripts/m1s-update-system-packages.sh"
 
 printf '[verify] bash syntax\n'
 for script in "${scripts[@]}" "${test_scripts[@]}" "${git_hooks[@]}"; do
@@ -32,7 +33,7 @@ else
 fi
 
 printf '[verify] script version flags\n'
-for script in "$installer" "$updater" "$initial_setup" "$chainstate_starter" "$reindex_starter" "$full_resync_starter" "$chainstate_requester" "$recovery_checker" "$chainstate_checker"; do
+for script in "$installer" "$updater" "$initial_setup" "$system_updater" "$chainstate_starter" "$reindex_starter" "$full_resync_starter" "$chainstate_requester" "$recovery_checker" "$chainstate_checker"; do
   bash "$script" --version >/dev/null
   printf '  ok bash %s --version\n' "$script"
 done
@@ -47,6 +48,7 @@ for path in [
     Path('scripts/m1s-clean-install-umbrel.sh'),
     Path('scripts/m1s-update-umbrel.sh'),
     Path('scripts/m1s-initial-setup.sh'),
+    Path('scripts/m1s-update-system-packages.sh'),
     Path('scripts/m1s-start-bitcoin-chainstate-rebuild.sh'),
     Path('scripts/m1s-start-bitcoin-reindex.sh'),
     Path('scripts/m1s-start-bitcoin-full-resync.sh'),
@@ -320,6 +322,9 @@ required = [
     'precheck_0_5_11_to_0_5_12',
     'apply_0_5_11_to_0_5_12',
     'postcheck_0_5_11_to_0_5_12',
+    'precheck_0_5_12_to_0_5_13',
+    'apply_0_5_12_to_0_5_13',
+    'postcheck_0_5_12_to_0_5_13',
     '/boot/config.ini',
     '[overlay_pwm]',
     'overlay_profile',
@@ -330,6 +335,7 @@ required = [
     '0.5.9_to_0.5.10',
     '0.5.10_to_0.5.11',
     '0.5.11_to_0.5.12',
+    '0.5.12_to_0.5.13',
   ]
 missing = [needle for needle in required if needle not in text]
 if missing:
@@ -380,6 +386,76 @@ for mutator in ['docker stop umbrel', 'docker rm umbrel', 'run_umbrel_container 
 if pos('if [[ "$DRY_RUN" -eq 1 ]]', refresh) > pos('docker pull "$UMBREL_IMAGE"', refresh):
     raise SystemExit('Dry-run branch must return before docker pull mutates image cache')
 print('  ok updater preserves data-mount gates, check/dry-run path, and canonical Umbrel refresh flags')
+PY
+
+
+printf '[verify] system package updater safety invariants\n'
+python3 - <<'PY'
+from pathlib import Path
+text = Path('scripts/m1s-update-system-packages.sh').read_text(encoding='utf-8')
+for forbidden in ['mkfs.', 'sfdisk', 'parted', 'wipefs', 'sgdisk', 'gdisk', 'blkdiscard', 'shred']:
+    if forbidden in text:
+        raise SystemExit(f'System package updater must never contain destructive disk command: {forbidden}')
+required = [
+    'SCRIPT_VERSION="0.5.13"',
+    '--dry-run',
+    '--no-reboot',
+    'STOP_TIMEOUT_SECONDS=300',
+    'APT_LOCK_TIMEOUT_SECONDS=300',
+    'apt_update_command',
+    'docker ps --format',
+    'Bitcoin-related containers are running and will be stopped gracefully',
+    'docker stop --timeout "$STOP_TIMEOUT_SECONDS"',
+    'run_noninteractive',
+    'apt_upgrade_command',
+    'dpkg_configure_command',
+    '--force-confdef',
+    '--force-confold',
+    'apt_fix_install_command',
+    'apt_check_command',
+    'apt_clean_command',
+    'clean_apt_cache',
+    'DPkg::Lock::Timeout="$APT_LOCK_TIMEOUT_SECONDS"',
+    '/var/run/reboot-required',
+    'run_cmd systemctl reboot',
+    'docker container inspect "$container"',
+    'docker start "$container"',
+]
+missing = [needle for needle in required if needle not in text]
+if missing:
+    print('Missing expected system package updater invariant text:')
+    for needle in missing:
+        print(f'  {needle}')
+    raise SystemExit(1)
+
+def pos(needle: str, haystack: str = text) -> int:
+    idx = haystack.find(needle)
+    if idx == -1:
+        raise SystemExit(f'Missing text for order invariant: {needle}')
+    return idx
+
+main = text[pos('main()'):]
+if pos('apt_update_command', main) > pos('if command -v docker', main):
+    raise SystemExit('apt package lists should update before Docker/container handling')
+if pos('stop_running_containers', main) > pos('apt_upgrade_command', main):
+    raise SystemExit('containers must stop before apt upgrade runs')
+if pos('apt_upgrade_command', main) > pos('dpkg_configure_command', main):
+    raise SystemExit('apt upgrade must run before dpkg repair/check phase')
+if pos('dpkg_configure_command', main) > pos('apt_fix_install_command', main):
+    raise SystemExit('dpkg configure repair must run before apt fix install')
+if pos('apt_fix_install_command', main) > pos('apt_check_command', main):
+    raise SystemExit('apt fix install must run before apt check')
+if pos('apt_check_command', main) > pos('clean_apt_cache', main):
+    raise SystemExit('apt cache clean must run only after apt check succeeds')
+if pos('clean_apt_cache', main) > pos('print_reboot_required_status', main):
+    raise SystemExit('apt cache clean should run before reboot-required status is reported')
+if pos('print_reboot_required_status', main) > pos('if reboot_required; then', main):
+    raise SystemExit('reboot status should print before reboot decision')
+if pos('if reboot_required; then', main) > pos('run_cmd systemctl reboot', main):
+    raise SystemExit('systemctl reboot must stay behind reboot-required gate')
+if pos('if reboot_required; then', main) > pos('start_stopped_containers', main):
+    raise SystemExit('container restart must happen only after reboot-required handling')
+print('  ok system package updater stops containers before apt upgrade and reboots only behind reboot-required gate')
 PY
 
 printf '[verify] updater unit tests\n'
