@@ -16,11 +16,12 @@
 
 이 문서는 **비개발자도 순서대로 따라할 수 있게** ODROID M1S에 Umbrel을 설치하는 방법을 정리한 가이드입니다.
 
-이 저장소에서 실제로 자주 사용하는 파일은 아래 5개입니다.
+이 저장소에서 실제로 자주 사용하는 파일은 아래 6개입니다.
 
 - `scripts/m1s-clean-install-umbrel.sh` — Umbrel 설치 스크립트
 - `scripts/m1s-initial-setup.sh` — 초기 설정 스크립트 (계정/호스트 이름)
 - `scripts/m1s-update-umbrel.sh` — 이미 설치된 장비를 최신 버전으로 올리는 업데이트 스크립트
+- `scripts/m1s-update-system-packages.sh` — Ubuntu 보안/커널 관련 패키지를 업데이트하고 필요하면 재부팅하는 스크립트
 - `scripts/m1s-start-bitcoin-chainstate-rebuild.sh` — Bitcoin chainstate 재구축 시작 스크립트
 - `scripts/m1s-check-bitcoin-chainstate-rebuild.sh` — Bitcoin chainstate 재구축 상태 확인 스크립트
 
@@ -335,7 +336,7 @@ Fing 목록에서 **Generic** 또는 **알 수 없는 기기**처럼 보이는 �
 예를 들면:
 
 ```text
-http://192.168.0.10
+http://<장비 IP>
 ```
 
 ---
@@ -702,7 +703,84 @@ sudo bash scripts/m1s-update-umbrel.sh
 
 ---
 
-## 13. 더 자세한 자료
+## 13. 커널 재시작이 필요한 업데이트하기
+
+가끔 Ubuntu 보안 업데이트나 커널 업데이트처럼 **재부팅해야 완전히 적용되는 업데이트**가 있습니다.
+
+이 작업은 Umbrel 앱 데이터나 Bitcoin 노드 데이터를 지우는 작업이 아닙니다. 대신 업데이트와 재부팅 중에는 Umbrel 웹 화면과 Bitcoin 노드가 잠시 멈춥니다.
+
+그래서 이 저장소에는 한 줄로 실행할 수 있는 전용 스크립트가 들어 있습니다. 이 스크립트는 다음 순서로 동작합니다.
+
+1. Ubuntu 패키지 목록을 최신 상태로 가져옵니다.
+2. 실행 중인 Docker 컨테이너를 확인합니다.
+3. Bitcoin 관련 컨테이너가 있으면 안내를 보여 줍니다.
+4. 실행 중인 Docker 컨테이너를 안전하게 멈춥니다.
+5. Ubuntu 패키지 업데이트를 적용합니다.
+6. 재부팅이 필요하면 자동으로 재부팅합니다.
+7. 재부팅이 필요 없으면 멈췄던 컨테이너를 다시 시작합니다.
+
+Bitcoin 노드가 IBD(초기 블록 다운로드), 블록 다운로드, 리인덱스, 복구 작업을 하는 중이라면 이 스크립트가 컨테이너를 안전하게 멈추기는 하지만, 작업 자체는 중간에 끊깁니다. 가능하면 그런 작업이 한창 진행 중이 아닐 때 실행하세요.
+
+### 13-1. 터미널에서 직접 하는 방법
+
+ODROID M1S에 SSH로 접속했거나, 모니터와 키보드로 직접 로그인한 경우에는 아래 명령을 위에서부터 차례로 입력하세요.
+
+```bash
+cd /home/*/odroid-m1s-umbrel-recovery
+sudo git -c safe.directory="$(pwd)" fetch origin
+sudo git -c safe.directory="$(pwd)" reset --hard origin/main
+sudo bash scripts/m1s-update-system-packages.sh
+```
+
+각 줄이 하는 일:
+
+1. `cd /home/*/odroid-m1s-umbrel-recovery` — 처음 설치할 때 받아 둔 저장소 폴더로 이동합니다.
+2. `sudo git -c safe.directory="$(pwd)" fetch origin` — GitHub 원격 저장소의 최신 변경 내역을 가져옵니다.
+3. `sudo git -c safe.directory="$(pwd)" reset --hard origin/main` — 로컬 파일을 GitHub의 최신 `origin/main` 상태와 똑같이 맞춥니다.
+4. `sudo bash scripts/m1s-update-system-packages.sh` — Docker 컨테이너를 안전하게 멈춘 뒤 Ubuntu 패키지 업데이트를 적용하고, 필요하면 자동으로 재부팅합니다.
+
+재부팅이 실행되면 SSH 연결이 끊기는 것이 정상입니다. 1~3분 정도 기다린 뒤 브라우저에서 다시 아래 주소를 열어 보세요.
+
+```text
+http://umbrel.local
+```
+
+`umbrel.local`이 열리지 않으면 Fing 앱이나 공유기 화면에서 ODROID M1S의 IP 주소를 확인한 뒤 `http://<장비 IP>`로 접속하면 됩니다.
+
+### 13-2. Umbrel 웹 화면 안의 고급 설정 터미널에서 하는 방법
+
+SSH를 쓰기 어렵다면 Umbrel 웹 화면 안의 Terminal에서도 같은 작업을 할 수 있습니다.
+
+순서는 다음과 같습니다.
+
+1. Umbrel 웹 화면에 로그인합니다.
+2. **Settings → Advanced settings → Terminal** 로 이동합니다. 한국어 화면에서는 **설정 → 고급 설정 → 터미널** 로 보일 수 있습니다.
+3. 터미널이 열리면 먼저 아래 명령으로 호스트 쉘에 들어갑니다.
+
+```bash
+sudo nsenter -t 1 -m -u -i -n -p -- bash
+```
+
+프롬프트가 `root@umbrel:/#` 형태로 바뀌면 아래 명령을 차례대로 입력합니다.
+
+```bash
+cd /home/*/odroid-m1s-umbrel-recovery
+sudo git -c safe.directory="$(pwd)" fetch origin
+sudo git -c safe.directory="$(pwd)" reset --hard origin/main
+sudo bash scripts/m1s-update-system-packages.sh
+```
+
+스크립트가 재부팅을 실행하면 웹 터미널 연결이 끊기는 것이 정상입니다. 장비가 다시 켜질 때까지 1~3분 정도 기다린 뒤 `http://umbrel.local` 또는 장비 IP 주소로 다시 접속하세요.
+
+주의할 점은 다음과 같습니다.
+
+- 재부팅 중에는 Umbrel 웹 화면이 열리지 않습니다. 잠시 기다린 뒤 다시 접속하세요.
+- Bitcoin 노드가 IBD, 다운로드, 복구, 리인덱스를 진행 중이라면, 가능하면 작업이 안정된 뒤 실행하는 것이 좋습니다.
+- 이 절차는 Ubuntu 패키지를 업데이트하는 절차입니다. 12번의 저장소 스크립트 업데이트와는 역할이 다르므로, 둘 다 필요할 수 있습니다.
+
+---
+
+## 14. 더 자세한 자료
 
 설치를 마친 뒤 더 알아보고 싶은 내용이 있다면 아래 자료를 참고하세요.
 

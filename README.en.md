@@ -16,11 +16,12 @@
 
 This guide explains how to install Umbrel on an ODROID M1S in a way that **non-technical users can follow step by step**.
 
-This repository most commonly uses the following 5 files.
+This repository most commonly uses the following 6 files.
 
 - `scripts/m1s-clean-install-umbrel.sh` — Umbrel installation script
 - `scripts/m1s-initial-setup.sh` — initial setup script for account and hostname configuration
 - `scripts/m1s-update-umbrel.sh` — update script for bringing an already-installed device up to the latest version
+- `scripts/m1s-update-system-packages.sh` — helper for Ubuntu security/kernel-related package updates and reboot-if-needed handling
 - `scripts/m1s-start-bitcoin-chainstate-rebuild.sh` — helper for starting a Bitcoin chainstate rebuild
 - `scripts/m1s-check-bitcoin-chainstate-rebuild.sh` — helper for checking Bitcoin chainstate rebuild status
 
@@ -322,7 +323,7 @@ Eventually, you should find the IP address that opens the Umbrel screen.
 For example:
 
 ```text
-http://192.168.0.10
+http://<device IP>
 ```
 
 ---
@@ -689,7 +690,84 @@ Be careful about the following points.
 
 ---
 
-## 13. More detailed resources
+## 13. Run updates that may require a kernel/system reboot
+
+Sometimes Ubuntu security updates or kernel-adjacent updates only fully apply after a reboot.
+
+This does not delete Umbrel app data or Bitcoin node data. However, Umbrel and the Bitcoin node will stop temporarily during the update and reboot.
+
+This repository includes a one-command helper for that job. The helper works in this order:
+
+1. Refreshes the Ubuntu package list.
+2. Checks currently running Docker containers.
+3. Shows a warning when Bitcoin-related containers are running.
+4. Gracefully stops running Docker containers.
+5. Applies Ubuntu package upgrades.
+6. Automatically reboots if the system says a reboot is required.
+7. Starts the stopped containers again if no reboot is required.
+
+If your Bitcoin node is doing IBD (Initial Block Download), block download, reindex, or recovery work, the script will stop the containers gracefully, but that work will still be interrupted. If possible, run this when those jobs are not actively in progress.
+
+### 13-1. Direct terminal or SSH method
+
+If you connected to the ODROID M1S by SSH, or logged in directly with a monitor and keyboard, enter the following commands from top to bottom.
+
+```bash
+cd /home/*/odroid-m1s-umbrel-recovery
+sudo git -c safe.directory="$(pwd)" fetch origin
+sudo git -c safe.directory="$(pwd)" reset --hard origin/main
+sudo bash scripts/m1s-update-system-packages.sh
+```
+
+What each line does:
+
+1. `cd /home/*/odroid-m1s-umbrel-recovery` — moves into the repository folder downloaded during the first installation.
+2. `sudo git -c safe.directory="$(pwd)" fetch origin` — fetches the latest changes from the GitHub remote repository.
+3. `sudo git -c safe.directory="$(pwd)" reset --hard origin/main` — resets local files to match the latest GitHub `origin/main` state.
+4. `sudo bash scripts/m1s-update-system-packages.sh` — safely stops Docker containers, applies Ubuntu package updates, and automatically reboots if needed.
+
+If a reboot happens, the SSH connection will disconnect. Wait about 1-3 minutes, then open this address again in a browser:
+
+```text
+http://umbrel.local
+```
+
+If `umbrel.local` does not open, check the ODROID M1S IP address in Fing or your router page, then open `http://<device IP>`.
+
+### 13-2. Umbrel web UI Advanced Terminal method
+
+If SSH is difficult, you can do the same work from the Terminal inside the Umbrel web UI.
+
+The steps are as follows.
+
+1. Log in to the Umbrel web UI.
+2. Go to **Settings → Advanced settings → Terminal**. On a Korean UI, this may appear as **설정 → 고급 설정 → 터미널**.
+3. When the terminal opens, first enter the following command to enter the host shell.
+
+```bash
+sudo nsenter -t 1 -m -u -i -n -p -- bash
+```
+
+When the prompt changes to something like `root@umbrel:/#`, enter the following commands in order.
+
+```bash
+cd /home/*/odroid-m1s-umbrel-recovery
+sudo git -c safe.directory="$(pwd)" fetch origin
+sudo git -c safe.directory="$(pwd)" reset --hard origin/main
+sudo bash scripts/m1s-update-system-packages.sh
+```
+
+If the script reboots the device, the web terminal connection will disconnect. Wait about 1-3 minutes, then reconnect through `http://umbrel.local` or the device IP address.
+
+Be careful about the following points.
+
+- During reboot, the Umbrel web UI will not open. Wait a little and try again.
+- If the Bitcoin node is doing IBD, download, recovery, or reindex work, it is better to run this after the work is in a stable state.
+- This updates Ubuntu system packages. It is different from the repository script update in step 12, so you may need both procedures.
+
+---
+
+## 14. More detailed resources
 
 After installation, if you want to learn more, see the following resources.
 

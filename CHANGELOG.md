@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.13
+
+- Add `m1s-update-system-packages.sh`, a one-command helper for Ubuntu/security/kernel-adjacent package updates that refreshes apt with an apt lock timeout, warns about running Bitcoin-related containers, gracefully stops running Docker containers before package upgrades, repairs/checks dpkg/apt state, cleans apt package cache after successful checks, reboots only when `/var/run/reboot-required` is present, and restarts containers when no reboot is needed.
+- Document the new kernel/system package update flow in the Korean and English guides, including both direct terminal/SSH and Umbrel Advanced Terminal paths plus the Bitcoin IBD/download/reindex interruption warning.
+- Add a no-op updater history step and verifier coverage so existing installations can record the new helper release without host mutation.
+
 ## 0.5.12
 
 - Extend `m1s-check-bitcoin-recovery-status.sh` with non-destructive diagnostics for remote troubleshooting: recent Bitcoin error hints, Bitcoin container state, system load/memory/swap, Docker service state, existing NVMe timeout snapshots, `/mnt/fullnode` mount details, disk and inode usage, block-device summary, available NVMe/SMART health output, and recent kernel storage error hints without repeating the same mount data twice. The checker now still prints system/storage diagnostics when the Bitcoin app config directory is missing.
