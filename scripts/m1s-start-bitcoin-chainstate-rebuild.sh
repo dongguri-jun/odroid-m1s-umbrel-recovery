@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SCRIPT_VERSION="0.5.12"
+SCRIPT_VERSION="0.5.13"
 DRY_RUN=0
 
 usage() {
