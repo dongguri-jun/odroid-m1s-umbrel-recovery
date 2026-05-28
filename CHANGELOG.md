@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.14
+
+- Remove stale legacy `/mnt/nvme` entries during fresh-install fstab cleanup, closing the real-device path where an old NVMe UUID lingered in `/etc/fstab`, triggered a boot-time device timeout, and survived an otherwise healthy `0.5.13` install.
+- Keep the cleanup narrowly scoped by matching the legacy mountpoint field itself, so canonical `/mnt/fullnode`, root, boot, existing target mounts, and current swap entries stay untouched while old ODROID/RaspiBlitz-era `/mnt/nvme` remnants are dropped automatically.
+- Validate the fix on real ODROID M1S hardware (`better`) after publish: `/mnt/fullnode -> /dev/nvme0n1p1` stayed mounted and both the device IP and `umbrel.local` returned `200 OK` after the stale entry was removed.
+
 ## 0.5.13
 
 - Add `m1s-update-system-packages.sh`, a one-command helper for Ubuntu/security/kernel-adjacent package updates that refreshes apt with an apt lock timeout, warns about running Bitcoin-related containers, gracefully stops running Docker containers before package upgrades, repairs/checks dpkg/apt state, cleans apt package cache after successful checks, reboots only when `/var/run/reboot-required` is present, and restarts containers when no reboot is needed.
