@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SCRIPT_VERSION="0.5.13"
+SCRIPT_VERSION="0.5.14"
 INSTALL_STATE_DIR="/etc/umbrel-recovery"
 INSTALL_STATE_FILE="$INSTALL_STATE_DIR/installed.json"
 PREINSTALL_RESUME_STATE_FILE="$INSTALL_STATE_DIR/preinstall-resume.json"
@@ -1849,6 +1849,8 @@ for line in lines:
     if data_dir and mountpoint == data_dir:
         continue
     if mountpoint == '/mnt/ssd':
+        continue
+    if mountpoint == '/mnt/nvme':
         continue
     if source in target_swaps:
         continue
