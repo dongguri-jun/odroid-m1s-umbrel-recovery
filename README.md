@@ -23,7 +23,7 @@
 - `scripts/m1s-update-umbrel.sh` — 이미 설치된 장비를 최신 버전으로 올리는 업데이트 스크립트
 - `scripts/m1s-update-system-packages.sh` — Ubuntu 보안/커널 관련 패키지를 업데이트하고 필요하면 재부팅하는 스크립트
 - `scripts/m1s-start-bitcoin-chainstate-rebuild.sh` — Bitcoin chainstate 재구축 시작 스크립트
-- `scripts/m1s-check-bitcoin-chainstate-rebuild.sh` — Bitcoin chainstate 재구축 상태 확인 스크립트
+- `scripts/m1s-check-bitcoin-recovery-status.sh` — Bitcoin 복구 상태 확인 스크립트
 
 이 스크립트는 실제 ODROID M1S 실기기에서 테스트했습니다.
 
@@ -80,20 +80,20 @@ ODROID M1S는 NVMe SSD를 사용할 수 있습니다.
 - PNY CS1031
 - Samsung PM9A1
 - Samsung 970 EVO
-- Samsung 970 EVO Plus 
+- Samsung 970 EVO Plus 1TB
 - Western Digital SN550
 
 아래 SSD는 ODROID M1S에서 문제가 보고된 적이 있어, 가능하면 피하는 것을 권장합니다.
 
 - Silicon Power NVMe SSD
-- Samsung 970 EVO Plus 
+- Samsung 970 EVO Plus 2TB
 - WD Green WDS480G3G0B
 
 추천 SSD를 구하기 어렵다면 너무 걱정하지 않아도 됩니다.  
 제품명에 **M.2 NVMe 2280 SSD**라고 적힌 SSD를 고르면 대부분 사용할 수 있습니다.
-다만 저렴한 중국산 ssd가 아닌 대기업의 공식 SSD를 사용하셔야 합니다. 
+다만 저렴한 중국산 SSD가 아닌 대기업의 공식 SSD를 사용하셔야 합니다.
 - "M.2 = SSD의 물리적 규격"
-- "NVME = SSD가 데이터를 주고받는 통신 방식 ~~SATA~~"
+- "NVMe = SSD가 데이터를 주고받는 통신 방식 ~~SATA~~"
 - "2280 = SSD의 물리적 크기 ~~2230~~, ~~2242~~"
 
 단, `M.2 SATA` SSD는 방식이 달라 사용할 수 없습니다.

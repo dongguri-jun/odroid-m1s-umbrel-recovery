@@ -23,7 +23,7 @@ This repository most commonly uses the following 6 files.
 - `scripts/m1s-update-umbrel.sh` — update script for bringing an already-installed device up to the latest version
 - `scripts/m1s-update-system-packages.sh` — helper for Ubuntu security/kernel-related package updates and reboot-if-needed handling
 - `scripts/m1s-start-bitcoin-chainstate-rebuild.sh` — helper for starting a Bitcoin chainstate rebuild
-- `scripts/m1s-check-bitcoin-chainstate-rebuild.sh` — helper for checking Bitcoin chainstate rebuild status
+- `scripts/m1s-check-bitcoin-recovery-status.sh` — helper for checking Bitcoin recovery status
 
 These scripts have been tested on real ODROID M1S hardware.
 
@@ -49,7 +49,7 @@ Do not continue if you must preserve the SSD data.
 
 You need the following items.
 
-- **ODROID M1S board (8GB model strongly recommended, 4GB model not recommended)**
+- **ODROID M1S board (8GB model strongly recommended, 4GB model not recommended)** (official ODROID store: https://www.hardkernel.com/)
 - **Power cable**
 - **Monitor**
 - **HDMI-to-HDMI cable**
@@ -90,9 +90,13 @@ The following SSDs have had issues reported on the ODROID M1S, so it is better t
 - WD Green WDS480G3G0B
 
 If you cannot find one of the recommended SSDs, do not worry too much.  
-Most SSDs labeled **NVMe** should work.
+Most SSDs labeled **M.2 NVMe 2280 SSD** should work.
+However, use an official SSD from a major brand rather than a very cheap no-name SSD.
+- "M.2 = the physical SSD form factor"
+- "NVMe = the communication protocol the SSD uses to transfer data, not ~~SATA~~"
+- "2280 = the physical SSD size, not ~~2230~~ or ~~2242~~"
 
-However, `M.2 SATA` SSDs use a different interface and cannot be used.
+Note that `M.2 SATA` SSDs use a different interface and cannot be used.
 
 For Bitcoin node use, an **SSD of 2TB or larger** is recommended.
 
