@@ -17,10 +17,12 @@ set -Eeuo pipefail
 #   --version      Print script version and exit.
 #   -h, --help     Show this help.
 
-SCRIPT_VERSION="0.5.14"
+SCRIPT_VERSION="0.5.15"
 INSTALL_STATE_DIR="/etc/umbrel-recovery"
 INSTALL_STATE_FILE="$INSTALL_STATE_DIR/installed.json"
 DATA_DIR="/mnt/fullnode"
+FSTAB_FILE="${FSTAB_FILE:-/etc/fstab}"
+FULLNODE_FSTAB_OPTIONS="defaults,auto,exec,rw,nofail,x-systemd.device-timeout=10s"
 UMBREL_IMAGE="dockurr/umbrel:1.5.0@sha256:4631e3da4ede19f0d6fc21f304d9994db5adba4ed3df786f9d249ee26733381a"
 SAFE_SHUTDOWN_SERVICE="/etc/systemd/system/m1s-umbrel-autostart.service"
 OFFICIAL_REPO_SLUG="dongguri-jun/odroid-m1s-umbrel-recovery"
@@ -67,6 +69,7 @@ MIGRATIONS=(
   "0.5.11_to_0.5.12"
   "0.5.12_to_0.5.13"
   "0.5.13_to_0.5.14"
+  "0.5.14_to_0.5.15"
 )
 
 log() {
@@ -385,6 +388,136 @@ detect_installed_version() {
     return 0
   fi
   heuristic_installed_version
+}
+
+read_install_state_value() {
+  local key="$1"
+  [[ -f "$INSTALL_STATE_FILE" ]] || return 1
+  python3 - "$INSTALL_STATE_FILE" "$key" <<'PY' 2>/dev/null
+import json, sys
+try:
+    with open(sys.argv[1]) as f:
+        data = json.load(f)
+    value = data.get(sys.argv[2])
+    if isinstance(value, str) and value:
+        print(value)
+        sys.exit(0)
+except Exception:
+    pass
+sys.exit(1)
+PY
+}
+
+fstab_has_mountpoint() {
+  local mountpoint="$1"
+  awk -v mountpoint="$mountpoint" '
+    $0 !~ /^[[:space:]]*#/ && NF >= 2 && $2 == mountpoint { found = 1 }
+    END { exit found ? 0 : 1 }
+  ' "$FSTAB_FILE"
+}
+
+fstab_mount_source_for() {
+  local mountpoint="$1"
+  awk -v mountpoint="$mountpoint" '
+    $0 !~ /^[[:space:]]*#/ && NF >= 2 && $2 == mountpoint { print $1; exit }
+  ' "$FSTAB_FILE"
+}
+
+source_matches_partition_or_uuid() {
+  local source="$1"
+  local partition="$2"
+  local uuid="$3"
+  [[ -n "$partition" && "$source" == "$partition" ]] && return 0
+  [[ -n "$uuid" && "$source" == "UUID=$uuid" ]] && return 0
+  [[ -n "$uuid" && "$source" == "UUID=\"$uuid\"" ]] && return 0
+  return 1
+}
+
+target_partition_exists() {
+  local partition="$1"
+  [[ -b "$partition" ]] && return 0
+  [[ "${M1S_TEST_ALLOW_NON_BLOCK_TARGET:-0}" -eq 1 && -e "$partition" ]] && return 0
+  return 1
+}
+
+target_partition_uuid() {
+  local partition="$1"
+  if [[ -n "${M1S_TEST_TARGET_UUID:-}" ]]; then
+    printf '%s\n' "$M1S_TEST_TARGET_UUID"
+    return 0
+  fi
+  blkid -s UUID -o value "$partition" 2>/dev/null
+}
+
+ensure_fullnode_mount_from_state() {
+  local mode="${1:-repair}"
+  local target_partition state_data_dir target_uuid existing_source repaired=0
+
+  [[ -f "$INSTALL_STATE_FILE" ]] || return 0
+  target_partition="$(read_install_state_value target_partition || true)"
+  state_data_dir="$(read_install_state_value data_dir || true)"
+  [[ -n "$state_data_dir" ]] || state_data_dir="$DATA_DIR"
+
+  if [[ "$state_data_dir" != "$DATA_DIR" ]]; then
+    warn "Install state data_dir is $state_data_dir, expected $DATA_DIR; skipping automatic fstab repair."
+    return 0
+  fi
+
+  if [[ -z "$target_partition" ]]; then
+    warn "Install state has no target_partition; skipping automatic fstab repair."
+    return 0
+  fi
+
+  if ! target_partition_exists "$target_partition"; then
+    warn "Install state target partition $target_partition is not currently visible; skipping automatic fstab repair."
+    return 0
+  fi
+
+  target_uuid="$(target_partition_uuid "$target_partition" || true)"
+  if [[ -z "$target_uuid" ]]; then
+    warn "Could not determine UUID for $target_partition; skipping automatic fstab repair."
+    return 0
+  fi
+
+  if fstab_has_mountpoint "$DATA_DIR"; then
+    existing_source="$(fstab_mount_source_for "$DATA_DIR" || true)"
+    if ! source_matches_partition_or_uuid "$existing_source" "$target_partition" "$target_uuid"; then
+      err "$DATA_DIR is already present in /etc/fstab but points to $existing_source, not $target_partition."
+      err "Refusing automatic repair to avoid mounting the wrong disk."
+      return 1
+    fi
+  else
+    warn "$DATA_DIR is missing from /etc/fstab; restoring it from $INSTALL_STATE_FILE."
+    if [[ "$mode" == "check" || "$DRY_RUN" -eq 1 ]]; then
+      echo "[DRY-RUN] backup /etc/fstab and append UUID=$target_uuid $DATA_DIR ext4 $FULLNODE_FSTAB_OPTIONS 0 0"
+    else
+      cp "$FSTAB_FILE" "$FSTAB_FILE.bak.update-repair.$(date +%Y%m%d%H%M%S)"
+      printf 'UUID=%s\t%s\text4\t%s\t0\t0\n' "$target_uuid" "$DATA_DIR" "$FULLNODE_FSTAB_OPTIONS" >> "$FSTAB_FILE"
+      if [[ "$FSTAB_FILE" == "/etc/fstab" ]]; then
+        systemctl daemon-reload || true
+      fi
+      repaired=1
+    fi
+  fi
+
+  if ! findmnt --target "$DATA_DIR" >/dev/null 2>&1; then
+    warn "$DATA_DIR is not mounted; mounting $target_partition."
+    if [[ "$mode" == "check" || "$DRY_RUN" -eq 1 ]]; then
+      echo "[DRY-RUN] mkdir -p $DATA_DIR"
+      echo "[DRY-RUN] mount $DATA_DIR"
+    else
+      mkdir -p "$DATA_DIR"
+      mount "$DATA_DIR"
+      repaired=1
+    fi
+  fi
+
+  if [[ "$mode" != "check" && "$DRY_RUN" -eq 0 && "$repaired" -eq 1 ]]; then
+    if command -v systemctl >/dev/null 2>&1; then
+      systemctl start docker >/dev/null 2>&1 || warn "Docker did not start automatically after $DATA_DIR repair; continuing with updater checks."
+    fi
+    info "$DATA_DIR fstab/mount state repaired from installed.json."
+  fi
 }
 
 nvme_cmdline_patch_flash_kernel_defaults() {
@@ -1779,6 +1912,10 @@ precheck_0_5_13_to_0_5_14() { precheck_common_canonical_install; }
 apply_0_5_13_to_0_5_14() { info "0.5.14 cleans stale legacy /mnt/nvme fstab entries during fresh-install cleanup; no updater host mutation required."; }
 postcheck_0_5_13_to_0_5_14() { return 0; }
 
+precheck_0_5_14_to_0_5_15() { return 0; }
+apply_0_5_14_to_0_5_15() { info "0.5.15 adds updater self-healing for missing /mnt/fullnode fstab and mount drift; no forced host mutation required."; }
+postcheck_0_5_14_to_0_5_15() { return 0; }
+
 # ---------------------------------------------------------------------------
 # Main flow
 # ---------------------------------------------------------------------------
@@ -1809,6 +1946,12 @@ if [[ "$CURRENT_VERSION" == "unknown" ]]; then
   err "Could not detect a previous Umbrel installation on this host."
   err "If this is a fresh machine, run m1s-clean-install-umbrel.sh instead."
   exit 1
+fi
+
+if [[ "$CHECK_ONLY" -eq 1 ]]; then
+  ensure_fullnode_mount_from_state check
+else
+  ensure_fullnode_mount_from_state repair
 fi
 
 build_migration_plan "$CURRENT_VERSION"
