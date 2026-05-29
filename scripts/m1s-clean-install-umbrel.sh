@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SCRIPT_VERSION="0.5.14"
+SCRIPT_VERSION="0.5.15"
 INSTALL_STATE_DIR="/etc/umbrel-recovery"
 INSTALL_STATE_FILE="$INSTALL_STATE_DIR/installed.json"
 PREINSTALL_RESUME_STATE_FILE="$INSTALL_STATE_DIR/preinstall-resume.json"
@@ -1814,11 +1814,13 @@ info "Cleaning fstab entries that belong to RaspiBlitz eMMC setup"
 TARGET_SWAP_PATHS_STR="${TARGET_SWAP_PATHS[*]}"
 TARGET_MOUNT_PATHS_STR="${TARGET_MOUNT_PATHS[*]}"
 TARGET_EXISTING_PARTITIONS_STR="${TARGET_EXISTING_PARTITIONS[*]}"
+TARGET_UUID_BEFORE_FORMAT="$(blkid -s UUID -o value "$TARGET_PARTITION" 2>/dev/null || true)"
 if [[ "$DRY_RUN" -eq 1 ]]; then
-  run_shell "TARGET_MOUNT_PATHS_STR=${TARGET_MOUNT_PATHS_STR@Q} DATA_DIR_VALUE=${DATA_DIR@Q} TARGET_SWAP_PATHS_STR=${TARGET_SWAP_PATHS_STR@Q} TARGET_EXISTING_PARTITIONS_STR=${TARGET_EXISTING_PARTITIONS_STR@Q} python3 <clean-fstab-script>"
+  run_shell "TARGET_MOUNT_PATHS_STR=${TARGET_MOUNT_PATHS_STR@Q} DATA_DIR_VALUE=${DATA_DIR@Q} TARGET_UUID_VALUE=${TARGET_UUID_BEFORE_FORMAT@Q} TARGET_SWAP_PATHS_STR=${TARGET_SWAP_PATHS_STR@Q} TARGET_EXISTING_PARTITIONS_STR=${TARGET_EXISTING_PARTITIONS_STR@Q} python3 <clean-fstab-script>"
 else
   TARGET_MOUNT_PATHS_STR="$TARGET_MOUNT_PATHS_STR" \
   DATA_DIR_VALUE="$DATA_DIR" \
+  TARGET_UUID_VALUE="$TARGET_UUID_BEFORE_FORMAT" \
   TARGET_SWAP_PATHS_STR="$TARGET_SWAP_PATHS_STR" \
   TARGET_EXISTING_PARTITIONS_STR="$TARGET_EXISTING_PARTITIONS_STR" \
   python3 - <<'PY'
@@ -1830,8 +1832,17 @@ lines = text.splitlines()
 filtered = []
 target_mounts = [p for p in os.environ.get('TARGET_MOUNT_PATHS_STR', '').split() if p]
 data_dir = os.environ.get('DATA_DIR_VALUE', '')
+target_uuid = os.environ.get('TARGET_UUID_VALUE', '')
 target_swaps = [p for p in os.environ.get('TARGET_SWAP_PATHS_STR', '').split() if p]
 target_devices = [p for p in os.environ.get('TARGET_EXISTING_PARTITIONS_STR', '').split() if p]
+
+def source_matches_target(source):
+    if source in target_devices:
+        return True
+    if target_uuid and source in ('UUID=' + target_uuid, 'UUID="' + target_uuid + '"'):
+        return True
+    return False
+
 for line in lines:
     stripped = line.strip()
     if not stripped or stripped.startswith('#'):
@@ -1846,7 +1857,7 @@ for line in lines:
     source, mountpoint = parts[0], parts[1]
     if mountpoint in target_mounts:
         continue
-    if data_dir and mountpoint == data_dir:
+    if data_dir and mountpoint == data_dir and source_matches_target(source):
         continue
     if mountpoint == '/mnt/ssd':
         continue
@@ -1854,7 +1865,7 @@ for line in lines:
         continue
     if source in target_swaps:
         continue
-    if source in target_devices:
+    if source_matches_target(source):
         continue
     filtered.append(line)
 new = '\n'.join(filtered) + ('\n' if text.endswith('\n') else '')
