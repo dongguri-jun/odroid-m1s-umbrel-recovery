@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.15
+
+- Make `m1s-update-umbrel.sh` self-heal a missing `/mnt/fullnode` fstab entry from `installed.json` before planning migrations, so the existing update command can recover from mount drift without adding a new user-facing option.
+- Keep `--check` non-mutating: it now reports the planned `/mnt/fullnode` fstab repair while leaving both the real fstab and any test fstab copy untouched.
+- Harden fresh-install fstab cleanup so legacy `/mnt/nvme` removal cannot delete an unrelated `/mnt/fullnode` entry unless that entry points to the selected target partition or its pre-format UUID.
+- Add updater regression coverage for the self-healing check path and verify the behavior on real ODROID M1S hardware using an fstab copy with `/mnt/fullnode` intentionally removed.
+
 ## 0.5.14
 
 - Remove stale legacy `/mnt/nvme` entries during fresh-install fstab cleanup, closing the real-device path where an old NVMe UUID lingered in `/etc/fstab`, triggered a boot-time device timeout, and survived an otherwise healthy `0.5.13` install.
