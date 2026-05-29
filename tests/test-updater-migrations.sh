@@ -65,9 +65,10 @@ new_test_state() {
   INSTALL_STATE_DIR="$TEST_TMPDIR/etc/umbrel-recovery"
   INSTALL_STATE_FILE="$INSTALL_STATE_DIR/installed.json"
   DATA_DIR="$TEST_TMPDIR/mnt/fullnode"
+  FSTAB_FILE="$TEST_TMPDIR/etc/fstab"
   DRY_RUN=0
   CHECK_ONLY=0
-  mkdir -p "$DATA_DIR"
+  mkdir -p "$DATA_DIR" "$(dirname "$FSTAB_FILE")"
 }
 
 cleanup_test_state() {
@@ -75,6 +76,8 @@ cleanup_test_state() {
     rm -rf "$TEST_TMPDIR"
   fi
   unset TEST_TMPDIR || true
+  unset M1S_TEST_ALLOW_NON_BLOCK_TARGET || true
+  unset M1S_TEST_TARGET_UUID || true
 }
 
 with_test_state() {
@@ -158,118 +161,55 @@ EOF
 
 printf '[unit] updater migration plan\n'
 with_test_state
-build_migration_plan "0.1.0"
-assert_eq "36" "${#PLANNED_MIGRATIONS[@]}" "0.1.0 should plan the expected remaining migrations"
-assert_eq "0.1.0_to_0.2.0" "${PLANNED_MIGRATIONS[0]}" "0.1.0 first planned migration"
-assert_eq "0.5.13_to_0.5.14" "${PLANNED_MIGRATIONS[35]}" "0.1.0 final planned migration"
-build_migration_plan "0.4.5"
-assert_eq "28" "${#PLANNED_MIGRATIONS[@]}" "0.4.5 should plan the expected remaining migrations"
-assert_eq "0.4.5_to_0.4.6" "${PLANNED_MIGRATIONS[0]}" "0.4.5 first planned migration"
-assert_eq "0.5.13_to_0.5.14" "${PLANNED_MIGRATIONS[27]}" "0.4.5 final planned migration"
-build_migration_plan "0.4.7"
-assert_eq "26" "${#PLANNED_MIGRATIONS[@]}" "0.4.7 should plan the expected remaining migrations"
-assert_eq "0.4.7_to_0.4.8" "${PLANNED_MIGRATIONS[0]}" "0.4.7 first planned migration"
-assert_eq "0.5.13_to_0.5.14" "${PLANNED_MIGRATIONS[25]}" "0.4.7 final planned migration"
-build_migration_plan "0.4.8"
-assert_eq "25" "${#PLANNED_MIGRATIONS[@]}" "0.4.8 should plan the expected remaining migrations"
-assert_eq "0.4.8_to_0.4.9" "${PLANNED_MIGRATIONS[0]}" "0.4.8 first planned migration"
-assert_eq "0.5.13_to_0.5.14" "${PLANNED_MIGRATIONS[24]}" "0.4.8 final planned migration"
-build_migration_plan "0.4.9"
-assert_eq "24" "${#PLANNED_MIGRATIONS[@]}" "0.4.9 should plan the expected remaining migrations"
-assert_eq "0.4.9_to_0.4.10" "${PLANNED_MIGRATIONS[0]}" "0.4.9 first planned migration"
-assert_eq "0.5.13_to_0.5.14" "${PLANNED_MIGRATIONS[23]}" "0.4.9 final planned migration"
-build_migration_plan "0.4.10"
-assert_eq "23" "${#PLANNED_MIGRATIONS[@]}" "0.4.10 should plan the expected remaining migrations"
-assert_eq "0.4.10_to_0.4.11" "${PLANNED_MIGRATIONS[0]}" "0.4.10 first planned migration"
-assert_eq "0.5.13_to_0.5.14" "${PLANNED_MIGRATIONS[22]}" "0.4.10 final planned migration"
-build_migration_plan "0.4.11"
-assert_eq "22" "${#PLANNED_MIGRATIONS[@]}" "0.4.11 should plan the expected remaining migrations"
-assert_eq "0.4.11_to_0.4.12" "${PLANNED_MIGRATIONS[0]}" "0.4.11 first planned migration"
-assert_eq "0.5.13_to_0.5.14" "${PLANNED_MIGRATIONS[21]}" "0.4.11 final planned migration"
-build_migration_plan "0.4.12"
-assert_eq "21" "${#PLANNED_MIGRATIONS[@]}" "0.4.12 should plan the expected remaining migrations"
-assert_eq "0.4.12_to_0.4.13" "${PLANNED_MIGRATIONS[0]}" "0.4.12 first planned migration"
-assert_eq "0.5.13_to_0.5.14" "${PLANNED_MIGRATIONS[20]}" "0.4.12 final planned migration"
-build_migration_plan "0.4.13"
-assert_eq "20" "${#PLANNED_MIGRATIONS[@]}" "0.4.13 should plan the expected remaining migrations"
-assert_eq "0.4.13_to_0.4.14" "${PLANNED_MIGRATIONS[0]}" "0.4.13 first planned migration"
-assert_eq "0.5.13_to_0.5.14" "${PLANNED_MIGRATIONS[19]}" "0.4.13 final planned migration"
-build_migration_plan "0.4.14"
-assert_eq "19" "${#PLANNED_MIGRATIONS[@]}" "0.4.14 should plan the expected remaining migrations"
-assert_eq "0.4.14_to_0.4.15" "${PLANNED_MIGRATIONS[0]}" "0.4.14 first planned migration"
-assert_eq "0.5.13_to_0.5.14" "${PLANNED_MIGRATIONS[18]}" "0.4.14 final planned migration"
-build_migration_plan "0.4.15"
-assert_eq "18" "${#PLANNED_MIGRATIONS[@]}" "0.4.15 should plan the expected remaining migrations"
-assert_eq "0.4.15_to_0.4.16" "${PLANNED_MIGRATIONS[0]}" "0.4.15 first planned migration"
-assert_eq "0.5.13_to_0.5.14" "${PLANNED_MIGRATIONS[17]}" "0.4.15 final planned migration"
-build_migration_plan "0.4.16"
-assert_eq "17" "${#PLANNED_MIGRATIONS[@]}" "0.4.16 should plan the expected remaining migrations"
-assert_eq "0.4.16_to_0.4.17" "${PLANNED_MIGRATIONS[0]}" "0.4.16 first planned migration"
-assert_eq "0.5.13_to_0.5.14" "${PLANNED_MIGRATIONS[16]}" "0.4.16 final planned migration"
-build_migration_plan "0.4.17"
-assert_eq "16" "${#PLANNED_MIGRATIONS[@]}" "0.4.17 should plan the expected remaining migrations"
-assert_eq "0.4.17_to_0.4.18" "${PLANNED_MIGRATIONS[0]}" "0.4.17 first planned migration"
-assert_eq "0.5.13_to_0.5.14" "${PLANNED_MIGRATIONS[15]}" "0.4.17 final planned migration"
-build_migration_plan "0.4.18"
-assert_eq "15" "${#PLANNED_MIGRATIONS[@]}" "0.4.18 should plan the expected remaining migrations"
-assert_eq "0.4.18_to_0.5.0" "${PLANNED_MIGRATIONS[0]}" "0.4.18 first planned migration"
-assert_eq "0.5.13_to_0.5.14" "${PLANNED_MIGRATIONS[14]}" "0.4.18 final planned migration"
-build_migration_plan "0.5.0"
-assert_eq "14" "${#PLANNED_MIGRATIONS[@]}" "0.5.0 should plan the expected remaining migrations"
-assert_eq "0.5.0_to_0.5.1" "${PLANNED_MIGRATIONS[0]}" "0.5.0 first planned migration"
-assert_eq "0.5.13_to_0.5.14" "${PLANNED_MIGRATIONS[13]}" "0.5.0 final planned migration"
-build_migration_plan "0.5.1"
-assert_eq "13" "${#PLANNED_MIGRATIONS[@]}" "0.5.1 should plan the expected remaining migrations"
-assert_eq "0.5.1_to_0.5.2" "${PLANNED_MIGRATIONS[0]}" "0.5.1 first planned migration"
-assert_eq "0.5.13_to_0.5.14" "${PLANNED_MIGRATIONS[12]}" "0.5.1 final planned migration"
-build_migration_plan "0.5.2"
-assert_eq "12" "${#PLANNED_MIGRATIONS[@]}" "0.5.2 should plan the expected remaining migrations"
-assert_eq "0.5.2_to_0.5.3" "${PLANNED_MIGRATIONS[0]}" "0.5.2 first planned migration"
-assert_eq "0.5.13_to_0.5.14" "${PLANNED_MIGRATIONS[11]}" "0.5.2 final planned migration"
-build_migration_plan "0.5.3"
-assert_eq "11" "${#PLANNED_MIGRATIONS[@]}" "0.5.3 should plan the expected remaining migrations"
-assert_eq "0.5.3_to_0.5.4" "${PLANNED_MIGRATIONS[0]}" "0.5.3 first planned migration"
-assert_eq "0.5.13_to_0.5.14" "${PLANNED_MIGRATIONS[10]}" "0.5.3 final planned migration"
-build_migration_plan "0.5.4"
-assert_eq "10" "${#PLANNED_MIGRATIONS[@]}" "0.5.4 should plan the expected remaining migrations"
-assert_eq "0.5.4_to_0.5.5" "${PLANNED_MIGRATIONS[0]}" "0.5.4 first planned migration"
-assert_eq "0.5.13_to_0.5.14" "${PLANNED_MIGRATIONS[9]}" "0.5.4 final planned migration"
-build_migration_plan "0.5.5"
-assert_eq "9" "${#PLANNED_MIGRATIONS[@]}" "0.5.5 should plan the expected remaining migrations"
-assert_eq "0.5.5_to_0.5.6" "${PLANNED_MIGRATIONS[0]}" "0.5.5 first planned migration"
-assert_eq "0.5.13_to_0.5.14" "${PLANNED_MIGRATIONS[8]}" "0.5.5 final planned migration"
-build_migration_plan "0.5.6"
-assert_eq "8" "${#PLANNED_MIGRATIONS[@]}" "0.5.6 should plan the expected remaining migrations"
-assert_eq "0.5.6_to_0.5.7" "${PLANNED_MIGRATIONS[0]}" "0.5.6 first planned migration"
-assert_eq "0.5.13_to_0.5.14" "${PLANNED_MIGRATIONS[7]}" "0.5.6 final planned migration"
-build_migration_plan "0.5.7"
-assert_eq "7" "${#PLANNED_MIGRATIONS[@]}" "0.5.7 should plan the expected remaining migrations"
-assert_eq "0.5.7_to_0.5.8" "${PLANNED_MIGRATIONS[0]}" "0.5.7 first planned migration"
-assert_eq "0.5.13_to_0.5.14" "${PLANNED_MIGRATIONS[6]}" "0.5.7 final planned migration"
-build_migration_plan "0.5.8"
-assert_eq "6" "${#PLANNED_MIGRATIONS[@]}" "0.5.8 should plan the expected remaining migrations"
-assert_eq "0.5.8_to_0.5.9" "${PLANNED_MIGRATIONS[0]}" "0.5.8 first planned migration"
-assert_eq "0.5.13_to_0.5.14" "${PLANNED_MIGRATIONS[5]}" "0.5.8 final planned migration"
-build_migration_plan "0.5.9"
-assert_eq "5" "${#PLANNED_MIGRATIONS[@]}" "0.5.9 should plan the expected remaining migrations"
-assert_eq "0.5.9_to_0.5.10" "${PLANNED_MIGRATIONS[0]}" "0.5.9 first planned migration"
-assert_eq "0.5.13_to_0.5.14" "${PLANNED_MIGRATIONS[4]}" "0.5.9 final planned migration"
-build_migration_plan "0.5.10"
-assert_eq "4" "${#PLANNED_MIGRATIONS[@]}" "0.5.10 should plan the expected remaining migrations"
-assert_eq "0.5.10_to_0.5.11" "${PLANNED_MIGRATIONS[0]}" "0.5.10 first planned migration"
-assert_eq "0.5.13_to_0.5.14" "${PLANNED_MIGRATIONS[3]}" "0.5.10 final planned migration"
-build_migration_plan "0.5.11"
-assert_eq "3" "${#PLANNED_MIGRATIONS[@]}" "0.5.11 should plan the expected remaining migrations"
-assert_eq "0.5.11_to_0.5.12" "${PLANNED_MIGRATIONS[0]}" "0.5.11 first planned migration"
-assert_eq "0.5.13_to_0.5.14" "${PLANNED_MIGRATIONS[2]}" "0.5.11 final planned migration"
-build_migration_plan "0.5.12"
-assert_eq "2" "${#PLANNED_MIGRATIONS[@]}" "0.5.12 should plan the expected remaining migrations"
-assert_eq "0.5.12_to_0.5.13" "${PLANNED_MIGRATIONS[0]}" "0.5.12 first planned migration"
-assert_eq "0.5.13_to_0.5.14" "${PLANNED_MIGRATIONS[1]}" "0.5.12 final planned migration"
-build_migration_plan "0.5.13"
-assert_eq "1" "${#PLANNED_MIGRATIONS[@]}" "0.5.13 should plan the expected remaining migrations"
-assert_eq "0.5.13_to_0.5.14" "${PLANNED_MIGRATIONS[0]}" "0.5.13 first planned migration"
-assert_eq "0.5.13_to_0.5.14" "${PLANNED_MIGRATIONS[0]}" "0.5.13 final planned migration"
+assert_plan_from_version() {
+  local current="$1"
+  local expected_first="${2:-}"
+  local expected_count=0
+  local expected_last="${MIGRATIONS[$((${#MIGRATIONS[@]} - 1))]}"
+  for step in "${MIGRATIONS[@]}"; do
+    local to_version
+    to_version="$(step_to_version "$step")"
+    if version_lt "$current" "$to_version"; then
+      expected_count=$((expected_count + 1))
+    fi
+  done
+  build_migration_plan "$current"
+  assert_eq "$expected_count" "${#PLANNED_MIGRATIONS[@]}" "$current should plan the expected remaining migrations"
+  if [[ "$expected_count" -gt 0 ]]; then
+    assert_eq "$expected_first" "${PLANNED_MIGRATIONS[0]}" "$current first planned migration"
+    assert_eq "$expected_last" "${PLANNED_MIGRATIONS[$((${#PLANNED_MIGRATIONS[@]} - 1))]}" "$current final planned migration"
+  fi
+}
+assert_plan_from_version "0.1.0" "0.1.0_to_0.2.0"
+assert_plan_from_version "0.4.5" "0.4.5_to_0.4.6"
+assert_plan_from_version "0.4.7" "0.4.7_to_0.4.8"
+assert_plan_from_version "0.4.8" "0.4.8_to_0.4.9"
+assert_plan_from_version "0.4.9" "0.4.9_to_0.4.10"
+assert_plan_from_version "0.4.10" "0.4.10_to_0.4.11"
+assert_plan_from_version "0.4.11" "0.4.11_to_0.4.12"
+assert_plan_from_version "0.4.12" "0.4.12_to_0.4.13"
+assert_plan_from_version "0.4.13" "0.4.13_to_0.4.14"
+assert_plan_from_version "0.4.14" "0.4.14_to_0.4.15"
+assert_plan_from_version "0.4.15" "0.4.15_to_0.4.16"
+assert_plan_from_version "0.4.16" "0.4.16_to_0.4.17"
+assert_plan_from_version "0.4.17" "0.4.17_to_0.4.18"
+assert_plan_from_version "0.4.18" "0.4.18_to_0.5.0"
+assert_plan_from_version "0.5.0" "0.5.0_to_0.5.1"
+assert_plan_from_version "0.5.1" "0.5.1_to_0.5.2"
+assert_plan_from_version "0.5.2" "0.5.2_to_0.5.3"
+assert_plan_from_version "0.5.3" "0.5.3_to_0.5.4"
+assert_plan_from_version "0.5.4" "0.5.4_to_0.5.5"
+assert_plan_from_version "0.5.5" "0.5.5_to_0.5.6"
+assert_plan_from_version "0.5.6" "0.5.6_to_0.5.7"
+assert_plan_from_version "0.5.7" "0.5.7_to_0.5.8"
+assert_plan_from_version "0.5.8" "0.5.8_to_0.5.9"
+assert_plan_from_version "0.5.9" "0.5.9_to_0.5.10"
+assert_plan_from_version "0.5.10" "0.5.10_to_0.5.11"
+assert_plan_from_version "0.5.11" "0.5.11_to_0.5.12"
+assert_plan_from_version "0.5.12" "0.5.12_to_0.5.13"
+assert_plan_from_version "0.5.13" "0.5.13_to_0.5.14"
+assert_plan_from_version "0.5.14" "0.5.14_to_0.5.15"
+assert_plan_from_version "0.5.15" ""
 pass "build_migration_plan covers full, partial, and current installs"
 printf '[unit] install state transitions\n'
 with_test_state
@@ -309,6 +249,42 @@ cat > "$INSTALL_STATE_FILE" <<'JSON'
 JSON
 assert_eq "0.4.4" "$(read_installed_version_from_state)" "applied_steps can infer current version when explicit version is missing"
 pass "installed version detection supports host_version, version, and applied_steps"
+
+printf '[unit] fullnode fstab self-healing check mode\n'
+with_test_state
+mkdir -p "$INSTALL_STATE_DIR" "$TEST_TMPDIR/dev"
+target_partition="$TEST_TMPDIR/dev/nvme0n1p1"
+: > "$target_partition"
+cat > "$INSTALL_STATE_FILE" <<JSON
+{"host_version":"0.5.15","data_dir":"$DATA_DIR","target_partition":"$target_partition"}
+JSON
+cat > "$FSTAB_FILE" <<'EOF'
+UUID="root" / ext4 defaults 0 0
+UUID="boot" /boot ext2 defaults 0 0
+EOF
+M1S_TEST_ALLOW_NON_BLOCK_TARGET=1
+M1S_TEST_TARGET_UUID="target-uuid"
+ensure_fullnode_mount_from_state check > "$TEST_TMPDIR/check.out"
+grep -q 'missing from /etc/fstab' "$TEST_TMPDIR/check.out" || fail "check mode should report missing fullnode fstab entry"
+grep -q "append UUID=target-uuid $DATA_DIR ext4 $FULLNODE_FSTAB_OPTIONS 0 0" "$TEST_TMPDIR/check.out" || fail "check mode should show planned canonical UUID repair"
+if grep -q "$DATA_DIR" "$FSTAB_FILE"; then
+  fail "check mode must not mutate fstab"
+fi
+findmnt() { return 0; }
+ensure_fullnode_mount_from_state repair > "$TEST_TMPDIR/repair.out"
+space_re='[[:space:]]*'
+expected_re="UUID=target-uuid${space_re}${DATA_DIR}${space_re}ext4${space_re}${FULLNODE_FSTAB_OPTIONS}${space_re}0${space_re}0"
+if ! grep -q "$expected_re" "$FSTAB_FILE"; then
+  fail "repair mode should write canonical fullnode fstab options"
+fi
+unset -f findmnt
+cat > "$FSTAB_FILE" <<EOF
+UUID=wrong-uuid $DATA_DIR ext4 defaults 0 0
+EOF
+if ensure_fullnode_mount_from_state check >/dev/null 2>&1; then
+  fail "self-heal should refuse a conflicting fullnode fstab source"
+fi
+pass "fullnode fstab self-healing check and repair modes use canonical options and reject conflicts"
 
 printf '[unit] run_migration_step success and skip\n'
 with_test_state
