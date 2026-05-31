@@ -780,7 +780,70 @@ sudo bash scripts/m1s-update-system-packages.sh
 
 ---
 
-## 14. 더 자세한 자료
+## 14. 공식 umbrelOS / Umbrel Home과 다른 점
+
+이 설치 방법은 ODROID M1S에 공식 umbrelOS 이미지를 직접 설치하는 방식이 아닙니다.
+
+기존 Ubuntu 환경 위에 Docker를 설치하고, 그 위에서 Umbrel 컨테이너를 실행하는 방식입니다. 이 스크립트는 [`dockurr/umbrel`](https://hub.docker.com/r/dockurr/umbrel) Docker 이미지를 사용합니다. 이 이미지는 “umbrelOS inside a Docker container”를 목표로 하지만, 공식 umbrelOS 전체를 ODROID M1S에 직접 설치하는 방식은 아닙니다.
+
+따라서 Umbrel Web UI, App Store, 앱 실행, 기본 Files 기능은 사용할 수 있지만, 공식 Umbrel Home 기기나 공식 umbrelOS 이미지와 완전히 동일하게 동작하지 않는 기능이 있습니다.
+
+이 설치 방식에서 확인된 주요 지원 범위는 다음과 같습니다.
+
+- Umbrel Web UI 접속
+- App Store 사용
+- 앱 설치, 실행, 삭제
+- Docker 기반 앱 컨테이너 관리
+- `/mnt/fullnode` 기반 앱 데이터 저장
+- Files의 기본 폴더 사용
+- 홈 화면 Shortcuts
+- Files 내장 텍스트 에디터
+- `umbrel.local` 접속
+- 재부팅 후 Umbrel 자동 시작
+
+다음 기능은 공식 Umbrel Home / 공식 umbrelOS와 동일하게 지원되지 않을 수 있습니다.
+
+### 14-1. Umbrel UI를 통한 OS / 커널 업데이트
+
+Umbrel 컨테이너를 업데이트해도 ODROID M1S의 Ubuntu 커널이 함께 업데이트되지는 않습니다.
+
+커널 보안 패치, Ubuntu 패키지 업데이트, 재부팅 필요 여부 확인은 별도의 Ubuntu 시스템 업데이트 절차로 관리해야 합니다. 이 저장소에서는 `scripts/m1s-update-system-packages.sh` 스크립트로 Ubuntu 패키지 업데이트를 별도로 진행합니다.
+
+### 14-2. Umbrel UI를 통한 외장 USB 디스크 관리
+
+공식 umbrelOS처럼 Umbrel UI에서 외장 USB 디스크를 자동 감지하거나, 포맷하거나, 마운트/해제하는 기능은 이 설치 방식에서 동일하게 보장되지 않습니다.
+
+외장 USB 저장장치를 사용하려면 Ubuntu 호스트에서 별도로 마운트해야 할 수 있습니다.
+
+### 14-3. Umbrel UI를 통한 NAS / SMB / NFS 네트워크 드라이브 연결
+
+공식 umbrelOS의 네트워크 드라이브 연결 기능이 이 Docker 기반 설치 방식에서 동일하게 동작한다고 보장할 수 없습니다.
+
+NAS, SMB, NFS 공유를 사용하려면 Ubuntu 호스트에서 별도로 마운트해야 할 수 있습니다.
+
+### 14-4. Umbrel Settings의 네트워크 파일 공유
+
+공식 Umbrel Home처럼 Umbrel Settings에서 공유 폴더를 켜고 끄는 방식의 네트워크 파일 공유는 이 설치 방식에서 지원되지 않을 수 있습니다.
+
+Samba 공유가 필요하다면 Ubuntu 호스트에서 별도로 설정해야 합니다.
+
+### 14-5. Umbrel UI를 통한 hostname / DNS / 고정 IP 설정
+
+ODROID M1S의 실제 네트워크 설정은 Ubuntu 호스트가 관리합니다.
+
+따라서 hostname, DNS, 고정 IP 설정은 Umbrel UI가 아니라 공유기 설정 또는 Ubuntu 네트워크 설정에서 관리하는 것을 권장합니다.
+
+### 14-6. Ubuntu 호스트 전체 파일시스템 접근
+
+Umbrel Files는 기본적으로 Umbrel 데이터 디렉터리인 `/mnt/fullnode` 기반 경로만 사용합니다.
+
+보안상 Ubuntu 호스트의 `/etc`, `/boot`, `/home`, `/var` 같은 전체 파일시스템을 Umbrel 컨테이너에 노출하지 않습니다.
+
+요약하면, 이 설치 방식은 ODROID M1S에서 Umbrel 앱 환경을 안정적으로 실행하기 위한 Docker 기반 설치 방식입니다. 공식 Umbrel Home과 비슷하게 앱과 기본 파일 기능을 사용할 수 있지만, OS 전체를 Umbrel이 직접 제어하는 공식 umbrelOS와는 구조가 다릅니다. 외장 스토리지, 네트워크 공유, 커널 업데이트, 고정 IP 같은 호스트 OS 수준의 기능은 Ubuntu에서 별도로 관리해야 합니다.
+
+---
+
+## 15. 더 자세한 자료
 
 설치를 마친 뒤 더 알아보고 싶은 내용이 있다면 아래 자료를 참고하세요.
 

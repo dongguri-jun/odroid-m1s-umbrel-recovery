@@ -771,7 +771,70 @@ Be careful about the following points.
 
 ---
 
-## 14. More detailed resources
+## 14. Differences from official umbrelOS / Umbrel Home
+
+This installation method does not install the official umbrelOS image directly onto the ODROID M1S.
+
+Instead, it keeps the existing Ubuntu environment, installs Docker, and runs Umbrel as a Docker container. This script uses the [`dockurr/umbrel`](https://hub.docker.com/r/dockurr/umbrel) Docker image. That image aims to provide “umbrelOS inside a Docker container,” but it is not the same as installing the full official umbrelOS image directly on the ODROID M1S.
+
+As a result, the Umbrel web UI, App Store, apps, and basic Files features can be used, but some features may not behave exactly like they do on official Umbrel Home hardware or official umbrelOS images.
+
+The main supported scope of this installation is:
+
+- Umbrel web UI access
+- App Store usage
+- App install, start, stop, and removal
+- Docker-based app container management
+- App data stored under `/mnt/fullnode`
+- Basic Files folders
+- Home screen Shortcuts
+- Built-in text editor in Files
+- `umbrel.local` access
+- Automatic Umbrel startup after reboot
+
+The following features may not be supported in the same way as official Umbrel Home / official umbrelOS.
+
+### 14-1. OS / kernel updates through the Umbrel UI
+
+Updating the Umbrel container does not update the Ubuntu kernel on the ODROID M1S.
+
+Kernel security patches, Ubuntu package updates, and reboot-required checks must be handled through a separate Ubuntu system update procedure. This repository provides `scripts/m1s-update-system-packages.sh` for Ubuntu package updates.
+
+### 14-2. External USB disk management through the Umbrel UI
+
+This Docker-based installation does not guarantee the same external USB disk detection, formatting, mounting, or unmounting behavior as official umbrelOS.
+
+If you need to use an external USB storage device, you may need to mount it separately on the Ubuntu host.
+
+### 14-3. NAS / SMB / NFS network drive mounting through the Umbrel UI
+
+Network drive mounting from the official umbrelOS UI is not guaranteed to work the same way in this Docker-based installation.
+
+If you need NAS, SMB, or NFS shares, you may need to mount them separately on the Ubuntu host.
+
+### 14-4. Network file sharing from Umbrel Settings
+
+Network file sharing through Umbrel Settings, such as enabling or disabling shared folders from the UI, may not be supported in the same way as on official Umbrel Home hardware.
+
+If Samba sharing is needed, it should be configured separately on the Ubuntu host.
+
+### 14-5. Hostname / DNS / static IP settings through the Umbrel UI
+
+The actual network configuration of the ODROID M1S is managed by the Ubuntu host.
+
+For hostname, DNS, or static IP settings, use your router settings or Ubuntu network configuration rather than relying on the Umbrel UI.
+
+### 14-6. Full Ubuntu host filesystem access
+
+Umbrel Files uses the Umbrel data directory backed by `/mnt/fullnode`.
+
+For security reasons, this installation does not expose the full Ubuntu host filesystem, such as `/etc`, `/boot`, `/home`, or `/var`, to the Umbrel container.
+
+In short, this is a Docker-based installation designed to run the Umbrel app environment reliably on ODROID M1S. It can provide an experience similar to official Umbrel Home for apps and basic file usage, but it is structurally different from official umbrelOS, where Umbrel controls the whole OS. Host OS-level features such as external storage management, network sharing, kernel updates, and static IP configuration must be managed separately on Ubuntu.
+
+---
+
+## 15. More detailed resources
 
 After installation, if you want to learn more, see the following resources.
 
