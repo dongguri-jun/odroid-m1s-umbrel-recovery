@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.5.17
+
+- Make the Umbrel in-place updater stop running Umbrel app containers gracefully before recreating the top-level system container, instead of assuming only the `umbrel` container needs lifecycle handling.
+- Reuse the `m1s-update-system-packages.sh` style stop/start pattern in `m1s-update-umbrel.sh`: capture the currently running non-`umbrel` containers, stop them with a 300-second timeout before the 1.7.3 refresh, then attempt to restart or warn about recreated/missing containers after the new system container is healthy.
+- Add a no-op `0.5.16_to_0.5.17` migration step so existing hosts can record the new updater behavior without forcing another host mutation when the image is already current.
+- Extend updater verifier coverage for the new app-container stop/restart helpers and their critical ordering relative to the top-level `umbrel` container refresh.
+
+## 0.5.16
+
+- Change the in-place updater's pinned Umbrel system image from `dockurr/umbrel:1.5.0` to the validated `dockurr/umbrel:1.7.3` arm64 digest so managed ODROID M1S hosts can move to the newer runtime without switching to a fresh install path.
+- Add a guarded `0.5.15_to_0.5.16` migration step that snapshots `installed.json`, `fstab`, Docker inspect output, mount state, and the top-level `/mnt/fullnode` tree before recreating only the top-level `umbrel` container.
+- Re-apply and verify the safe-to-unplug shutdown patch after the 1.7.3 container refresh, because recreating the top-level Umbrel container wipes in-container modifications.
+- Extend verifier coverage so the updater's image pin, migration triplet, and migration history all stay in sync with the new 1.7.3 upgrade path.
+
 ## 0.5.15
 
 - Make `m1s-update-umbrel.sh` self-heal a missing `/mnt/fullnode` fstab entry from `installed.json` before planning migrations, so the existing update command can recover from mount drift without adding a new user-facing option.

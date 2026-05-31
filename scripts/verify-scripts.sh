@@ -206,7 +206,7 @@ required = [
     'CURRENT_VERSION',
     'TARGET_VERSION',
     'DATA_DIR="/mnt/fullnode"',
-    'UMBREL_IMAGE="dockurr/umbrel:1.5.0@sha256:',
+    'UMBREL_IMAGE="dockurr/umbrel:1.7.3@sha256:',
     'MIGRATIONS=(',
     '"0.1.0_to_0.2.0"',
     '"0.4.4_to_0.4.5"',
@@ -240,6 +240,13 @@ required = [
     'inspect_umbrel_mount_source /data',
     'inspect_umbrel_mount_source /var/run/docker.sock',
     'docker pull "$UMBREL_IMAGE"',
+    'STOPPED_APP_CONTAINERS=()',
+    'APP_CONTAINERS_STOPPED=0',
+    'load_running_app_containers',
+    'print_running_app_container_hint',
+    'stop_running_app_containers',
+    'start_stopped_app_containers',
+    'docker stop --timeout "$APP_STOP_TIMEOUT_SECONDS"',
     'docker stop umbrel',
     'docker rm umbrel',
     'docker run -d --name umbrel --restart always -p 80:80 -v "$DATA_DIR:/data" -v /var/run/docker.sock:/var/run/docker.sock --stop-timeout 60 --pid=host --privileged',
@@ -325,6 +332,12 @@ required = [
     'precheck_0_5_12_to_0_5_13',
     'apply_0_5_12_to_0_5_13',
     'postcheck_0_5_12_to_0_5_13',
+    'precheck_0_5_15_to_0_5_16',
+    'apply_0_5_15_to_0_5_16',
+    'postcheck_0_5_15_to_0_5_16',
+    'precheck_0_5_16_to_0_5_17',
+    'apply_0_5_16_to_0_5_17',
+    'postcheck_0_5_16_to_0_5_17',
     '/boot/config.ini',
     '[overlay_pwm]',
     'overlay_profile',
@@ -336,6 +349,10 @@ required = [
     '0.5.10_to_0.5.11',
     '0.5.11_to_0.5.12',
     '0.5.12_to_0.5.13',
+    '0.5.13_to_0.5.14',
+    '0.5.14_to_0.5.15',
+    '0.5.15_to_0.5.16',
+    '0.5.16_to_0.5.17',
   ]
 missing = [needle for needle in required if needle not in text]
 if missing:
@@ -380,11 +397,17 @@ if pos('systemctl enable m1s-umbrel-autostart.service', safe) > pos('docker rest
 refresh = text[pos('refresh_umbrel_system_container()'):]
 if pos('assert_fullnode_data_mount_safe', refresh) > pos('docker pull "$UMBREL_IMAGE"', refresh):
     raise SystemExit('Umbrel data mount safety check must happen before docker pull')
+if pos('load_running_app_containers', refresh) > pos('stop_running_app_containers', refresh):
+    raise SystemExit('Updater must capture running app containers before attempting to stop them')
+if pos('stop_running_app_containers', refresh) > pos('docker stop umbrel', refresh):
+    raise SystemExit('Umbrel app containers must stop before the top-level umbrel container is stopped')
 for mutator in ['docker stop umbrel', 'docker rm umbrel', 'run_umbrel_container "$UMBREL_IMAGE"']:
     if pos('assert_fullnode_data_mount_safe', refresh) > pos(mutator, refresh):
         raise SystemExit(f'Umbrel data mount safety check must happen before {mutator}')
 if pos('if [[ "$DRY_RUN" -eq 1 ]]', refresh) > pos('docker pull "$UMBREL_IMAGE"', refresh):
     raise SystemExit('Dry-run branch must return before docker pull mutates image cache')
+if pos('start_stopped_app_containers', refresh) < pos('wait_for_umbrel_container', refresh):
+    raise SystemExit('Previously running app containers must only restart after the new umbrel container is running')
 print('  ok updater preserves data-mount gates, check/dry-run path, and canonical Umbrel refresh flags')
 PY
 
@@ -397,7 +420,7 @@ for forbidden in ['mkfs.', 'sfdisk', 'parted', 'wipefs', 'sgdisk', 'gdisk', 'blk
     if forbidden in text:
         raise SystemExit(f'System package updater must never contain destructive disk command: {forbidden}')
 required = [
-    'SCRIPT_VERSION="0.5.15"',
+    'SCRIPT_VERSION="0.5.17"',
     '--dry-run',
     '--no-reboot',
     'STOP_TIMEOUT_SECONDS=300',
