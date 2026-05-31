@@ -209,7 +209,7 @@ assert_plan_from_version "0.5.11" "0.5.11_to_0.5.12"
 assert_plan_from_version "0.5.12" "0.5.12_to_0.5.13"
 assert_plan_from_version "0.5.13" "0.5.13_to_0.5.14"
 assert_plan_from_version "0.5.14" "0.5.14_to_0.5.15"
-assert_plan_from_version "0.5.15" ""
+assert_plan_from_version "0.5.15" "0.5.15_to_0.5.16"
 pass "build_migration_plan covers full, partial, and current installs"
 printf '[unit] install state transitions\n'
 with_test_state
@@ -256,7 +256,7 @@ mkdir -p "$INSTALL_STATE_DIR" "$TEST_TMPDIR/dev"
 target_partition="$TEST_TMPDIR/dev/nvme0n1p1"
 : > "$target_partition"
 cat > "$INSTALL_STATE_FILE" <<JSON
-{"host_version":"0.5.15","data_dir":"$DATA_DIR","target_partition":"$target_partition"}
+{"host_version":"0.5.17","data_dir":"$DATA_DIR","target_partition":"$target_partition"}
 JSON
 cat > "$FSTAB_FILE" <<'EOF'
 UUID="root" / ext4 defaults 0 0

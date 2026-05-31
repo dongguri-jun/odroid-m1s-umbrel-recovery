@@ -17,13 +17,13 @@ set -Eeuo pipefail
 #   --version      Print script version and exit.
 #   -h, --help     Show this help.
 
-SCRIPT_VERSION="0.5.15"
+SCRIPT_VERSION="0.5.17"
 INSTALL_STATE_DIR="/etc/umbrel-recovery"
 INSTALL_STATE_FILE="$INSTALL_STATE_DIR/installed.json"
 DATA_DIR="/mnt/fullnode"
 FSTAB_FILE="${FSTAB_FILE:-/etc/fstab}"
 FULLNODE_FSTAB_OPTIONS="defaults,auto,exec,rw,nofail,x-systemd.device-timeout=10s"
-UMBREL_IMAGE="dockurr/umbrel:1.5.0@sha256:4631e3da4ede19f0d6fc21f304d9994db5adba4ed3df786f9d249ee26733381a"
+UMBREL_IMAGE="dockurr/umbrel:1.7.3@sha256:0447bb98eb7c47bda18788cfa9a7d687901850cf07be833ade0b549013405fe5"
 SAFE_SHUTDOWN_SERVICE="/etc/systemd/system/m1s-umbrel-autostart.service"
 OFFICIAL_REPO_SLUG="dongguri-jun/odroid-m1s-umbrel-recovery"
 
@@ -31,6 +31,9 @@ DRY_RUN=0
 CHECK_ONLY=0
 AUTO_SYNC=1
 SELF_SYNC_REEXECED=0
+APP_STOP_TIMEOUT_SECONDS=300
+STOPPED_APP_CONTAINERS=()
+APP_CONTAINERS_STOPPED=0
 
 MIGRATIONS=(
   "0.1.0_to_0.2.0"
@@ -70,6 +73,8 @@ MIGRATIONS=(
   "0.5.12_to_0.5.13"
   "0.5.13_to_0.5.14"
   "0.5.14_to_0.5.15"
+  "0.5.15_to_0.5.16"
+  "0.5.16_to_0.5.17"
 )
 
 log() {
@@ -1296,6 +1301,72 @@ assert_fullnode_data_mount_safe() {
   fi
 }
 
+load_running_app_containers() {
+  STOPPED_APP_CONTAINERS=()
+  APP_CONTAINERS_STOPPED=0
+  command -v docker >/dev/null 2>&1 || return 0
+  mapfile -t STOPPED_APP_CONTAINERS < <(docker ps --format '{{.Names}}' 2>/dev/null | grep -vx 'umbrel' || true)
+}
+
+print_running_app_container_hint() {
+  command -v docker >/dev/null 2>&1 || return 0
+  local app_containers
+  app_containers="$(docker ps --format '{{.Names}} {{.Status}}' 2>/dev/null | grep -Eiv '^umbrel ' || true)"
+  if [[ -n "$app_containers" ]]; then
+    warn "Umbrel app containers are running and will be stopped gracefully before the system container update:"
+    printf '%s\n' "$app_containers" | sed 's/^/[WARN]   /'
+  else
+    info "No running Umbrel app container is currently visible alongside the system container."
+  fi
+}
+
+stop_running_app_containers() {
+  if [[ "${#STOPPED_APP_CONTAINERS[@]}" -eq 0 ]]; then
+    info "No running Umbrel app containers need to be stopped."
+    return 0
+  fi
+
+  info "Stopping running Umbrel app containers before the system container refresh (${#STOPPED_APP_CONTAINERS[@]} container(s), timeout ${APP_STOP_TIMEOUT_SECONDS}s)..."
+  APP_CONTAINERS_STOPPED=1
+  if run_cmd docker stop --timeout "$APP_STOP_TIMEOUT_SECONDS" "${STOPPED_APP_CONTAINERS[@]}"; then
+    return 0
+  fi
+
+  local status=$?
+  warn "App container stop failed; attempting to restart any containers that were already stopped."
+  start_stopped_app_containers || warn "Failed to restart app containers after stop failure; check Docker manually."
+  return "$status"
+}
+
+start_stopped_app_containers() {
+  if [[ "$APP_CONTAINERS_STOPPED" -ne 1 || "${#STOPPED_APP_CONTAINERS[@]}" -eq 0 ]]; then
+    return 0
+  fi
+
+  info "Starting previously running Umbrel app containers again..."
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    run_cmd docker start "${STOPPED_APP_CONTAINERS[@]}"
+    APP_CONTAINERS_STOPPED=0
+    return 0
+  fi
+
+  local failed=0
+  local container index
+  for ((index=${#STOPPED_APP_CONTAINERS[@]} - 1; index >= 0; index--)); do
+    container="${STOPPED_APP_CONTAINERS[$index]}"
+    if ! docker container inspect "$container" >/dev/null 2>&1; then
+      warn "Container $container no longer exists after the Umbrel refresh; skipping direct restart. Umbrel may have recreated it under a new ID."
+      continue
+    fi
+    if ! docker start "$container" >/dev/null; then
+      warn "Failed to restart container: $container"
+      failed=1
+    fi
+  done
+  APP_CONTAINERS_STOPPED=0
+  return "$failed"
+}
+
 umbrel_image_id() {
   local image_ref="$1"
   docker image inspect "$image_ref" --format '{{.Id}}' 2>/dev/null || true
@@ -1312,6 +1383,7 @@ rollback_umbrel_container() {
   docker rm -f umbrel >/dev/null 2>&1 || true
   if docker run -d --name umbrel --restart always -p 80:80 -v "$DATA_DIR:/data" -v /var/run/docker.sock:/var/run/docker.sock --stop-timeout 60 --pid=host --privileged "$old_image_id" >/dev/null; then
     warn "[0.4.5] Rollback container started with previous image."
+    start_stopped_app_containers || warn "[0.4.5] Failed to restart previously running app containers after rollback."
   else
     err "[0.4.5] Rollback failed. Data remains at $DATA_DIR; inspect with: docker logs umbrel"
     return 1
@@ -1476,6 +1548,9 @@ refresh_umbrel_system_container() {
   fi
 
   info "[0.4.5] Applying Umbrel system container update; web UI may be unavailable briefly"
+  print_running_app_container_hint
+  load_running_app_containers
+  stop_running_app_containers
   docker stop umbrel >/dev/null
   docker rm umbrel >/dev/null
   run_umbrel_container "$UMBREL_IMAGE" >/dev/null
@@ -1488,6 +1563,8 @@ refresh_umbrel_system_container() {
   if command -v curl >/dev/null 2>&1; then
     curl -fsS --max-time 10 http://127.0.0.1/ >/dev/null 2>&1 || warn "[0.4.5] Umbrel container is running, but HTTP is not ready yet"
   fi
+
+  start_stopped_app_containers || warn "[0.4.5] Some previously running Umbrel app containers did not restart cleanly after the system container refresh."
 
   info "[0.4.5] Umbrel system container updated; existing apps and data were preserved"
 }
@@ -1915,6 +1992,73 @@ postcheck_0_5_13_to_0_5_14() { return 0; }
 precheck_0_5_14_to_0_5_15() { return 0; }
 apply_0_5_14_to_0_5_15() { info "0.5.15 adds updater self-healing for missing /mnt/fullnode fstab and mount drift; no forced host mutation required."; }
 postcheck_0_5_14_to_0_5_15() { return 0; }
+
+precheck_0_5_15_to_0_5_16() {
+  assert_fullnode_data_mount_safe
+
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    return 0
+  fi
+
+  [[ -f "$INSTALL_STATE_FILE" ]] || { err "$INSTALL_STATE_FILE is missing; refusing 1.7.3 in-place migration."; return 1; }
+  python3 -m json.tool "$INSTALL_STATE_FILE" >/dev/null || { err "$INSTALL_STATE_FILE is not valid JSON."; return 1; }
+  [[ -w "$DATA_DIR" ]] || { err "$DATA_DIR is not writable; refusing 1.7.3 in-place migration."; return 1; }
+  [[ -d "$DATA_DIR/app-data" ]] || warn "[0.5.16] $DATA_DIR/app-data is missing; continuing because some hosts may have a minimal Umbrel state."
+}
+
+apply_0_5_15_to_0_5_16() {
+  info "[0.5.16] Preparing guarded in-place Umbrel 1.7.3 upgrade"
+
+  local backup_root backup_dir
+  backup_root="$INSTALL_STATE_DIR/backups"
+  backup_dir="$backup_root/0.5.15-to-0.5.16-$(date +%Y%m%d%H%M%S)"
+
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    echo "[DRY-RUN] mkdir -p $backup_dir"
+    echo "[DRY-RUN] capture installed.json, fstab, lsblk, findmnt, docker inspect, and app-data tree into $backup_dir"
+  else
+    mkdir -p "$backup_dir"
+    cp "$INSTALL_STATE_FILE" "$backup_dir/installed.json.before"
+    cp "$FSTAB_FILE" "$backup_dir/fstab.before"
+    lsblk -o NAME,TYPE,SIZE,FSTYPE,MOUNTPOINT,MODEL,SERIAL > "$backup_dir/lsblk.before.txt" 2>&1 || true
+    findmnt -R "$DATA_DIR" > "$backup_dir/findmnt.before.txt" 2>&1 || true
+    docker inspect umbrel > "$backup_dir/docker-inspect-umbrel.before.json" 2>&1 || true
+    find "$DATA_DIR" -maxdepth 2 -mindepth 1 | sort > "$backup_dir/data-tree.before.txt" 2>&1 || true
+    info "[0.5.16] Saved pre-upgrade metadata snapshot to $backup_dir"
+  fi
+
+  refresh_umbrel_system_container
+  install_umbrel_safe_shutdown
+}
+
+postcheck_0_5_15_to_0_5_16() {
+  assert_fullnode_data_mount_safe || return 1
+  wait_for_umbrel_container || { err "Umbrel container did not become running after 1.7.3 migration"; return 1; }
+  verify_umbrel_shutdown_source || { err "Umbrel shutdown() safe-stop container patch is missing after 1.7.3 migration"; return 1; }
+
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    echo "[DRY-RUN] verify $INSTALL_STATE_FILE remains valid and app-data tree still exists after 1.7.3 migration"
+    return 0
+  fi
+
+  python3 -m json.tool "$INSTALL_STATE_FILE" >/dev/null || { err "$INSTALL_STATE_FILE became invalid JSON after 1.7.3 migration"; return 1; }
+  [[ -d "$DATA_DIR/app-data" ]] || warn "[0.5.16] $DATA_DIR/app-data is still missing after migration; verify this host intentionally has no installed apps."
+  if command -v curl >/dev/null 2>&1; then
+    local http_ready=0
+    for _ in {1..30}; do
+      if curl -fsS --max-time 10 http://127.0.0.1/ >/dev/null 2>&1; then
+        http_ready=1
+        break
+      fi
+      sleep 2
+    done
+    [[ "$http_ready" -eq 1 ]] || { err "Umbrel HTTP is not ready after 1.7.3 migration"; return 1; }
+  fi
+}
+
+precheck_0_5_16_to_0_5_17() { precheck_common_canonical_install; }
+apply_0_5_16_to_0_5_17() { info "0.5.17 adds graceful stop/restart handling for running Umbrel app containers during top-level system container refreshes; no immediate host mutation required."; }
+postcheck_0_5_16_to_0_5_17() { return 0; }
 
 # ---------------------------------------------------------------------------
 # Main flow
