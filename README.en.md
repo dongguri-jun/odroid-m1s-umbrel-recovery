@@ -571,32 +571,6 @@ Each field means the following.
 
 ---
 
-## 10-2. Back up Core Lightning
-
-If you run Core Lightning, keep a separate backup of the channel state and wallet secret files.
-
-First, apply the latest updater flow in **section 12**. The current updater prepares the `/data` path so Umbrel Files can open the **Apps** folder correctly on this Docker-based ODROID M1S install.
-
-After updating, back up Core Lightning in this order.
-
-1. Stop the **Core Lightning** app from the Umbrel web UI first.
-2. Open the **Files** app.
-3. Select **Apps** in the left sidebar.
-4. Open **Core Lightning → data → lightning → bitcoin**.
-5. Download these three files and store them somewhere safe.
-
-```text
-hsm_secret
-emergency.recover
-lightningd.sqlite3
-```
-
-Important:
-
-- Copying `lightningd.sqlite3` while Core Lightning is running can produce a broken backup. **Always stop the app first**.
-- `hsm_secret` is a highly sensitive wallet recovery secret. Do not share it with anyone.
-- If Files previously showed `[escapes-base] '/Apps' escapes '/mnt/fullnode/app-data'` after selecting **Apps**, finish the section 12 update first and then try again.
-
 ## 11. Safe shutdown
 
 When turning off the ODROID M1S, **do not unplug the power cable abruptly**.

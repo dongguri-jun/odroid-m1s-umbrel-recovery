@@ -580,32 +580,6 @@ Use this same command again later to watch the live progress estimate.
 
 ---
 
-## 10-2. Core Lightning 백업하기
-
-Core Lightning을 운영한다면 채널 상태와 지갑 비밀값을 잃지 않도록 백업 파일을 따로 보관해야 합니다.
-
-먼저 아래 **12번의 최신 업데이트 방법**으로 저장소와 스크립트를 최신 상태로 맞춘 뒤 업데이트를 적용하세요. 최신 업데이트는 Umbrel Files의 **앱** 폴더가 정상적으로 열리도록 `/data` 경로를 자동 정리합니다.
-
-업데이트 후에는 아래 순서로 백업합니다.
-
-1. Umbrel 웹 화면에서 **Core Lightning 앱을 먼저 중지**합니다.
-2. **Files** 앱을 엽니다.
-3. 왼쪽에서 **앱**을 누릅니다.
-4. **Core Lightning → data → lightning → bitcoin** 폴더로 들어갑니다.
-5. 아래 3개 파일을 각각 다운로드해서 안전한 곳에 보관합니다.
-
-```text
-hsm_secret
-emergency.recover
-lightningd.sqlite3
-```
-
-중요:
-
-- Core Lightning 앱이 실행 중일 때 `lightningd.sqlite3`를 복사하면 백업이 깨질 수 있습니다. **반드시 앱을 먼저 중지한 뒤** 다운로드하세요.
-- `hsm_secret`은 지갑 복구에 필요한 매우 중요한 비밀 파일입니다. 다른 사람에게 공유하지 마세요.
-- 예전 화면에서 **Files → 앱**을 눌렀을 때 `[escapes-base] '/Apps' escapes '/mnt/fullnode/app-data'` 오류가 보였다면, 먼저 12번 업데이트를 끝까지 적용한 뒤 다시 시도하세요.
-
 ## 11. 안전하게 종료하기
 
 ODROID M1S를 끌 때는 **전원 케이블을 바로 뽑지 마세요.**
