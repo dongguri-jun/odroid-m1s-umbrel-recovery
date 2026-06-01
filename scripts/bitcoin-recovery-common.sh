@@ -697,6 +697,33 @@ print(f'{value:.2f}%')
 PY
 }
 
+assert_full_resync_delete_target_safe() {
+  local target="$1"
+  local target_real config_root_real
+
+  config_root_real="$(realpath -m -- "$BITCOIN_CONFIG_DIR")"
+  target_real="$(realpath -m -- "$target")"
+
+  case "$target_real" in
+    "$config_root_real"/*)
+      ;;
+    *)
+      err "Refusing to delete Bitcoin data outside config dir: $target_real"
+      err "Expected path under: $config_root_real"
+      return 1
+      ;;
+  esac
+
+  case "$(basename "$target_real")" in
+    blocks|chainstate|indexes)
+      ;;
+    *)
+      err "Refusing to delete unexpected Bitcoin full-resync target: $target_real"
+      return 1
+      ;;
+  esac
+}
+
 perform_full_resync_reset() {
   local targets=(
     "$BITCOIN_CONFIG_DIR/blocks"
@@ -705,8 +732,9 @@ perform_full_resync_reset() {
   )
   local target
   for target in "${targets[@]}"; do
+    assert_full_resync_delete_target_safe "$target"
     if [[ -e "$target" ]]; then
-      run_cmd rm -rf "$target"
+      run_cmd rm -rf -- "$target"
     fi
   done
 }
