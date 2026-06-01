@@ -17,7 +17,7 @@ set -Eeuo pipefail
 #   --version      Print script version and exit.
 #   -h, --help     Show this help.
 
-SCRIPT_VERSION="0.5.18"
+SCRIPT_VERSION="0.5.19"
 INSTALL_STATE_DIR="/etc/umbrel-recovery"
 INSTALL_STATE_FILE="$INSTALL_STATE_DIR/installed.json"
 DATA_DIR="/mnt/fullnode"
@@ -36,6 +36,9 @@ SELF_SYNC_REEXECED=0
 APP_STOP_TIMEOUT_SECONDS=300
 STOPPED_APP_CONTAINERS=()
 APP_CONTAINERS_STOPPED=0
+LEGACY_INCUS_PACKAGES=(incus incus-base incus-client lxd-agent-loader)
+LEGACY_INCUS_SERVICES=(incus.service incus.socket incus-lxcfs.service snap.lxd.daemon.service snap.lxd.daemon.unix.socket)
+LEGACY_INCUS_PATHS=(/var/lib/incus /var/lib/lxd /var/snap/lxd /root/.cache/incus /root/.config/incus)
 
 MIGRATIONS=(
   "0.1.0_to_0.2.0"
@@ -78,6 +81,7 @@ MIGRATIONS=(
   "0.5.15_to_0.5.16"
   "0.5.16_to_0.5.17"
   "0.5.17_to_0.5.18"
+  "0.5.18_to_0.5.19"
 )
 
 log() {
@@ -2152,6 +2156,76 @@ precheck_0_5_16_to_0_5_17() { precheck_common_canonical_install; }
 apply_0_5_16_to_0_5_17() { info "0.5.17 adds graceful stop/restart handling for running Umbrel app containers during top-level system container refreshes; no immediate host mutation required."; }
 postcheck_0_5_16_to_0_5_17() { return 0; }
 
+legacy_incus_packages_installed() {
+  local package
+  for package in "${LEGACY_INCUS_PACKAGES[@]}"; do
+    if dpkg-query -W -f='${db:Status-Abbrev}' "$package" 2>/dev/null | grep -q '^i'; then
+      printf '%s\n' "$package"
+    fi
+  done
+}
+
+cleanup_legacy_incus_lxd_remnants() {
+  local name package path packages_to_purge=()
+
+  info "[0.5.19] Removing legacy Incus/LXD packages and app-layer remnants; Umbrel data in $DATA_DIR is preserved"
+
+  if command -v incus >/dev/null 2>&1; then
+    while IFS= read -r name; do
+      [[ -z "$name" ]] && continue
+      if [[ "$DRY_RUN" -eq 1 ]]; then
+        run_cmd incus stop --force "$name"
+        run_cmd incus delete --force "$name"
+      else
+        timeout 20 incus stop --force "$name" || warn "Failed/timed out stopping legacy Incus container: $name (continuing)"
+        timeout 20 incus delete --force "$name" || warn "Failed/timed out deleting legacy Incus container: $name (continuing)"
+      fi
+    done < <(timeout 20 incus list --format csv -c n 2>/dev/null || true)
+  fi
+
+  for name in "${LEGACY_INCUS_SERVICES[@]}"; do
+    run_cmd systemctl stop "$name" || true
+    run_cmd systemctl disable "$name" || true
+  done
+  run_cmd systemctl reset-failed || true
+
+  run_cmd bash -c "mount | awk '/\/var\/lib\/incus/ {print \$3}' | while read -r mountpoint; do umount -l \"\$mountpoint\" >/dev/null 2>&1 || true; done"
+
+  while IFS= read -r package; do
+    [[ -z "$package" ]] && continue
+    packages_to_purge+=("$package")
+  done < <(legacy_incus_packages_installed)
+
+  if [[ "${#packages_to_purge[@]}" -gt 0 ]]; then
+    wait_for_apt_locks
+    run_cmd env DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 purge -y "${packages_to_purge[@]}"
+    run_cmd env DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 clean || true
+  else
+    info "[0.5.19] No installed Incus/LXD apt packages found."
+  fi
+
+  if command -v snap >/dev/null 2>&1 && snap list lxd >/dev/null 2>&1; then
+    run_cmd snap remove --purge lxd || warn "Failed to remove legacy LXD snap (continuing)"
+  fi
+
+  for path in "${LEGACY_INCUS_PATHS[@]}"; do
+    if [[ -e "$path" || -L "$path" ]]; then
+      run_cmd rm -rf -- "$path"
+    fi
+  done
+}
+
+verify_legacy_incus_lxd_absent() {
+  local package remaining=0
+  for package in "${LEGACY_INCUS_PACKAGES[@]}"; do
+    if dpkg-query -W -f='${db:Status-Abbrev}' "$package" 2>/dev/null | grep -q '^i'; then
+      err "Legacy Incus/LXD package still installed after cleanup: $package"
+      remaining=1
+    fi
+  done
+  return "$remaining"
+}
+
 precheck_0_5_17_to_0_5_18() {
   precheck_common_canonical_install
   ensure_host_data_alias check
@@ -2214,6 +2288,16 @@ if not real.startswith(base):
     print(f'{base} realpath is {real}, still outside base', file=sys.stderr)
     sys.exit(1)
 PY_INNER
+}
+
+precheck_0_5_18_to_0_5_19() { precheck_common_canonical_install; }
+apply_0_5_18_to_0_5_19() { cleanup_legacy_incus_lxd_remnants; }
+postcheck_0_5_18_to_0_5_19() {
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    echo "[DRY-RUN] verify legacy Incus/LXD apt packages are absent after cleanup"
+    return 0
+  fi
+  verify_legacy_incus_lxd_absent
 }
 
 # ---------------------------------------------------------------------------

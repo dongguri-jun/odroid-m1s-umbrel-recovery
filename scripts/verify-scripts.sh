@@ -362,6 +362,12 @@ required = [
     '0.5.15_to_0.5.16',
     '0.5.16_to_0.5.17',
     '0.5.17_to_0.5.18',
+    '0.5.18_to_0.5.19',
+    'LEGACY_INCUS_PACKAGES=(incus incus-base incus-client lxd-agent-loader)',
+    'cleanup_legacy_incus_lxd_remnants',
+    'verify_legacy_incus_lxd_absent',
+    'apt-get -o DPkg::Lock::Timeout=300 purge -y "${packages_to_purge[@]}"',
+    'rm -rf -- "$path"',
   ]
 missing = [needle for needle in required if needle not in text]
 if missing:
@@ -429,7 +435,7 @@ for forbidden in ['mkfs.', 'sfdisk', 'parted', 'wipefs', 'sgdisk', 'gdisk', 'blk
     if forbidden in text:
         raise SystemExit(f'System package updater must never contain destructive disk command: {forbidden}')
 required = [
-    'SCRIPT_VERSION="0.5.18"',
+    'SCRIPT_VERSION="0.5.19"',
     '--dry-run',
     '--no-reboot',
     'STOP_TIMEOUT_SECONDS=300',

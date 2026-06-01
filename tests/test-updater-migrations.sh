@@ -394,5 +394,43 @@ assert_eq "42" "$reexec_status" "changed-head sync should exec the latest update
 assert_eq "$AUTO_SYNC_REPO_ROOT_OVERRIDE/scripts/m1s-update-umbrel.sh --skip-sync --check --dry-run" "$(cat "$FAKE_BASH_LOG")" "re-exec preserves original arguments after --skip-sync"
 pass "repository auto-sync validates origin, scopes safe.directory, handles failures, and re-execs safely"
 
+printf '[unit] legacy Incus cleanup dry-run\n'
+cleanup_test_state
+TEST_TMPDIR="$(mktemp -d)"
+PATH="$TEST_TMPDIR/bin:$PATH"
+mkdir -p "$TEST_TMPDIR/bin"
+cat > "$TEST_TMPDIR/bin/incus" <<'EOF'
+#!/bin/bash
+set -Eeuo pipefail
+if [[ "$*" == "list --format csv -c n" ]]; then
+  printf 'containers_bitcoin\ncontainers_saloon\n'
+fi
+EOF
+cat > "$TEST_TMPDIR/bin/dpkg-query" <<'EOF'
+#!/bin/bash
+set -Eeuo pipefail
+case "${@: -1}" in
+  incus|incus-client)
+    printf 'ii '
+    ;;
+  *)
+    exit 1
+    ;;
+esac
+EOF
+cat > "$TEST_TMPDIR/bin/snap" <<'EOF'
+#!/bin/bash
+set -Eeuo pipefail
+exit 1
+EOF
+chmod +x "$TEST_TMPDIR/bin/incus" "$TEST_TMPDIR/bin/dpkg-query" "$TEST_TMPDIR/bin/snap"
+DRY_RUN=1
+incus_cleanup_output="$(cleanup_legacy_incus_lxd_remnants)"
+[[ "$incus_cleanup_output" == *'[DRY-RUN] incus stop --force containers_bitcoin'* ]] || fail "legacy Incus cleanup dry-run should stop old Incus containers"
+[[ "$incus_cleanup_output" == *'[DRY-RUN] incus delete --force containers_saloon'* ]] || fail "legacy Incus cleanup dry-run should delete old Incus containers"
+[[ "$incus_cleanup_output" == *'apt-get -o DPkg::Lock::Timeout=300 purge -y incus incus-client'* ]] || fail "legacy Incus cleanup dry-run should purge only installed Incus apt packages"
+DRY_RUN=0
+pass "legacy Incus cleanup dry-run shows container deletion and package purge without touching Umbrel data"
+
 cleanup_test_state
 printf '[unit] updater migration tests complete\n'
