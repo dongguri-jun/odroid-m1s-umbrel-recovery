@@ -249,7 +249,12 @@ required = [
     'docker stop --timeout "$APP_STOP_TIMEOUT_SECONDS"',
     'docker stop umbrel',
     'docker rm umbrel',
-    'docker run -d --name umbrel --restart always -p 80:80 -v "$DATA_DIR:/data" -v /var/run/docker.sock:/var/run/docker.sock --stop-timeout 60 --pid=host --privileged',
+    'HOST_DATA_ALIAS="/data"',
+    'DATA_ALIAS_FSTAB_OPTIONS="bind,nofail,x-systemd.requires-mounts-for=$DATA_DIR"',
+    'ensure_host_data_alias',
+    'host_data_alias_ready',
+    'umbrel_container_data_source',
+    'docker run -d --name umbrel --restart always -p 80:80 -v "$data_source:/data" -v /var/run/docker.sock:/var/run/docker.sock --stop-timeout 60 --pid=host --privileged',
     'SAFE_SHUTDOWN_SERVICE="/etc/systemd/system/m1s-umbrel-autostart.service"',
     'install_umbrel_safe_shutdown',
     'postcheck_umbrel_safe_shutdown',
@@ -338,6 +343,9 @@ required = [
     'precheck_0_5_16_to_0_5_17',
     'apply_0_5_16_to_0_5_17',
     'postcheck_0_5_16_to_0_5_17',
+    'precheck_0_5_17_to_0_5_18',
+    'apply_0_5_17_to_0_5_18',
+    'postcheck_0_5_17_to_0_5_18',
     '/boot/config.ini',
     '[overlay_pwm]',
     'overlay_profile',
@@ -353,6 +361,7 @@ required = [
     '0.5.14_to_0.5.15',
     '0.5.15_to_0.5.16',
     '0.5.16_to_0.5.17',
+    '0.5.17_to_0.5.18',
   ]
 missing = [needle for needle in required if needle not in text]
 if missing:
@@ -420,7 +429,7 @@ for forbidden in ['mkfs.', 'sfdisk', 'parted', 'wipefs', 'sgdisk', 'gdisk', 'blk
     if forbidden in text:
         raise SystemExit(f'System package updater must never contain destructive disk command: {forbidden}')
 required = [
-    'SCRIPT_VERSION="0.5.17"',
+    'SCRIPT_VERSION="0.5.18"',
     '--dry-run',
     '--no-reboot',
     'STOP_TIMEOUT_SECONDS=300',
