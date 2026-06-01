@@ -17,12 +17,14 @@ set -Eeuo pipefail
 #   --version      Print script version and exit.
 #   -h, --help     Show this help.
 
-SCRIPT_VERSION="0.5.17"
+SCRIPT_VERSION="0.5.18"
 INSTALL_STATE_DIR="/etc/umbrel-recovery"
 INSTALL_STATE_FILE="$INSTALL_STATE_DIR/installed.json"
 DATA_DIR="/mnt/fullnode"
+HOST_DATA_ALIAS="/data"
 FSTAB_FILE="${FSTAB_FILE:-/etc/fstab}"
 FULLNODE_FSTAB_OPTIONS="defaults,auto,exec,rw,nofail,x-systemd.device-timeout=10s"
+DATA_ALIAS_FSTAB_OPTIONS="bind,nofail,x-systemd.requires-mounts-for=$DATA_DIR"
 UMBREL_IMAGE="dockurr/umbrel:1.7.3@sha256:0447bb98eb7c47bda18788cfa9a7d687901850cf07be833ade0b549013405fe5"
 SAFE_SHUTDOWN_SERVICE="/etc/systemd/system/m1s-umbrel-autostart.service"
 OFFICIAL_REPO_SLUG="dongguri-jun/odroid-m1s-umbrel-recovery"
@@ -75,6 +77,7 @@ MIGRATIONS=(
   "0.5.14_to_0.5.15"
   "0.5.15_to_0.5.16"
   "0.5.16_to_0.5.17"
+  "0.5.17_to_0.5.18"
 )
 
 log() {
@@ -1260,6 +1263,85 @@ inspect_umbrel_mount_source() {
   docker inspect umbrel --format "{{range .Mounts}}{{if eq .Destination \"$destination\"}}{{.Source}}{{end}}{{end}}" 2>/dev/null || true
 }
 
+paths_same_inode() {
+  local first="$1"
+  local second="$2"
+  [[ -e "$first" && -e "$second" ]] || return 1
+  [[ "$(stat -c '%d:%i' "$first")" == "$(stat -c '%d:%i' "$second")" ]]
+}
+
+path_has_entries() {
+  local path="$1"
+  [[ -d "$path" ]] || return 1
+  find "$path" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null | grep -q .
+}
+
+host_data_alias_ready() {
+  findmnt --target "$HOST_DATA_ALIAS" >/dev/null 2>&1 && paths_same_inode "$HOST_DATA_ALIAS" "$DATA_DIR"
+}
+
+umbrel_container_data_source() {
+  if host_data_alias_ready; then
+    printf '%s\n' "$HOST_DATA_ALIAS"
+  else
+    printf '%s\n' "$DATA_DIR"
+  fi
+}
+
+ensure_host_data_alias() {
+  local mode="${1:-repair}"
+  local existing_source
+
+  findmnt --target "$DATA_DIR" >/dev/null 2>&1 || { err "$DATA_DIR is not mounted; refusing to create $HOST_DATA_ALIAS alias."; return 1; }
+
+  if [[ -L "$HOST_DATA_ALIAS" ]]; then
+    err "$HOST_DATA_ALIAS is a symlink; refusing to use it for Umbrel data. A real bind mount is required."
+    return 1
+  fi
+
+  if fstab_has_mountpoint "$HOST_DATA_ALIAS"; then
+    existing_source="$(fstab_mount_source_for "$HOST_DATA_ALIAS" || true)"
+    if [[ "$existing_source" != "$DATA_DIR" ]]; then
+      err "$HOST_DATA_ALIAS is already present in $FSTAB_FILE but points to $existing_source, not $DATA_DIR."
+      err "Refusing to continue to avoid writing Umbrel data to the wrong location."
+      return 1
+    fi
+  elif [[ "$mode" == "check" || "$DRY_RUN" -eq 1 ]]; then
+    echo "[DRY-RUN] backup $FSTAB_FILE and append $DATA_DIR $HOST_DATA_ALIAS none $DATA_ALIAS_FSTAB_OPTIONS 0 0"
+  else
+    cp "$FSTAB_FILE" "$FSTAB_FILE.bak.data-alias.$(date +%Y%m%d%H%M%S)"
+    printf '%s\t%s\tnone\t%s\t0\t0\n' "$DATA_DIR" "$HOST_DATA_ALIAS" "$DATA_ALIAS_FSTAB_OPTIONS" >> "$FSTAB_FILE"
+    if [[ "$FSTAB_FILE" == "/etc/fstab" ]]; then
+      systemctl daemon-reload || true
+    fi
+  fi
+
+  if findmnt --target "$HOST_DATA_ALIAS" >/dev/null 2>&1; then
+    paths_same_inode "$HOST_DATA_ALIAS" "$DATA_DIR" || { err "$HOST_DATA_ALIAS is mounted but does not point to $DATA_DIR."; return 1; }
+    return 0
+  fi
+
+  if [[ -e "$HOST_DATA_ALIAS" && ! -d "$HOST_DATA_ALIAS" ]]; then
+    err "$HOST_DATA_ALIAS exists but is not a directory; refusing to replace it."
+    return 1
+  fi
+
+  if [[ -d "$HOST_DATA_ALIAS" ]] && path_has_entries "$HOST_DATA_ALIAS"; then
+    err "$HOST_DATA_ALIAS exists and is not empty while not mounted. Refusing to hide unrelated files."
+    return 1
+  fi
+
+  if [[ "$mode" == "check" || "$DRY_RUN" -eq 1 ]]; then
+    echo "[DRY-RUN] mkdir -p $HOST_DATA_ALIAS"
+    echo "[DRY-RUN] mount --bind $DATA_DIR $HOST_DATA_ALIAS"
+    return 0
+  fi
+
+  mkdir -p "$HOST_DATA_ALIAS"
+  mount --bind "$DATA_DIR" "$HOST_DATA_ALIAS"
+  paths_same_inode "$HOST_DATA_ALIAS" "$DATA_DIR" || { err "$HOST_DATA_ALIAS bind mount does not match $DATA_DIR after mount."; return 1; }
+}
+
 assert_fullnode_data_mount_safe() {
   local mount_source
   local umbrel_data_source
@@ -1288,10 +1370,13 @@ assert_fullnode_data_mount_safe() {
   fi
 
   umbrel_data_source="$(inspect_umbrel_mount_source /data)"
-  if [[ "$umbrel_data_source" != "$DATA_DIR" ]]; then
-    err "[0.4.5] Existing umbrel /data mount is ${umbrel_data_source:-missing}, expected $DATA_DIR."
+  if [[ "$umbrel_data_source" != "$DATA_DIR" && "$umbrel_data_source" != "$HOST_DATA_ALIAS" ]]; then
+    err "[0.4.5] Existing umbrel /data mount is ${umbrel_data_source:-missing}, expected $DATA_DIR or $HOST_DATA_ALIAS."
     err "[0.4.5] Refusing to refresh because user data preservation cannot be proven."
     return 1
+  fi
+  if [[ "$umbrel_data_source" == "$HOST_DATA_ALIAS" ]]; then
+    host_data_alias_ready || { err "[0.4.5] $HOST_DATA_ALIAS is used by umbrel but is not a bind alias to $DATA_DIR."; return 1; }
   fi
 
   docker_sock_source="$(inspect_umbrel_mount_source /var/run/docker.sock)"
@@ -1374,14 +1459,21 @@ umbrel_image_id() {
 
 run_umbrel_container() {
   local image_ref="$1"
-  run_cmd docker run -d --name umbrel --restart always -p 80:80 -v "$DATA_DIR:/data" -v /var/run/docker.sock:/var/run/docker.sock --stop-timeout 60 --pid=host --privileged "$image_ref"
+  local data_source
+  data_source="$(umbrel_container_data_source)"
+  run_cmd docker run -d --name umbrel --restart always -p 80:80 -v "$data_source:/data" -v /var/run/docker.sock:/var/run/docker.sock --stop-timeout 60 --pid=host --privileged "$image_ref"
 }
 
 rollback_umbrel_container() {
   local old_image_id="$1"
   warn "[0.4.5] New Umbrel container did not stabilize; rolling back to previous image."
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    echo "[DRY-RUN] docker rm -f umbrel"
+    echo "[DRY-RUN] recreate umbrel with previous image $old_image_id"
+    return 0
+  fi
   docker rm -f umbrel >/dev/null 2>&1 || true
-  if docker run -d --name umbrel --restart always -p 80:80 -v "$DATA_DIR:/data" -v /var/run/docker.sock:/var/run/docker.sock --stop-timeout 60 --pid=host --privileged "$old_image_id" >/dev/null; then
+  if run_umbrel_container "$old_image_id" >/dev/null; then
     warn "[0.4.5] Rollback container started with previous image."
     start_stopped_app_containers || warn "[0.4.5] Failed to restart previously running app containers after rollback."
   else
@@ -1529,7 +1621,7 @@ refresh_umbrel_system_container() {
 
   if [[ "$DRY_RUN" -eq 1 ]]; then
     echo "[DRY-RUN] docker pull $UMBREL_IMAGE"
-    echo "[DRY-RUN] if image changed: stop and recreate umbrel with $DATA_DIR:/data preserved"
+    echo "[DRY-RUN] if image changed: stop and recreate umbrel with $(umbrel_container_data_source):/data preserved"
     return 0
   fi
 
@@ -2059,6 +2151,70 @@ postcheck_0_5_15_to_0_5_16() {
 precheck_0_5_16_to_0_5_17() { precheck_common_canonical_install; }
 apply_0_5_16_to_0_5_17() { info "0.5.17 adds graceful stop/restart handling for running Umbrel app containers during top-level system container refreshes; no immediate host mutation required."; }
 postcheck_0_5_16_to_0_5_17() { return 0; }
+
+precheck_0_5_17_to_0_5_18() {
+  precheck_common_canonical_install
+  ensure_host_data_alias check
+}
+
+apply_0_5_17_to_0_5_18() {
+  local current_image
+  current_image="$(docker inspect umbrel --format '{{.Image}}')"
+  [[ -n "$current_image" ]] || { err "Could not determine current umbrel image before /data alias migration."; return 1; }
+
+  info "[0.5.18] Creating $HOST_DATA_ALIAS bind alias for Umbrel Files /Apps compatibility"
+  ensure_host_data_alias repair
+
+  if [[ "$(inspect_umbrel_mount_source /data)" == "$HOST_DATA_ALIAS" ]]; then
+    info "[0.5.18] Umbrel already uses $HOST_DATA_ALIAS:/data; no container recreation needed."
+    return 0
+  fi
+
+  info "[0.5.18] Recreating top-level Umbrel container with $HOST_DATA_ALIAS:/data so Files /Apps resolves inside its base directory"
+  print_running_app_container_hint
+  load_running_app_containers
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    echo "[DRY-RUN] stop running app containers, stop/remove umbrel, then recreate umbrel with $HOST_DATA_ALIAS:/data using image $current_image"
+    return 0
+  fi
+
+  stop_running_app_containers
+  docker stop umbrel >/dev/null
+  docker rm umbrel >/dev/null
+  run_umbrel_container "$current_image" >/dev/null
+
+  if ! wait_for_umbrel_container; then
+    rollback_umbrel_container "$current_image"
+    return 1
+  fi
+
+  start_stopped_app_containers || warn "[0.5.18] Some previously running Umbrel app containers did not restart cleanly after /data alias migration."
+  install_umbrel_safe_shutdown
+}
+
+postcheck_0_5_17_to_0_5_18() {
+  local umbrel_data_source
+  ensure_host_data_alias repair
+  assert_fullnode_data_mount_safe || return 1
+  wait_for_umbrel_container || { err "Umbrel container did not become running after /data alias migration"; return 1; }
+  umbrel_data_source="$(inspect_umbrel_mount_source /data)"
+  [[ "$umbrel_data_source" == "$HOST_DATA_ALIAS" ]] || { err "Umbrel /data mount is ${umbrel_data_source:-missing}, expected $HOST_DATA_ALIAS after /data alias migration"; return 1; }
+
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    echo "[DRY-RUN] verify umbreld uses --data-directory $HOST_DATA_ALIAS and /Apps realpath stays inside $HOST_DATA_ALIAS/app-data"
+    return 0
+  fi
+
+  docker exec umbrel pgrep -af 'umbreld.*--data-directory /data' >/dev/null || { err "umbreld is not running with --data-directory /data"; return 1; }
+  docker exec umbrel python3 - <<'PY_INNER'
+import os, sys
+base = '/data/app-data'
+real = os.path.realpath(base)
+if not real.startswith(base):
+    print(f'{base} realpath is {real}, still outside base', file=sys.stderr)
+    sys.exit(1)
+PY_INNER
+}
 
 # ---------------------------------------------------------------------------
 # Main flow
