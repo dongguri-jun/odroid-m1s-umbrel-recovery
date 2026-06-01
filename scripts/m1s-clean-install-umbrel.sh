@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SCRIPT_VERSION="0.5.17"
+SCRIPT_VERSION="0.5.18"
 INSTALL_STATE_DIR="/etc/umbrel-recovery"
 INSTALL_STATE_FILE="$INSTALL_STATE_DIR/installed.json"
 PREINSTALL_RESUME_STATE_FILE="$INSTALL_STATE_DIR/preinstall-resume.json"
@@ -13,6 +13,8 @@ RELEASE_MODE=0
 AUTO_RESUME_INSTALL="${AUTO_RESUME_INSTALL:-0}"
 IMAGE="dockurr/umbrel"
 DATA_DIR="/mnt/fullnode"
+HOST_DATA_ALIAS="/data"
+DATA_ALIAS_FSTAB_OPTIONS="bind,nofail,x-systemd.requires-mounts-for=$DATA_DIR"
 PRESERVE_TAILSCALE=1
 TARGET_PARTITION=""
 TARGET_INPUT=""
@@ -2281,8 +2283,53 @@ EOF
   run_cmd systemctl enable --now fullnode-mount-guard.timer
 fi
 
+ensure_host_data_alias() {
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    echo "[DRY-RUN] create $HOST_DATA_ALIAS as a bind alias for $DATA_DIR"
+    echo "[DRY-RUN] append $DATA_DIR $HOST_DATA_ALIAS none $DATA_ALIAS_FSTAB_OPTIONS 0 0 to /etc/fstab if missing"
+    return 0
+  fi
+
+  findmnt --target "$DATA_DIR" >/dev/null 2>&1 || { err "$DATA_DIR is not mounted; refusing to create $HOST_DATA_ALIAS alias."; exit 1; }
+
+  if [[ -L "$HOST_DATA_ALIAS" ]]; then
+    err "$HOST_DATA_ALIAS is a symlink; refusing to use it for Umbrel data. A real bind mount is required."
+    exit 1
+  fi
+
+  if [[ -e "$HOST_DATA_ALIAS" && ! -d "$HOST_DATA_ALIAS" ]]; then
+    err "$HOST_DATA_ALIAS exists but is not a directory; refusing to replace it."
+    exit 1
+  fi
+
+  if [[ -d "$HOST_DATA_ALIAS" ]] && ! findmnt --target "$HOST_DATA_ALIAS" >/dev/null 2>&1; then
+    if find "$HOST_DATA_ALIAS" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null | grep -q .; then
+      err "$HOST_DATA_ALIAS exists and is not empty while not mounted. Refusing to hide unrelated files."
+      exit 1
+    fi
+  fi
+
+  if ! awk -v mountpoint="$HOST_DATA_ALIAS" '$0 !~ /^[[:space:]]*#/ && NF >= 2 && $2 == mountpoint { found = 1 } END { exit found ? 0 : 1 }' /etc/fstab; then
+    cp /etc/fstab "/etc/fstab.bak.data-alias.$(date +%Y%m%d%H%M%S)"
+    printf '%s\t%s\tnone\t%s\t0\t0\n' "$DATA_DIR" "$HOST_DATA_ALIAS" "$DATA_ALIAS_FSTAB_OPTIONS" >> /etc/fstab
+    systemctl daemon-reload || true
+  fi
+
+  mkdir -p "$HOST_DATA_ALIAS"
+  if ! findmnt --target "$HOST_DATA_ALIAS" >/dev/null 2>&1; then
+    mount --bind "$DATA_DIR" "$HOST_DATA_ALIAS"
+  fi
+
+  if [[ "$(stat -c '%d:%i' "$HOST_DATA_ALIAS")" != "$(stat -c '%d:%i' "$DATA_DIR")" ]]; then
+    err "$HOST_DATA_ALIAS bind mount does not match $DATA_DIR after mount."
+    exit 1
+  fi
+}
+
 run_cmd systemctl enable docker
 run_cmd systemctl start docker
+
+ensure_host_data_alias
 
 if [[ -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
   run_cmd usermod -aG docker "$SUDO_USER"
@@ -2293,7 +2340,7 @@ run_cmd docker pull "$IMAGE"
 run_shell "docker rm -f umbrel >/dev/null 2>&1 || true"
 # Note: --privileged and docker.sock mount are required by the dockurr/umbrel image
 # to manage its internal Docker containers. --pid=host is required for process management.
-run_cmd docker run -d --name umbrel --restart always -p 80:80 -v "$DATA_DIR:/data" -v /var/run/docker.sock:/var/run/docker.sock --stop-timeout 60 --pid=host --privileged "$IMAGE"
+run_cmd docker run -d --name umbrel --restart always -p 80:80 -v "$HOST_DATA_ALIAS:/data" -v /var/run/docker.sock:/var/run/docker.sock --stop-timeout 60 --pid=host --privileged "$IMAGE"
 
 if [[ "$DRY_RUN" -eq 0 ]]; then
   info "Waiting for Umbrel container to stabilize..."
@@ -2304,7 +2351,7 @@ if [[ "$DRY_RUN" -eq 0 ]]; then
     err "The SSD is mounted at $DATA_DIR and Docker is installed, but the install cannot be marked successful until Umbrel is running."
     err "Check logs with: sudo docker logs umbrel"
     err "After fixing the cause, retry Umbrel manually:"
-    err "  sudo docker rm -f umbrel; sudo docker run -d --name umbrel --restart always -p 80:80 -v $DATA_DIR:/data -v /var/run/docker.sock:/var/run/docker.sock --stop-timeout 60 --pid=host --privileged $IMAGE"
+    err "  sudo docker rm -f umbrel; sudo docker run -d --name umbrel --restart always -p 80:80 -v $HOST_DATA_ALIAS:/data -v /var/run/docker.sock:/var/run/docker.sock --stop-timeout 60 --pid=host --privileged $IMAGE"
     exit 1
   else
     info "Umbrel container is running."
