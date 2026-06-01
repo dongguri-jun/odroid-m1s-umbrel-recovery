@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SCRIPT_VERSION="0.5.18"
+SCRIPT_VERSION="0.5.19"
 DRY_RUN=0
 NO_REBOOT=0
 STOP_TIMEOUT_SECONDS=300
