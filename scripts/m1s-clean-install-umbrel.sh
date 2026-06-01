@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SCRIPT_VERSION="0.5.19"
+SCRIPT_VERSION="0.5.20"
 INSTALL_STATE_DIR="/etc/umbrel-recovery"
 INSTALL_STATE_FILE="$INSTALL_STATE_DIR/installed.json"
 PREINSTALL_RESUME_STATE_FILE="$INSTALL_STATE_DIR/preinstall-resume.json"
@@ -11,7 +11,7 @@ SAFE_SHUTDOWN_SERVICE="/etc/systemd/system/m1s-umbrel-autostart.service"
 DRY_RUN=0
 RELEASE_MODE=0
 AUTO_RESUME_INSTALL="${AUTO_RESUME_INSTALL:-0}"
-IMAGE="dockurr/umbrel"
+IMAGE="dockurr/umbrel:1.7.3@sha256:0447bb98eb7c47bda18788cfa9a7d687901850cf07be833ade0b549013405fe5"
 DATA_DIR="/mnt/fullnode"
 HOST_DATA_ALIAS="/data"
 DATA_ALIAS_FSTAB_OPTIONS="bind,nofail,x-systemd.requires-mounts-for=$DATA_DIR"
@@ -221,7 +221,7 @@ collect_target_busy_pids() {
 
   local paths=()
   local path raw pid
-  for path in "${TARGET_MOUNT_PATHS[@]}" "${TARGET_EXISTING_PARTITIONS[@]}" "$TARGET_DISK_PATH" "$TARGET_PARTITION" "$DATA_DIR"; do
+  for path in "${TARGET_MOUNT_PATHS[@]}" "${TARGET_EXISTING_PARTITIONS[@]}" "$TARGET_DISK_PATH" "$TARGET_PARTITION" "$HOST_DATA_ALIAS" "$DATA_DIR"; do
     [[ -n "$path" ]] || continue
     if append_unique "$path" "${paths[@]}"; then
       paths+=("$path")
@@ -1044,12 +1044,41 @@ PY
   fi
 }
 
+get_exact_data_mount_source() {
+  findmnt -rn -M "$DATA_DIR" -o SOURCE 2>/dev/null || true
+}
+
+wait_for_exact_data_mount() {
+  local expected_source="$1"
+  local current_source=""
+  local _attempt
+
+  for _attempt in {1..10}; do
+    current_source="$(get_exact_data_mount_source)"
+    if [[ "$current_source" == "$expected_source" ]]; then
+      return 0
+    fi
+    sleep 1
+  done
+
+  printf '%s\n' "$current_source"
+  return 1
+}
+
+unmount_all_layers_at_path() {
+  local mount_path="$1"
+
+  while findmnt -rn -M "$mount_path" >/dev/null 2>&1; do
+    umount "$mount_path"
+  done
+}
+
 report_install_health() {
   local lan_iface="${1:-}"
   local lan_ip="${2:-}"
   local current_data_source docker_state avahi_state alias_state container_state local_resolve_state ip_http_state local_http_state
 
-  current_data_source="$(findmnt -n -o SOURCE --target "$DATA_DIR" 2>/dev/null || true)"
+  current_data_source="$(get_exact_data_mount_source)"
   docker_state="$(systemctl is-active docker 2>/dev/null || true)"
   avahi_state="$(systemctl is-active avahi-daemon 2>/dev/null || true)"
   alias_state="$(systemctl is-active avahi-alias-umbrel.service 2>/dev/null || true)"
@@ -1323,7 +1352,7 @@ Usage:
 Options:
   --dry-run                  Show actions without changing anything
   --release                  Release mode: remove tailscale too
-  --image IMAGE              Docker image to run (default: dockurr/umbrel)
+  --image IMAGE              Docker image to run (default: pinned dockurr/umbrel 1.7.3 digest)
   --data-dir PATH            Umbrel data directory (default: /mnt/fullnode)
   --target-partition PATH    Target SSD disk or partition to initialize
   --remove-tailscale         Alias for --release
@@ -1350,7 +1379,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     --image)
       if [[ $# -lt 2 ]]; then
-        err "--image requires a value (e.g. --image dockurr/umbrel)"
+        err "--image requires a value (e.g. --image dockurr/umbrel:1.7.3)"
         exit 1
       fi
       IMAGE="$2"
@@ -1540,6 +1569,10 @@ else
     fi
   done < <(lsblk -nrpo NAME,TYPE "$TARGET_DISK_PATH" 2>/dev/null | awk '$2 == "part" {print $1}')
   EXISTING_TARGET_MOUNT="${TARGET_MOUNT_PATHS[*]:-}"
+fi
+
+if findmnt -rn -M "$HOST_DATA_ALIAS" >/dev/null 2>&1 && append_unique "$HOST_DATA_ALIAS" "${TARGET_MOUNT_PATHS[@]}"; then
+  TARGET_MOUNT_PATHS=("$HOST_DATA_ALIAS" "${TARGET_MOUNT_PATHS[@]}")
 fi
 
 while IFS= read -r swap_path; do
@@ -1882,6 +1915,11 @@ PY
 fi
 
 info "Formatting and mounting SSD for Umbrel data"
+if [[ "$DRY_RUN" -eq 1 ]]; then
+  echo "[DRY-RUN] stop existing fullnode-mount-guard timer/service before remounting $DATA_DIR"
+else
+  systemctl stop fullnode-mount-guard.timer fullnode-mount-guard.service >/dev/null 2>&1 || true
+fi
 run_cmd mkdir -p "$DATA_DIR"
 if command -v fuser >/dev/null 2>&1; then
   info "Checking for processes still using the current SSD mount"
@@ -1909,7 +1947,7 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
   run_shell "umount '$DATA_DIR' >/dev/null 2>&1 || true"
 else
   for swap_path in "${TARGET_SWAP_PATHS[@]}"; do
-    bash -lc "swapoff '$swap_path' >/dev/null 2>&1 || true"
+    swapoff "$swap_path" >/dev/null 2>&1 || true
   done
   while IFS= read -r active_swap; do
     [[ -z "$active_swap" ]] && continue
@@ -1927,16 +1965,25 @@ else
   done)
   for mount_path in "${TARGET_MOUNT_PATHS[@]}"; do
     [[ -n "$mount_path" ]] || continue
-    bash -lc "umount '$mount_path' >/dev/null 2>&1 || true"
+    unmount_all_layers_at_path "$mount_path" >/dev/null 2>&1 || true
   done
   for target_dev in "${TARGET_EXISTING_PARTITIONS[@]}"; do
     [[ -n "$target_dev" ]] || continue
-    bash -lc "umount '$target_dev' >/dev/null 2>&1 || true"
+    umount "$target_dev" >/dev/null 2>&1 || true
   done
   if [[ "$TARGET_MODE" == "partition" ]]; then
-    bash -lc "umount '$TARGET_PARTITION' >/dev/null 2>&1 || true"
+    umount "$TARGET_PARTITION" >/dev/null 2>&1 || true
   fi
-  bash -lc "umount '$DATA_DIR' >/dev/null 2>&1 || true"
+  unmount_all_layers_at_path "$HOST_DATA_ALIAS" >/dev/null 2>&1 || true
+  unmount_all_layers_at_path "$DATA_DIR" >/dev/null 2>&1 || true
+
+  for mount_path in "$HOST_DATA_ALIAS" "$DATA_DIR"; do
+    if findmnt -rn -M "$mount_path" >/dev/null 2>&1; then
+      err "Mount point is still active after unmount attempts: $mount_path"
+      err "Inspect with: sudo findmnt -R $mount_path && sudo fuser -vm $mount_path"
+      exit 1
+    fi
+  done
 
   for target_dev in "${TARGET_EXISTING_PARTITIONS[@]}"; do
     [[ -n "$target_dev" ]] || continue
@@ -1956,7 +2003,8 @@ else
   if [[ -n "$CURRENT_DATA_SOURCE" && "$CURRENT_DATA_SOURCE" != "$ROOT_SOURCE" && "$CURRENT_DATA_SOURCE" != "tmpfs" ]]; then
     warn "Data directory is still backed by a non-root mounted filesystem after first unmount attempt: $DATA_DIR -> $CURRENT_DATA_SOURCE"
     stop_target_busy_processes
-    umount "$DATA_DIR" >/dev/null 2>&1 || true
+    unmount_all_layers_at_path "$HOST_DATA_ALIAS" >/dev/null 2>&1 || true
+    unmount_all_layers_at_path "$DATA_DIR" >/dev/null 2>&1 || true
     CURRENT_DATA_SOURCE="$(findmnt -rn -o SOURCE -T "$DATA_DIR" 2>/dev/null || true)"
     if [[ -n "$CURRENT_DATA_SOURCE" && "$CURRENT_DATA_SOURCE" != "$ROOT_SOURCE" && "$CURRENT_DATA_SOURCE" != "tmpfs" ]]; then
       err "Data directory is still busy after automatic SSD process cleanup: $DATA_DIR -> $CURRENT_DATA_SOURCE"
@@ -1975,7 +2023,11 @@ if [[ "$TARGET_MODE" == "raw-disk" ]]; then
     err "sfdisk is required to create a partition on raw SSD targets, but it is not installed."
     exit 1
   fi
-  run_shell "printf ',,L\n' | sfdisk --label gpt '$TARGET_DISK_PATH'"
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    run_shell "printf ',,L\n' | sfdisk --label gpt '$TARGET_DISK_PATH'"
+  else
+    printf ',,L\n' | sfdisk --label gpt "$TARGET_DISK_PATH"
+  fi
   if command -v partprobe >/dev/null 2>&1; then
     run_cmd partprobe "$TARGET_DISK_PATH"
   fi
@@ -1992,12 +2044,11 @@ fi
 
 run_cmd mkfs.ext4 -F "$TARGET_PARTITION"
 
-TARGET_UUID_CMD="blkid -s UUID -o value '$TARGET_PARTITION'"
 TARGET_UUID=""
 if [[ "$DRY_RUN" -eq 1 ]]; then
   TARGET_UUID="DRYRUN-UUID"
 else
-  TARGET_UUID="$(bash -lc "$TARGET_UUID_CMD")"
+  TARGET_UUID="$(blkid -s UUID -o value "$TARGET_PARTITION")"
 fi
 
 if [[ -z "$TARGET_UUID" ]]; then
@@ -2046,10 +2097,11 @@ os.rename(tmp, str(fstab))
 PY
 fi
 
-CURRENT_DATA_SOURCE="$(findmnt -n -o SOURCE --target "$DATA_DIR" 2>/dev/null || true)"
-if [[ "$DRY_RUN" -eq 0 && "$CURRENT_DATA_SOURCE" != "$TARGET_PARTITION" ]]; then
-  err "Mount verification failed. Expected $TARGET_PARTITION at $DATA_DIR, got ${CURRENT_DATA_SOURCE:-NOT_MOUNTED}."
-  exit 1
+if [[ "$DRY_RUN" -eq 0 ]]; then
+  if ! CURRENT_DATA_SOURCE="$(wait_for_exact_data_mount "$TARGET_PARTITION")"; then
+    err "Mount verification failed. Expected $TARGET_PARTITION at $DATA_DIR, got ${CURRENT_DATA_SOURCE:-NOT_MOUNTED}."
+    exit 1
+  fi
 fi
 
 apply_nvme_boot_mitigation
@@ -2097,19 +2149,46 @@ else
   fi
 fi
 
-info "Installing fresh Docker"
-if [[ "$DRY_RUN" -eq 0 ]]; then
-  if ! curl -fsSL https://get.docker.com | sh; then
-    err "Docker installation failed."
-    err "The SSD has already been formatted and mounted at $DATA_DIR."
-    err "To retry Docker installation only, run:"
-    err "  curl -fsSL https://get.docker.com | sudo sh"
-    err "Then start Umbrel manually:"
-    err "  sudo docker run -d --name umbrel --restart always -p 80:80 -v $DATA_DIR:/data -v /var/run/docker.sock:/var/run/docker.sock --stop-timeout 60 --privileged $IMAGE"
-    exit 1
+install_docker_engine_from_official_apt_repo() {
+  local docker_keyring="/etc/apt/keyrings/docker.asc"
+  local docker_list="/etc/apt/sources.list.d/docker.list"
+  local docker_arch docker_codename
+
+  docker_arch="$(dpkg --print-architecture)"
+  docker_codename="${VERSION_CODENAME:-${UBUNTU_CODENAME:-}}"
+  if [[ -z "$docker_codename" ]]; then
+    err "Could not determine the Ubuntu codename for the Docker apt repository."
+    return 1
   fi
-else
-  run_shell 'curl -fsSL https://get.docker.com | sh'
+
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    echo "[DRY-RUN] install Docker apt keyring at $docker_keyring"
+    echo "[DRY-RUN] write Docker apt source for Ubuntu $docker_codename ($docker_arch) to $docker_list"
+    echo "[DRY-RUN] apt-get -o DPkg::Lock::Timeout=300 update"
+    echo "[DRY-RUN] apt-get -o DPkg::Lock::Timeout=300 install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin"
+    return 0
+  fi
+
+  install -m 0755 -d /etc/apt/keyrings
+  curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o "$docker_keyring"
+  chmod a+r "$docker_keyring"
+  printf 'deb [arch=%s signed-by=%s] https://download.docker.com/linux/ubuntu %s stable\n' \
+    "$docker_arch" "$docker_keyring" "$docker_codename" > "$docker_list"
+  chmod 0644 "$docker_list"
+  apt-get -o DPkg::Lock::Timeout=300 update
+  DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 install -y \
+    docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+}
+
+info "Installing fresh Docker from Docker's official apt repository"
+if ! install_docker_engine_from_official_apt_repo; then
+  err "Docker installation failed."
+  err "The SSD has already been formatted and mounted at $DATA_DIR."
+  err "To retry Docker installation only, configure Docker's official Ubuntu apt repository and install:"
+  err "  sudo apt-get -o DPkg::Lock::Timeout=300 install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin"
+  err "Then start Umbrel manually:"
+  err "  sudo docker run -d --name umbrel --restart always -p 80:80 -v $DATA_DIR:/data -v /var/run/docker.sock:/var/run/docker.sock --stop-timeout 60 --pid=host --privileged $IMAGE"
+  exit 1
 fi
 
 info "Configuring Docker log rotation"
@@ -2286,11 +2365,12 @@ fi
 ensure_host_data_alias() {
   if [[ "$DRY_RUN" -eq 1 ]]; then
     echo "[DRY-RUN] create $HOST_DATA_ALIAS as a bind alias for $DATA_DIR"
-    echo "[DRY-RUN] append $DATA_DIR $HOST_DATA_ALIAS none $DATA_ALIAS_FSTAB_OPTIONS 0 0 to /etc/fstab if missing"
+    echo "[DRY-RUN] rewrite $HOST_DATA_ALIAS fstab entries after the $DATA_DIR mount entry"
+    echo "[DRY-RUN] unmount any stale $HOST_DATA_ALIAS bind layers before remounting"
     return 0
   fi
 
-  findmnt --target "$DATA_DIR" >/dev/null 2>&1 || { err "$DATA_DIR is not mounted; refusing to create $HOST_DATA_ALIAS alias."; exit 1; }
+  findmnt -M "$DATA_DIR" >/dev/null 2>&1 || { err "$DATA_DIR is not mounted; refusing to create $HOST_DATA_ALIAS alias."; exit 1; }
 
   if [[ -L "$HOST_DATA_ALIAS" ]]; then
     err "$HOST_DATA_ALIAS is a symlink; refusing to use it for Umbrel data. A real bind mount is required."
@@ -2309,16 +2389,37 @@ ensure_host_data_alias() {
     fi
   fi
 
-  if ! awk -v mountpoint="$HOST_DATA_ALIAS" '$0 !~ /^[[:space:]]*#/ && NF >= 2 && $2 == mountpoint { found = 1 } END { exit found ? 0 : 1 }' /etc/fstab; then
-    cp /etc/fstab "/etc/fstab.bak.data-alias.$(date +%Y%m%d%H%M%S)"
-    printf '%s\t%s\tnone\t%s\t0\t0\n' "$DATA_DIR" "$HOST_DATA_ALIAS" "$DATA_ALIAS_FSTAB_OPTIONS" >> /etc/fstab
-    systemctl daemon-reload || true
-  fi
+  cp /etc/fstab "/etc/fstab.bak.data-alias.$(date +%Y%m%d%H%M%S)"
+  HOST_DATA_ALIAS="$HOST_DATA_ALIAS" DATA_DIR="$DATA_DIR" DATA_ALIAS_FSTAB_OPTIONS="$DATA_ALIAS_FSTAB_OPTIONS" python3 - <<'PY'
+from pathlib import Path
+import os
+
+fstab = Path('/etc/fstab')
+alias = os.environ['HOST_DATA_ALIAS']
+data_dir = os.environ['DATA_DIR']
+options = os.environ['DATA_ALIAS_FSTAB_OPTIONS']
+entry = f'{data_dir}\t{alias}\tnone\t{options}\t0\t0'
+lines = fstab.read_text().splitlines()
+filtered = []
+for line in lines:
+    stripped = line.strip()
+    if not stripped or stripped.startswith('#'):
+        filtered.append(line)
+        continue
+    parts = stripped.split()
+    if len(parts) >= 2 and parts[1] == alias:
+        continue
+    filtered.append(line)
+filtered.append(entry)
+fstab.write_text('\n'.join(filtered).rstrip() + '\n')
+PY
+  systemctl daemon-reload || true
 
   mkdir -p "$HOST_DATA_ALIAS"
-  if ! findmnt --target "$HOST_DATA_ALIAS" >/dev/null 2>&1; then
-    mount --bind "$DATA_DIR" "$HOST_DATA_ALIAS"
-  fi
+  while findmnt -rn -M "$HOST_DATA_ALIAS" >/dev/null 2>&1; do
+    umount "$HOST_DATA_ALIAS"
+  done
+  mount --bind "$DATA_DIR" "$HOST_DATA_ALIAS"
 
   if [[ "$(stat -c '%d:%i' "$HOST_DATA_ALIAS")" != "$(stat -c '%d:%i' "$DATA_DIR")" ]]; then
     err "$HOST_DATA_ALIAS bind mount does not match $DATA_DIR after mount."
