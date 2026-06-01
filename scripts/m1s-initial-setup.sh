@@ -9,7 +9,7 @@ set -Eeuo pipefail
 #   sudo bash m1s-initial-setup.sh --dry-run
 #   sudo bash m1s-initial-setup.sh --version
 
-SCRIPT_VERSION="0.5.17"
+SCRIPT_VERSION="0.5.18"
 DRY_RUN=0
 NEW_HOSTNAME="odroid"
 
