@@ -625,8 +625,8 @@ http://umbrel.local
 
 ```bash
 cd /home/*/odroid-m1s-umbrel-recovery
-sudo git -c safe.directory="$(pwd)" fetch origin
-sudo git -c safe.directory="$(pwd)" reset --hard origin/main
+sudo git -c safe.directory="$(pwd)" fetch https://github.com/dongguri-jun/odroid-m1s-umbrel-recovery.git main
+sudo git -c safe.directory="$(pwd)" reset --hard FETCH_HEAD
 sudo bash scripts/m1s-update-umbrel.sh --check
 sudo bash scripts/m1s-update-umbrel.sh
 ```
@@ -634,16 +634,16 @@ sudo bash scripts/m1s-update-umbrel.sh
 각 줄이 하는 일:
 
 1. `cd /home/*/odroid-m1s-umbrel-recovery` — 처음 설치할 때 받아 둔 저장소 폴더로 이동합니다. 별표(`*`)는 "어떤 사용자 이름이든 자동으로 찾기"를 의미하므로, 사용자 이름을 직접 입력할 필요가 없습니다.
-2. `sudo git -c safe.directory="$(pwd)" fetch origin` — GitHub 원격 저장소의 최신 변경 내역을 가져옵니다.
-3. `sudo git -c safe.directory="$(pwd)" reset --hard origin/main` — 로컬 파일을 GitHub의 최신 `origin/main` 상태와 똑같이 맞춥니다. 이 과정에서 로컬의 업데이트 스크립트 자신도 최신 버전으로 교체됩니다.
+2. `sudo git -c safe.directory="$(pwd)" fetch https://github.com/dongguri-jun/odroid-m1s-umbrel-recovery.git main` — 장비에 저장된 `origin` 설정을 믿지 않고, 공식 GitHub 저장소에서 최신 변경 내역을 직접 가져옵니다.
+3. `sudo git -c safe.directory="$(pwd)" reset --hard FETCH_HEAD` — 방금 공식 저장소에서 가져온 최신 파일 상태와 로컬 파일을 똑같이 맞춥니다. 이 과정에서 로컬의 업데이트 스크립트 자신도 최신 버전으로 교체됩니다.
 4. `sudo bash scripts/m1s-update-umbrel.sh --check` — 아무것도 바꾸지 않고 **현재 설치된 버전 · 최신 버전 · 적용될 수정 목록**만 보여 줍니다. 이미 최신이면 "No migrations needed" 처럼 안내됩니다.
 5. `sudo bash scripts/m1s-update-umbrel.sh` — 실제 업데이트를 적용합니다. 이미 최신이면 아무 작업 없이 끝납니다.
 
 만약 `--check` 결과의 `Script version` 이 `0.5.6` 이하로 나오고 바로 “No migrations needed” 로 끝나면, 그 장비에는 아직 자동 동기화 기능 자체가 없는 상태입니다. 이 경우에만 아래 두 줄을 **처음 한 번만** 실행한 뒤, 위 5줄을 다시 실행하세요.
 
 ```bash
-sudo git -c safe.directory="$(pwd)" fetch origin
-sudo git -c safe.directory="$(pwd)" reset --hard origin/main
+sudo git -c safe.directory="$(pwd)" fetch https://github.com/dongguri-jun/odroid-m1s-umbrel-recovery.git main
+sudo git -c safe.directory="$(pwd)" reset --hard FETCH_HEAD
 ```
 
 업데이트 중에는 Umbrel 화면이 잠시 열리지 않을 수 있습니다. 스크립트는 SSD가 `/mnt/fullnode`에 정상 연결되어 있는지 먼저 확인한 뒤, 기존 데이터 위치를 그대로 유지한 상태에서 필요한 부분만 갱신합니다.
@@ -688,8 +688,8 @@ root@umbrel:/#
 
 ```bash
 cd /home/*/odroid-m1s-umbrel-recovery
-sudo git -c safe.directory="$(pwd)" fetch origin
-sudo git -c safe.directory="$(pwd)" reset --hard origin/main
+sudo git -c safe.directory="$(pwd)" fetch https://github.com/dongguri-jun/odroid-m1s-umbrel-recovery.git main
+sudo git -c safe.directory="$(pwd)" reset --hard FETCH_HEAD
 sudo bash scripts/m1s-update-umbrel.sh --check
 sudo bash scripts/m1s-update-umbrel.sh
 ```
@@ -727,16 +727,16 @@ ODROID M1S에 SSH로 접속했거나, 모니터와 키보드로 직접 로그인
 
 ```bash
 cd /home/*/odroid-m1s-umbrel-recovery
-sudo git -c safe.directory="$(pwd)" fetch origin
-sudo git -c safe.directory="$(pwd)" reset --hard origin/main
+sudo git -c safe.directory="$(pwd)" fetch https://github.com/dongguri-jun/odroid-m1s-umbrel-recovery.git main
+sudo git -c safe.directory="$(pwd)" reset --hard FETCH_HEAD
 sudo bash scripts/m1s-update-system-packages.sh
 ```
 
 각 줄이 하는 일:
 
 1. `cd /home/*/odroid-m1s-umbrel-recovery` — 처음 설치할 때 받아 둔 저장소 폴더로 이동합니다.
-2. `sudo git -c safe.directory="$(pwd)" fetch origin` — GitHub 원격 저장소의 최신 변경 내역을 가져옵니다.
-3. `sudo git -c safe.directory="$(pwd)" reset --hard origin/main` — 로컬 파일을 GitHub의 최신 `origin/main` 상태와 똑같이 맞춥니다.
+2. `sudo git -c safe.directory="$(pwd)" fetch https://github.com/dongguri-jun/odroid-m1s-umbrel-recovery.git main` — 장비에 저장된 `origin` 설정을 믿지 않고, 공식 GitHub 저장소에서 최신 변경 내역을 직접 가져옵니다.
+3. `sudo git -c safe.directory="$(pwd)" reset --hard FETCH_HEAD` — 방금 공식 저장소에서 가져온 최신 파일 상태와 로컬 파일을 똑같이 맞춥니다.
 4. `sudo bash scripts/m1s-update-system-packages.sh` — Docker 컨테이너를 안전하게 멈춘 뒤 Ubuntu 패키지 업데이트를 적용하고, 필요하면 자동으로 재부팅합니다.
 
 재부팅이 실행되면 SSH 연결이 끊기는 것이 정상입니다. 1~3분 정도 기다린 뒤 브라우저에서 다시 아래 주소를 열어 보세요.
@@ -765,8 +765,8 @@ sudo nsenter -t 1 -m -u -i -n -p -- bash
 
 ```bash
 cd /home/*/odroid-m1s-umbrel-recovery
-sudo git -c safe.directory="$(pwd)" fetch origin
-sudo git -c safe.directory="$(pwd)" reset --hard origin/main
+sudo git -c safe.directory="$(pwd)" fetch https://github.com/dongguri-jun/odroid-m1s-umbrel-recovery.git main
+sudo git -c safe.directory="$(pwd)" reset --hard FETCH_HEAD
 sudo bash scripts/m1s-update-system-packages.sh
 ```
 

@@ -616,8 +616,8 @@ This is how to bring an ODROID M1S that was already installed once up to the lat
 
 ```bash
 cd /home/*/odroid-m1s-umbrel-recovery
-sudo git -c safe.directory="$(pwd)" fetch origin
-sudo git -c safe.directory="$(pwd)" reset --hard origin/main
+sudo git -c safe.directory="$(pwd)" fetch https://github.com/dongguri-jun/odroid-m1s-umbrel-recovery.git main
+sudo git -c safe.directory="$(pwd)" reset --hard FETCH_HEAD
 sudo bash scripts/m1s-update-umbrel.sh --check
 sudo bash scripts/m1s-update-umbrel.sh
 ```
@@ -625,16 +625,16 @@ sudo bash scripts/m1s-update-umbrel.sh
 What each line does:
 
 1. `cd /home/*/odroid-m1s-umbrel-recovery` — moves into the repository folder downloaded during the first installation. The asterisk (`*`) means "automatically find any username," so you do not need to type the username manually.
-2. `sudo git -c safe.directory="$(pwd)" fetch origin` — fetches the latest changes from the GitHub remote repository.
-3. `sudo git -c safe.directory="$(pwd)" reset --hard origin/main` — resets the local files to match the latest GitHub `origin/main`. This also replaces the local updater script itself with the latest version.
+2. `sudo git -c safe.directory="$(pwd)" fetch https://github.com/dongguri-jun/odroid-m1s-umbrel-recovery.git main` — fetches the latest changes directly from the official GitHub repository instead of trusting the device's saved `origin` setting.
+3. `sudo git -c safe.directory="$(pwd)" reset --hard FETCH_HEAD` — resets the local files to match the official repository state that was just fetched. This also replaces the local updater script itself with the latest version.
 4. `sudo bash scripts/m1s-update-umbrel.sh --check` — changes nothing and only shows the **currently installed version, latest version, and list of changes that will be applied**. If it is already up to date, it will show a message like "No migrations needed."
 5. `sudo bash scripts/m1s-update-umbrel.sh` — actually applies the update. If it is already up to date, it exits without doing anything.
 
 If the `--check` output says `Script version` is `0.5.6` or older and immediately exits with “No migrations needed,” that device does not have the auto-sync updater yet. In that case only, run the following two lines **once**, then run the 5-line updater flow above again.
 
 ```bash
-sudo git -c safe.directory="$(pwd)" fetch origin
-sudo git -c safe.directory="$(pwd)" reset --hard origin/main
+sudo git -c safe.directory="$(pwd)" fetch https://github.com/dongguri-jun/odroid-m1s-umbrel-recovery.git main
+sudo git -c safe.directory="$(pwd)" reset --hard FETCH_HEAD
 ```
 
 During the update, the Umbrel screen may not open for a short time. The script first checks that the SSD is properly connected at `/mnt/fullnode`, then updates only the necessary parts while keeping the existing data location intact.
@@ -679,8 +679,8 @@ From this state, enter the commands below exactly as shown. This is the same com
 
 ```bash
 cd /home/*/odroid-m1s-umbrel-recovery
-sudo git -c safe.directory="$(pwd)" fetch origin
-sudo git -c safe.directory="$(pwd)" reset --hard origin/main
+sudo git -c safe.directory="$(pwd)" fetch https://github.com/dongguri-jun/odroid-m1s-umbrel-recovery.git main
+sudo git -c safe.directory="$(pwd)" reset --hard FETCH_HEAD
 sudo bash scripts/m1s-update-umbrel.sh --check
 sudo bash scripts/m1s-update-umbrel.sh
 ```
@@ -718,16 +718,16 @@ If you connected to the ODROID M1S by SSH, or logged in directly with a monitor 
 
 ```bash
 cd /home/*/odroid-m1s-umbrel-recovery
-sudo git -c safe.directory="$(pwd)" fetch origin
-sudo git -c safe.directory="$(pwd)" reset --hard origin/main
+sudo git -c safe.directory="$(pwd)" fetch https://github.com/dongguri-jun/odroid-m1s-umbrel-recovery.git main
+sudo git -c safe.directory="$(pwd)" reset --hard FETCH_HEAD
 sudo bash scripts/m1s-update-system-packages.sh
 ```
 
 What each line does:
 
 1. `cd /home/*/odroid-m1s-umbrel-recovery` — moves into the repository folder downloaded during the first installation.
-2. `sudo git -c safe.directory="$(pwd)" fetch origin` — fetches the latest changes from the GitHub remote repository.
-3. `sudo git -c safe.directory="$(pwd)" reset --hard origin/main` — resets local files to match the latest GitHub `origin/main` state.
+2. `sudo git -c safe.directory="$(pwd)" fetch https://github.com/dongguri-jun/odroid-m1s-umbrel-recovery.git main` — fetches the latest changes directly from the official GitHub repository instead of trusting the device's saved `origin` setting.
+3. `sudo git -c safe.directory="$(pwd)" reset --hard FETCH_HEAD` — resets local files to match the official repository state that was just fetched.
 4. `sudo bash scripts/m1s-update-system-packages.sh` — safely stops Docker containers, applies Ubuntu package updates, and automatically reboots if needed.
 
 If a reboot happens, the SSH connection will disconnect. Wait about 1-3 minutes, then open this address again in a browser:
@@ -756,8 +756,8 @@ When the prompt changes to something like `root@umbrel:/#`, enter the following 
 
 ```bash
 cd /home/*/odroid-m1s-umbrel-recovery
-sudo git -c safe.directory="$(pwd)" fetch origin
-sudo git -c safe.directory="$(pwd)" reset --hard origin/main
+sudo git -c safe.directory="$(pwd)" fetch https://github.com/dongguri-jun/odroid-m1s-umbrel-recovery.git main
+sudo git -c safe.directory="$(pwd)" reset --hard FETCH_HEAD
 sudo bash scripts/m1s-update-system-packages.sh
 ```
 
