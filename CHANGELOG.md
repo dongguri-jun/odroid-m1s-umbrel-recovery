@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.20
+
+- Harden the public update command flow in the Korean and English guides, plus generated release notes, by fetching directly from the official GitHub repository URL and resetting to `FETCH_HEAD` instead of trusting a device-local `origin` remote.
+- Pin the fresh-install Umbrel image to the same validated `dockurr/umbrel:1.7.3` arm64 digest already used by the updater, and install Docker through Docker's official Ubuntu apt repository/keyring path instead of piping the remote convenience script into root shell.
+- Tighten destructive and publish-time safeguards: full-resync Bitcoin data deletion now asserts the target stays under the detected Bitcoin config directory before `rm -rf --`, and publish/release helpers run a public metadata scrub for private IPs, MAC addresses, and optional local denylist tokens.
+- Add a no-op `0.5.19_to_0.5.20` updater history step so already-installed hosts can record the hardening release without changing Umbrel data.
+
 ## 0.5.19
 
 - Add an updater migration that removes leftover Incus/LXD packages, services, containers, snap data, and eMMC app-layer remnants from already-installed ODROID M1S Umbrel hosts, matching the fresh install cleanup policy while preserving `/mnt/fullnode` Umbrel data.
