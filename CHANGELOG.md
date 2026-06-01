@@ -5,7 +5,6 @@
 - Add a guarded `/data` bind-mount alias for `/mnt/fullnode` and recreate the top-level Umbrel container with `/data:/data`, fixing the Umbrel Files `/Apps` realpath mismatch that could show `[escapes-base] '/Apps' escapes '/mnt/fullnode/app-data'` on Docker-based ODROID M1S installs.
 - Keep `/mnt/fullnode` as the canonical physical NVMe mount while making `/data` a strict alias only: the updater refuses to proceed if `/data` is a symlink, a non-directory, non-empty while unmounted, or mounted to anything other than `/mnt/fullnode`.
 - Update fresh installs to use the same `/data:/data` wrapper-container mount so new devices can open app data from Files without the previous symlink escape check.
-- Document the Core Lightning GUI backup path after updating: stop the app first, then use Files → Apps → Core Lightning → data → lightning → bitcoin to download `hsm_secret`, `emergency.recover`, and `lightningd.sqlite3`.
 
 ## 0.5.17
 
