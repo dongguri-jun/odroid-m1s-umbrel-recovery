@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.19
+
+- Add an updater migration that removes leftover Incus/LXD packages, services, containers, snap data, and eMMC app-layer remnants from already-installed ODROID M1S Umbrel hosts, matching the fresh install cleanup policy while preserving `/mnt/fullnode` Umbrel data.
+- Keep the cleanup idempotent and dry-run visible: the updater only purges installed legacy Incus apt packages, tolerates already-missing services and containers, and post-checks that Incus/LXD apt packages are absent after the migration.
+
 ## 0.5.18
 
 - Add a guarded `/data` bind-mount alias for `/mnt/fullnode` and recreate the top-level Umbrel container with `/data:/data`, fixing the Umbrel Files `/Apps` realpath mismatch that could show `[escapes-base] '/Apps' escapes '/mnt/fullnode/app-data'` on Docker-based ODROID M1S installs.
