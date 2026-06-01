@@ -111,6 +111,10 @@ required = [
     'Refusing to format the root/system disk',
     'TARGET_DISK" == "$ROOT_DISK',
     'run_cmd mkfs.ext4 -F "$TARGET_PARTITION"',
+    'IMAGE="dockurr/umbrel:1.7.3@sha256:',
+    'install_docker_engine_from_official_apt_repo',
+    'https://download.docker.com/linux/ubuntu/gpg',
+    'docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin',
     'Mount verification failed',
     'expected $TARGET_PARTITION mounted at $DATA_DIR',
     'RequiresMountsFor=$DATA_DIR',
@@ -363,6 +367,7 @@ required = [
     '0.5.16_to_0.5.17',
     '0.5.17_to_0.5.18',
     '0.5.18_to_0.5.19',
+    '0.5.19_to_0.5.20',
     'LEGACY_INCUS_PACKAGES=(incus incus-base incus-client lxd-agent-loader)',
     'cleanup_legacy_incus_lxd_remnants',
     'verify_legacy_incus_lxd_absent',
@@ -435,7 +440,7 @@ for forbidden in ['mkfs.', 'sfdisk', 'parted', 'wipefs', 'sgdisk', 'gdisk', 'blk
     if forbidden in text:
         raise SystemExit(f'System package updater must never contain destructive disk command: {forbidden}')
 required = [
-    'SCRIPT_VERSION="0.5.19"',
+    'SCRIPT_VERSION="0.5.20"',
     '--dry-run',
     '--no-reboot',
     'STOP_TIMEOUT_SECONDS=300',
@@ -510,7 +515,7 @@ if not workflow.exists():
     raise SystemExit('.github/workflows/verify.yml is missing')
 text = workflow.read_text(encoding='utf-8')
 required = [
-    'actions/checkout@v5',
+    'actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd',
     'shellcheck',
     'bash scripts/verify-scripts.sh',
     'pull_request:',
@@ -539,6 +544,7 @@ required = [
     'Remote tag already exists',
     'GitHub Release already exists',
     'CHANGELOG.md is missing section',
+    'bash scripts/check-public-scrub.sh',
 ]
 missing = [needle for needle in required if needle not in text]
 if missing:
@@ -571,8 +577,15 @@ files = {
     'scripts/publish-public.sh': [
         'Publish must run from public-clean.',
         'Local public-clean must not track an upstream.',
+        'bash scripts/check-public-scrub.sh',
         'git ls-remote --exit-code --heads origin public-clean',
         'git push origin public-clean:main',
+    ],
+    'scripts/check-public-scrub.sh': [
+        'PUBLIC_SCRUB_DENYLIST',
+        'private IPv4 address',
+        'MAC address',
+        'public metadata scrub failed',
     ],
 }
 for path, needles in files.items():

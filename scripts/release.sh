@@ -20,6 +20,7 @@ This script refuses to release unless:
   - local HEAD matches origin/main,
   - the latest GitHub Actions run for HEAD succeeded,
   - CHANGELOG.md has a section for the version,
+  - public metadata contains no private device identifiers,
   - the tag and release do not already exist.
 
 Options:
@@ -110,6 +111,8 @@ if not re.search(rf'^##\s+{re.escape(version)}\s*$', text, flags=re.M):
     raise SystemExit(f'CHANGELOG.md is missing section: ## {version}')
 PY
 
+bash scripts/check-public-scrub.sh
+
 if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
   tag_target="$(git rev-parse "${tag}^{}")"
   printf 'Local tag already exists: %s -> %s\n' "$tag" "$tag_target" >&2
@@ -157,7 +160,7 @@ if not match:
 body = match.group('body').strip()
 verification_lines = [
     '- Latest GitHub Actions `Verify scripts` workflow passed for this release commit.',
-    '- `bash scripts/verify-scripts.sh` checks bash syntax, ShellCheck, version consistency, heredoc safety, installer invariants, updater safety, and workflow presence.',
+    '- `bash scripts/verify-scripts.sh` checks bash syntax, ShellCheck, version consistency, heredoc safety, installer invariants, updater safety, public metadata scrub, and workflow presence.',
 ]
 if real_device_validation:
     verification_lines.append('- Real-device validation passed on ODROID M1S hardware.')
@@ -172,8 +175,8 @@ Existing hosts can update in place with the usual updater command set. Run the f
 
 ```bash
 cd /home/*/odroid-m1s-umbrel-recovery
-sudo git -c safe.directory="$(pwd)" fetch origin
-sudo git -c safe.directory="$(pwd)" reset --hard origin/main
+sudo git -c safe.directory="$(pwd)" fetch https://github.com/dongguri-jun/odroid-m1s-umbrel-recovery.git main
+sudo git -c safe.directory="$(pwd)" reset --hard FETCH_HEAD
 sudo bash scripts/m1s-update-umbrel.sh --check
 sudo bash scripts/m1s-update-umbrel.sh
 ```

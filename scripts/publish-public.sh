@@ -79,6 +79,8 @@ if git rev-parse --abbrev-ref 'public-clean@{upstream}' >/dev/null 2>&1; then
   exit 1
 fi
 
+bash scripts/check-public-scrub.sh
+
 git fetch origin main --prune >/dev/null
 origin_main_sha="$(git rev-parse origin/main)"
 printf '[publish] origin/main %s\n' "$origin_main_sha"
