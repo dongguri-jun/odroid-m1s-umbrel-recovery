@@ -17,7 +17,7 @@ set -Eeuo pipefail
 #   --version      Print script version and exit.
 #   -h, --help     Show this help.
 
-SCRIPT_VERSION="0.5.20"
+SCRIPT_VERSION="0.5.21"
 INSTALL_STATE_DIR="/etc/umbrel-recovery"
 INSTALL_STATE_FILE="$INSTALL_STATE_DIR/installed.json"
 DATA_DIR="/mnt/fullnode"
@@ -83,6 +83,7 @@ MIGRATIONS=(
   "0.5.17_to_0.5.18"
   "0.5.18_to_0.5.19"
   "0.5.19_to_0.5.20"
+  "0.5.20_to_0.5.21"
 )
 
 log() {
@@ -2304,6 +2305,10 @@ postcheck_0_5_18_to_0_5_19() {
 precheck_0_5_19_to_0_5_20() { precheck_common_canonical_install; }
 apply_0_5_19_to_0_5_20() { info "0.5.20 hardens public update guidance, fresh-install image pinning, and release privacy gates; no immediate host mutation required."; }
 postcheck_0_5_19_to_0_5_20() { return 0; }
+
+precheck_0_5_20_to_0_5_21() { precheck_common_canonical_install; }
+apply_0_5_20_to_0_5_21() { info "0.5.21 keeps the public fresh-install path aligned with fixed hostname and apt-lock hardening; no immediate host mutation required."; }
+postcheck_0_5_20_to_0_5_21() { return 0; }
 
 # ---------------------------------------------------------------------------
 # Main flow

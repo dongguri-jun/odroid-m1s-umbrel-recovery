@@ -368,6 +368,7 @@ required = [
     '0.5.17_to_0.5.18',
     '0.5.18_to_0.5.19',
     '0.5.19_to_0.5.20',
+    '0.5.20_to_0.5.21',
     'LEGACY_INCUS_PACKAGES=(incus incus-base incus-client lxd-agent-loader)',
     'cleanup_legacy_incus_lxd_remnants',
     'verify_legacy_incus_lxd_absent',
@@ -440,7 +441,7 @@ for forbidden in ['mkfs.', 'sfdisk', 'parted', 'wipefs', 'sgdisk', 'gdisk', 'blk
     if forbidden in text:
         raise SystemExit(f'System package updater must never contain destructive disk command: {forbidden}')
 required = [
-    'SCRIPT_VERSION="0.5.20"',
+    'SCRIPT_VERSION="0.5.21"',
     '--dry-run',
     '--no-reboot',
     'STOP_TIMEOUT_SECONDS=300',
