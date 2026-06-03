@@ -6,6 +6,7 @@
 - Pin the fresh-install Umbrel image to the same validated `dockurr/umbrel:1.7.3` arm64 digest already used by the updater, and install Docker through Docker's official Ubuntu apt repository/keyring path instead of piping the remote convenience script into root shell.
 - Tighten destructive and publish-time safeguards: full-resync Bitcoin data deletion now asserts the target stays under the detected Bitcoin config directory before `rm -rf --`, and publish/release helpers run a public metadata scrub for private IPs, MAC addresses, and optional local denylist tokens.
 - Add a no-op `0.5.19_to_0.5.20` updater history step so already-installed hosts can record the hardening release without changing Umbrel data.
+- Keep the initial setup flow aligned with the fresh install `umbrel.local` access path by removing the hostname prompt and keeping the host hostname fixed to `umbrel`.
 
 ## 0.5.19
 

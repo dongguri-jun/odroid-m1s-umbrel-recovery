@@ -19,7 +19,7 @@
 이 저장소에서 실제로 자주 사용하는 파일은 아래 6개입니다.
 
 - `scripts/m1s-clean-install-umbrel.sh` — Umbrel 설치 스크립트
-- `scripts/m1s-initial-setup.sh` — 초기 설정 스크립트 (계정/호스트 이름)
+- `scripts/m1s-initial-setup.sh` — 초기 설정 스크립트 (계정 생성 / `umbrel` 호스트 이름 유지)
 - `scripts/m1s-update-umbrel.sh` — 이미 설치된 장비를 최신 버전으로 올리는 업데이트 스크립트
 - `scripts/m1s-update-system-packages.sh` — Ubuntu 보안/커널 관련 패키지를 업데이트하고 필요하면 재부팅하는 스크립트
 - `scripts/m1s-start-bitcoin-chainstate-rebuild.sh` — Bitcoin chainstate 재구축 시작 스크립트
@@ -158,6 +158,7 @@ password: emfTjrwlrms
 
 비밀번호 `emfTjrwlrms`는 한글 키보드 기준으로 **“들썩지근”** 을 영문 입력 상태에서 친 값입니다.
 
+
 다른 장비에서는 사용자 이름과 비밀번호가 다를 수 있습니다. 판매자나 설치 담당자에게 받은 계정 정보를 사용하세요. 위 기본 계정으로 로그인했다면, 설치 후 7번의 초기 설정 단계에서 반드시 새 사용자 계정과 새 비밀번호로 바꾸는 것을 권장합니다.
 
 ### 4-2. 새 제품이라 Ubuntu Server부터 직접 설치하는 경우
@@ -268,11 +269,13 @@ ERASE-EMMC-AND-FORMAT-SSD-AND-INSTALL-UMBREL
 
 문구가 길기 때문에, 틀리지 않게 천천히 그대로 입력하세요.
 
+설치 중 `Waiting for cache lock`, `dpkg lock`, `unattended-upgrades` 같은 문구가 보일 수 있습니다. 최신 스크립트는 이 상황을 자동으로 기다리고 처리하므로, 인터넷에서 본 `sudo rm /var/lib/dpkg/lock*`, `kill -9`, `killall unattended-upgr` 같은 수동 복구 명령을 따라 하지 마세요. 패키지 관리 상태가 더 꼬일 수 있습니다.
+
 ---
 
-## 7. 초기 설정 (계정 만들기 / 호스트 이름 변경)
+## 7. 초기 설정 (계정 만들기)
 
-6번의 설치가 끝나면, **자신만의 사용자 계정을 만들고 기기 이름을 바꿀 수 있습니다.**
+6번의 설치가 끝나면, **자신만의 사용자 계정을 만들 수 있습니다.**
 
 이 단계는 선택 사항입니다. 기존 계정을 그대로 쓰고 싶다면 건너뛰어도 됩니다.
 
@@ -290,7 +293,8 @@ sudo bash scripts/m1s-initial-setup.sh
 
 1. **새 사용자 이름** — 앞으로 로그인할 때 쓸 이름을 입력합니다.
 2. **새 비밀번호** — 비밀번호를 입력합니다. 확인을 위해 한 번 더 입력합니다.
-3. **새 호스트 이름** — 기기 이름을 입력합니다. 아무것도 입력하지 않으면 `odroid`가 됩니다.
+
+호스트 이름은 `umbrel.local` 접속을 위해 `umbrel`로 유지됩니다. 사용자가 따로 입력할 필요가 없습니다.
 
 요약이 표시되면 `y`를 입력해서 진행합니다.
 
@@ -827,11 +831,11 @@ NAS, SMB, NFS 공유를 사용하려면 Ubuntu 호스트에서 별도로 마운�
 
 Samba 공유가 필요하다면 Ubuntu 호스트에서 별도로 설정해야 합니다.
 
-### 14-5. Umbrel UI를 통한 hostname / DNS / 고정 IP 설정
+### 14-5. Umbrel UI를 통한 DNS / 고정 IP 설정
 
 ODROID M1S의 실제 네트워크 설정은 Ubuntu 호스트가 관리합니다.
 
-따라서 hostname, DNS, 고정 IP 설정은 Umbrel UI가 아니라 공유기 설정 또는 Ubuntu 네트워크 설정에서 관리하는 것을 권장합니다.
+따라서 DNS, 고정 IP 설정은 Umbrel UI가 아니라 공유기 설정 또는 Ubuntu 네트워크 설정에서 관리하는 것을 권장합니다. 호스트 이름은 `umbrel.local` 접속을 위해 `umbrel`로 유지됩니다.
 
 ### 14-6. Ubuntu 호스트 전체 파일시스템 접근
 

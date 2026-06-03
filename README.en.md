@@ -19,7 +19,7 @@ This guide explains how to install Umbrel on an ODROID M1S in a way that **non-t
 This repository most commonly uses the following 6 files.
 
 - `scripts/m1s-clean-install-umbrel.sh` — Umbrel installation script
-- `scripts/m1s-initial-setup.sh` — initial setup script for account and hostname configuration
+- `scripts/m1s-initial-setup.sh` — initial setup script for account creation and preserving the `umbrel` hostname
 - `scripts/m1s-update-umbrel.sh` — update script for bringing an already-installed device up to the latest version
 - `scripts/m1s-update-system-packages.sh` — helper for Ubuntu security/kernel-related package updates and reboot-if-needed handling
 - `scripts/m1s-start-bitcoin-chainstate-rebuild.sh` — helper for starting a Bitcoin chainstate rebuild
@@ -259,11 +259,13 @@ ERASE-EMMC-AND-FORMAT-SSD-AND-INSTALL-UMBREL
 
 The phrase is long, so type it slowly and carefully without mistakes.
 
+During installation, you may see messages such as `Waiting for cache lock`, `dpkg lock`, or `unattended-upgrades`. The latest script automatically waits for and handles this situation, so do not follow manual recovery commands from the internet such as `sudo rm /var/lib/dpkg/lock*`, `kill -9`, or `killall unattended-upgr`. These commands can make the package manager state worse.
+
 ---
 
-## 7. Initial setup (create an account / change hostname)
+## 7. Initial setup (create an account)
 
-After step 6 finishes, you can **create your own user account and change the device name**.
+After step 6 finishes, you can **create your own user account**.
 
 This step is optional. You may skip it if you want to keep using the existing account.
 
@@ -281,7 +283,8 @@ The script will ask for the following items on screen.
 
 1. **New username** — enter the name you will use when logging in.
 2. **New password** — enter the password, then enter it again for confirmation.
-3. **New hostname** — enter the device name. If you leave it blank, it will use `odroid`.
+
+The hostname stays fixed to `umbrel` for `umbrel.local` access. You do not need to enter a hostname.
 
 When the summary appears, type `y` to continue.
 
@@ -818,11 +821,11 @@ Network file sharing through Umbrel Settings, such as enabling or disabling shar
 
 If Samba sharing is needed, it should be configured separately on the Ubuntu host.
 
-### 14-5. Hostname / DNS / static IP settings through the Umbrel UI
+### 14-5. DNS / static IP settings through the Umbrel UI
 
 The actual network configuration of the ODROID M1S is managed by the Ubuntu host.
 
-For hostname, DNS, or static IP settings, use your router settings or Ubuntu network configuration rather than relying on the Umbrel UI.
+For DNS or static IP settings, use your router settings or Ubuntu network configuration rather than relying on the Umbrel UI. The hostname stays fixed to `umbrel` for `umbrel.local` access.
 
 ### 14-6. Full Ubuntu host filesystem access
 
