@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.21
+
+- Keep the public fresh-install path aligned with the validated fixed-hostname setup: initial setup no longer asks for a hostname, keeps `umbrel` for `umbrel.local`, and normalizes the Debian-style `127.0.1.1` hosts entry.
+- Harden fresh-install package-manager lock handling by waiting for existing apt/dpkg locks, pausing active Ubuntu apt automation during installer apt operations, restoring previously active units on exit, and warning users not to delete lock files or kill package-manager processes.
+- Validate the exact public README install flow from a fresh GitHub clone on ODROID M1S hardware: `git clone`, `cd odroid-m1s-umbrel-recovery`, and `sudo bash scripts/m1s-clean-install-umbrel.sh --release`, followed by post-install and controlled-reboot health checks.
+- Add a no-op `0.5.20_to_0.5.21` updater history step so already-installed hosts can record this validation release without changing Umbrel data.
+
 ## 0.5.20
 
 - Harden the public update command flow in the Korean and English guides, plus generated release notes, by fetching directly from the official GitHub repository URL and resetting to `FETCH_HEAD` instead of trusting a device-local `origin` remote.
