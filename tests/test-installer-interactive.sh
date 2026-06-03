@@ -92,6 +92,45 @@ M1S_INSTALLER_LIB_ONLY=1 source scripts/m1s-clean-install-umbrel.sh
 ROOT_DISK="mmcblk0"
 TARGET_INPUT=""
 
+printf '[unit] hostname policy stays aligned with umbrel.local\n'
+installer_script="$(<scripts/m1s-clean-install-umbrel.sh)"
+initial_setup_script="$(<scripts/m1s-initial-setup.sh)"
+readme_ko="$(<README.md)"
+readme_en="$(<README.en.md)"
+assert_contains "$installer_script" "UMBREL_HOSTNAME=\"umbrel\"" "Fresh installer should force the host hostname to umbrel"
+assert_contains "$initial_setup_script" "FIXED_HOSTNAME=\"umbrel\"" "Initial setup should keep hostname fixed to umbrel"
+assert_contains "$initial_setup_script" "Keeps the hostname fixed to umbrel for http://umbrel.local access." "Initial setup help should document the fixed hostname policy"
+assert_contains "$initial_setup_script" "Setting hostname to '\$FIXED_HOSTNAME' for umbrel.local access" "Initial setup should restore the fixed hostname if it drifted"
+assert_contains "$initial_setup_script" "update_fixed_hostname_hosts \"\$current_hostname\" \"\$FIXED_HOSTNAME\"" "Initial setup should always normalize the 127.0.1.1 hosts entry"
+assert_not_contains "$initial_setup_script" "New hostname [" "Initial setup must not prompt users to change the hostname"
+assert_not_contains "$initial_setup_script" "INPUT_HOSTNAME" "Initial setup must not keep hostname input state"
+assert_not_contains "$initial_setup_script" "NEW_HOSTNAME" "Initial setup must not keep a user-selectable hostname variable"
+assert_not_contains "$initial_setup_script" "새 호스트 이름" "Initial setup must not keep the old Korean hostname prompt"
+assert_contains "$readme_ko" "호스트 이름은 \`umbrel.local\` 접속을 위해 \`umbrel\`로 유지됩니다." "Korean README should document the fixed hostname policy"
+assert_contains "$readme_en" "The hostname stays fixed to \`umbrel\` for \`umbrel.local\` access." "English README should document the fixed hostname policy"
+
+run_hosts_entry_case() {
+  local case_name="$1"
+  local current_hostname="$2"
+  local initial_hosts="$3"
+  local hosts_file="$TEST_TMPDIR/hosts-$case_name"
+  printf '%s\n' "$initial_hosts" > "$hosts_file"
+  (
+    M1S_INITIAL_SETUP_LIB_ONLY=1
+    HOSTS_FILE="$hosts_file"
+    # shellcheck source=scripts/m1s-initial-setup.sh
+    source scripts/m1s-initial-setup.sh
+    DRY_RUN=0
+    update_fixed_hostname_hosts "$current_hostname" umbrel
+  )
+  assert_contains "$(<"$hosts_file")" $'127.0.1.1\tumbrel' "Initial setup should normalize 127.0.1.1 for $case_name"
+}
+
+run_hosts_entry_case "already-umbrel-stale-hosts" "umbrel" $'127.0.0.1\tlocalhost\n127.0.1.1\toldname'
+run_hosts_entry_case "drifted-hostname" "oldname" $'127.0.0.1\tlocalhost\n127.0.1.1\toldname'
+run_hosts_entry_case "missing-1270011" "oldname" $'127.0.0.1\tlocalhost'
+pass "Hostname stays fixed to the umbrel.local access path"
+
 printf '[unit] installer device-level PCI remove + rescan dry-run\n'
 DRY_RUN=1
 set +e
@@ -256,6 +295,111 @@ assert_contains "$installer_text" 'clear_preinstall_resume_state
 
 info "Done."' 'Resume artifacts should be cleared only after install state is written and the run completes'
 pass "Resume service uses infinite timeout and deferred cleanup"
+
+printf '[unit] installer waits for apt locks to clear\n'
+DRY_RUN=0
+APT_LOCK_FILES=("$TEST_TMPDIR/dpkg-lock-frontend")
+: > "${APT_LOCK_FILES[0]}"
+FUSER_CALLS_FILE="$TEST_TMPDIR/fuser-calls"
+SLEEP_CALLS_FILE="$TEST_TMPDIR/sleep-calls"
+printf '0\n' > "$FUSER_CALLS_FILE"
+printf '0\n' > "$SLEEP_CALLS_FILE"
+fuser() {
+  local calls
+  calls="$(<"$FUSER_CALLS_FILE")"
+  calls=$((calls + 1))
+  printf '%s\n' "$calls" > "$FUSER_CALLS_FILE"
+  if [[ "$calls" -eq 1 ]]; then
+    printf '3445\n'
+  fi
+}
+sleep() {
+  local calls
+  calls="$(<"$SLEEP_CALLS_FILE")"
+  calls=$((calls + 1))
+  printf '%s\n' "$calls" > "$SLEEP_CALLS_FILE"
+}
+set +e
+apt_lock_output="$(wait_for_apt_locks 2>&1)"
+apt_lock_status=$?
+set -e
+assert_eq "0" "$apt_lock_status" "wait_for_apt_locks should continue once the lock holder is gone"
+assert_eq "2" "$(<"$FUSER_CALLS_FILE")" "wait_for_apt_locks should re-check the lock after sleeping"
+assert_eq "1" "$(<"$SLEEP_CALLS_FILE")" "wait_for_apt_locks should sleep while a lock holder is present"
+assert_contains "$apt_lock_output" "Another process is holding apt/dpkg locks" "wait_for_apt_locks should explain the automatic wait"
+pass "Installer waits for transient apt locks without user input"
+
+printf '[unit] installer apt automation pause and restore\n'
+APT_AUTOMATION_PAUSED=0
+APT_AUTOMATION_RESTORE_UNITS=()
+DRY_RUN=0
+SYSTEMCTL_LOG="$TEST_TMPDIR/systemctl-apt-automation.log"
+: > "$SYSTEMCTL_LOG"
+systemd_unit_exists() {
+  case "$1" in
+    apt-daily.timer|apt-daily-upgrade.timer|apt-daily.service|apt-daily-upgrade.service|unattended-upgrades.service)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+systemctl() {
+  case "$1" in
+    is-active)
+      if [[ "$2" == "--quiet" ]]; then
+        case "$3" in
+          apt-daily.timer|apt-daily-upgrade.timer|unattended-upgrades.service)
+            return 0
+            ;;
+          *)
+            return 3
+            ;;
+        esac
+      fi
+      ;;
+    stop|start)
+      printf '%s %s\n' "$1" "$2" >> "$SYSTEMCTL_LOG"
+      return 0
+      ;;
+  esac
+  return 0
+}
+pause_apt_automation
+assert_eq "1" "$APT_AUTOMATION_PAUSED" "pause_apt_automation should mark apt automation as paused"
+assert_eq "apt-daily.timer apt-daily-upgrade.timer unattended-upgrades.service" "${APT_AUTOMATION_RESTORE_UNITS[*]}" "pause_apt_automation should remember only units active before pausing"
+apt_pause_log="$(<"$SYSTEMCTL_LOG")"
+assert_contains "$apt_pause_log" "stop apt-daily.timer" "pause_apt_automation should stop apt-daily.timer"
+assert_contains "$apt_pause_log" "stop apt-daily-upgrade.timer" "pause_apt_automation should stop apt-daily-upgrade.timer"
+assert_contains "$apt_pause_log" "stop unattended-upgrades.service" "pause_apt_automation should stop unattended-upgrades.service"
+resume_apt_automation
+apt_resume_log="$(<"$SYSTEMCTL_LOG")"
+assert_contains "$apt_resume_log" "start apt-daily.timer" "resume_apt_automation should restore apt-daily.timer when it was previously active"
+assert_contains "$apt_resume_log" "start apt-daily-upgrade.timer" "resume_apt_automation should restore apt-daily-upgrade.timer when it was previously active"
+assert_contains "$apt_resume_log" "start unattended-upgrades.service" "resume_apt_automation should restore unattended-upgrades.service when it was previously active"
+assert_not_contains "$apt_resume_log" "start apt-daily.service" "resume_apt_automation should not start inactive apt-daily.service"
+assert_eq "0" "$APT_AUTOMATION_PAUSED" "resume_apt_automation should clear the paused marker"
+: > "$SYSTEMCTL_LOG"
+pause_apt_automation
+set +e
+false
+cleanup_on_exit
+cleanup_status=$?
+set -e
+cleanup_log="$(<"$SYSTEMCTL_LOG")"
+assert_eq "1" "$cleanup_status" "cleanup_on_exit should preserve the failing command exit status"
+assert_contains "$cleanup_log" "start apt-daily.timer" "cleanup_on_exit should restore apt automation after installer failure"
+assert_contains "$cleanup_log" "start unattended-upgrades.service" "cleanup_on_exit should restore unattended-upgrades after installer failure"
+installer_text="$(<scripts/m1s-clean-install-umbrel.sh)"
+assert_contains "$installer_text" 'wait_for_apt_locks
+pause_apt_automation
+wait_for_apt_locks' 'Installer should wait, pause apt automation, then confirm locks are still clear before apt work'
+assert_contains "$installer_text" 'wait_for_apt_locks
+  apt-get -o DPkg::Lock::Timeout=300 update
+  wait_for_apt_locks
+  DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 install -y' 'Docker install should re-check apt locks between update and install'
+pass "Installer pauses apt automation without adding user prompts and restores prior active units"
 
 printf '[unit] installer single-NVMe auto-select\n'
 TARGET_INPUT=""

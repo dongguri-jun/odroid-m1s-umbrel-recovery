@@ -37,6 +37,16 @@ PRESERVED_PATHS=(
   /etc/systemd/system/nvme-timeout-snapshot.timer
   /etc/systemd/system/m1s-umbrel-autostart.service
 )
+APT_LOCK_FILES=(/var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock)
+APT_AUTOMATION_UNITS=(
+  apt-daily.timer
+  apt-daily-upgrade.timer
+  apt-daily.service
+  apt-daily-upgrade.service
+  unattended-upgrades.service
+)
+APT_AUTOMATION_RESTORE_UNITS=()
+APT_AUTOMATION_PAUSED=0
 ORIGINAL_ARGS=("$@")
 SCRIPT_PATH_ABS=""
 
@@ -110,7 +120,7 @@ wait_for_apt_locks() {
     echo "[DRY-RUN] wait for apt/dpkg locks to be released"
     return 0
   fi
-  local locks=(/var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock)
+  local locks=("${APT_LOCK_FILES[@]}")
   local max_wait=900   # 15 minutes
   local waited=0
   local printed_notice=0
@@ -140,10 +150,67 @@ wait_for_apt_locks() {
     fi
   done
   err "apt/dpkg locks were still held after 15 minutes."
-  err "The most common cause is unattended-upgrades running a long upgrade."
-  err "You can check with:  ps -ef | grep -i unattended"
-  err "Rerun this script after the update finishes, or stop the upgrade manually."
+  err "The most common cause is Ubuntu automatic updates still running."
+  err "Wait for the update to finish, then rerun this installer."
+  err "Do not delete apt/dpkg lock files or kill package-manager processes just to bypass this wait."
+  err "If this repeats, keep a photo or copy of this output and ask for help."
   exit 1
+}
+
+systemd_unit_exists() {
+  local unit="$1"
+  systemctl list-unit-files "$unit" --no-legend >/dev/null 2>&1 || systemctl status "$unit" >/dev/null 2>&1
+}
+
+pause_apt_automation() {
+  if [[ "$APT_AUTOMATION_PAUSED" -eq 1 ]]; then
+    return 0
+  fi
+  APT_AUTOMATION_PAUSED=1
+
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    echo "[DRY-RUN] temporarily stop apt automation units during installer apt operations"
+    return 0
+  fi
+  command -v systemctl >/dev/null 2>&1 || return 0
+
+  local unit
+  APT_AUTOMATION_RESTORE_UNITS=()
+  for unit in "${APT_AUTOMATION_UNITS[@]}"; do
+    systemd_unit_exists "$unit" || continue
+    if systemctl is-active --quiet "$unit"; then
+      APT_AUTOMATION_RESTORE_UNITS+=("$unit")
+    fi
+  done
+
+  for unit in "${APT_AUTOMATION_UNITS[@]}"; do
+    systemd_unit_exists "$unit" || continue
+    systemctl stop "$unit" >/dev/null 2>&1 || true
+  done
+}
+
+resume_apt_automation() {
+  [[ "$APT_AUTOMATION_PAUSED" -eq 1 ]] || return 0
+  APT_AUTOMATION_PAUSED=0
+
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    echo "[DRY-RUN] restore apt automation units that were active before installer apt operations"
+    return 0
+  fi
+  command -v systemctl >/dev/null 2>&1 || return 0
+
+  local unit
+  for unit in "${APT_AUTOMATION_RESTORE_UNITS[@]}"; do
+    systemd_unit_exists "$unit" || continue
+    systemctl start "$unit" >/dev/null 2>&1 || warn "Failed to restore apt automation unit: $unit"
+  done
+  APT_AUTOMATION_RESTORE_UNITS=()
+}
+
+cleanup_on_exit() {
+  local exit_code=$?
+  resume_apt_automation
+  return "$exit_code"
 }
 
 service_exists() {
@@ -1429,6 +1496,8 @@ if [[ "${M1S_INSTALLER_LIB_ONLY:-0}" == "1" ]]; then
   return 0 2>/dev/null || exit 0
 fi
 
+trap cleanup_on_exit EXIT
+
 if [[ "${EUID}" -ne 0 ]]; then
   err "Run this script with sudo or as root."
   exit 1
@@ -1649,8 +1718,11 @@ if [[ "$AUTO_RESUME_INSTALL" -ne 1 ]]; then
 fi
 
 # Make sure unattended-upgrades or any other apt consumer is not holding the
-# dpkg lock. If we continue while the lock is held, the Docker install step
-# (which shells out to `apt-get`) will fail midway.
+# dpkg lock. If we continue while the lock is held, apt purge/update/install
+# operations can fail midway. After the current apt operation finishes, pause
+# apt automation so it cannot reacquire the lock during this install run.
+wait_for_apt_locks
+pause_apt_automation
 wait_for_apt_locks
 
 PRESERVED_SERVICES=(
@@ -2175,7 +2247,9 @@ install_docker_engine_from_official_apt_repo() {
   printf 'deb [arch=%s signed-by=%s] https://download.docker.com/linux/ubuntu %s stable\n' \
     "$docker_arch" "$docker_keyring" "$docker_codename" > "$docker_list"
   chmod 0644 "$docker_list"
+  wait_for_apt_locks
   apt-get -o DPkg::Lock::Timeout=300 update
+  wait_for_apt_locks
   DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 install -y \
     docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 }
@@ -2184,7 +2258,10 @@ info "Installing fresh Docker from Docker's official apt repository"
 if ! install_docker_engine_from_official_apt_repo; then
   err "Docker installation failed."
   err "The SSD has already been formatted and mounted at $DATA_DIR."
-  err "To retry Docker installation only, configure Docker's official Ubuntu apt repository and install:"
+  err "If you are following the public guide, wait a moment and rerun the same installer command first."
+  err "Do not delete apt/dpkg lock files or kill unattended-upgrades manually unless you know exactly why."
+  err "If the same error repeats, keep a photo or copy of this output and ask for help."
+  err "Advanced recovery only: to retry Docker installation without rerunning the installer, configure Docker's official Ubuntu apt repository and install:"
   err "  sudo apt-get -o DPkg::Lock::Timeout=300 install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin"
   err "Then start Umbrel manually:"
   err "  sudo docker run -d --name umbrel --restart always -p 80:80 -v $DATA_DIR:/data -v /var/run/docker.sock:/var/run/docker.sock --stop-timeout 60 --pid=host --privileged $IMAGE"

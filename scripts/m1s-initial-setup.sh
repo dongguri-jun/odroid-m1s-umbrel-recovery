@@ -2,16 +2,17 @@
 set -Eeuo pipefail
 
 # ODROID M1S Initial Setup
-# Umbrel 설치 후 실행: 새 계정 생성 + 호스트 이름 변경 + (선택) 기존 계정 삭제
+# Run after Umbrel install: create a new user and keep hostname fixed to umbrel
 #
-# 사용법:
+# Usage:
 #   sudo bash m1s-initial-setup.sh
 #   sudo bash m1s-initial-setup.sh --dry-run
 #   sudo bash m1s-initial-setup.sh --version
 
 SCRIPT_VERSION="0.5.20"
 DRY_RUN=0
-NEW_HOSTNAME="odroid"
+FIXED_HOSTNAME="umbrel"
+HOSTS_FILE="${HOSTS_FILE:-/etc/hosts}"
 
 log() {
   printf '[%s] %s\n' "$1" "$2"
@@ -33,9 +34,29 @@ run_cmd() {
   "$@"
 }
 
+update_fixed_hostname_hosts() {
+  local current_hostname="$1"
+  local fixed_hostname="$2"
+
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    echo "[DRY-RUN] $HOSTS_FILE: ensure 127.0.1.1 maps to '$fixed_hostname'"
+    return 0
+  fi
+
+  if grep -qE '^127\.0\.1\.1[[:space:]]' "$HOSTS_FILE"; then
+    sed -i "s/^127\.0\.1\.1[[:space:]].*/127.0.1.1\t$fixed_hostname/" "$HOSTS_FILE"
+  else
+    printf '127.0.1.1\t%s\n' "$fixed_hostname" >> "$HOSTS_FILE"
+  fi
+
+  # If the old hostname was present only as a secondary alias on a different line,
+  # leave it alone. This helper owns only the Debian-style 127.0.1.1 host entry.
+  : "$current_hostname"
+}
+
 usage() {
   cat <<'EOF'
-ODROID M1S Initial Setup — 새 사용자 계정 생성 + 호스트 이름 변경
+ODROID M1S Initial Setup - create a new user
 
 Usage:
   sudo bash m1s-initial-setup.sh [options]
@@ -45,223 +66,198 @@ Options:
   --version    Print script version and exit
   -h, --help   Show this help
 
-이 스크립트는 Umbrel 설치 스크립트(m1s-clean-install-umbrel.sh) 실행 후에 사용합니다.
+Run this script after m1s-clean-install-umbrel.sh finishes.
 
-스크립트가 하는 일:
-  1. 새 사용자 계정을 만들고 sudo/docker 권한을 부여합니다.
-  2. 호스트 이름을 변경합니다 (기본값: odroid).
-  3. 새 계정으로 재로그인 후, 기존 계정을 삭제하는 방법을 안내합니다.
+What this script does:
+  1. Creates a new user account and grants sudo/docker permissions.
+  2. Keeps the hostname fixed to umbrel for http://umbrel.local access.
+  3. Tells you how to log in again and remove the old account if needed.
 EOF
 }
 
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --dry-run)
-      DRY_RUN=1
-      ;;
-    --version)
-      printf '%s\n' "$SCRIPT_VERSION"
-      exit 0
-      ;;
-    -h|--help)
-      usage
-      exit 0
-      ;;
-    *)
-      err "Unknown argument: $1"
-      usage
-      exit 1
-      ;;
-  esac
-  shift
-done
+main() {
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --dry-run)
+        DRY_RUN=1
+        ;;
+      --version)
+        printf '%s\n' "$SCRIPT_VERSION"
+        exit 0
+        ;;
+      -h|--help)
+        usage
+        exit 0
+        ;;
+      *)
+        err "Unknown argument: $1"
+        usage
+        exit 1
+        ;;
+    esac
+    shift
+  done
 
-if [[ "${EUID}" -ne 0 ]]; then
-  err "이 스크립트는 sudo 또는 root로 실행해야 합니다."
-  err "예: sudo bash m1s-initial-setup.sh"
-  exit 1
-fi
-
-CURRENT_USER="${SUDO_USER:-}"
-if [[ -z "$CURRENT_USER" || "$CURRENT_USER" == "root" ]]; then
-  err "sudo를 통해 실행해 주세요. (예: sudo bash m1s-initial-setup.sh)"
-  err "root로 직접 로그인한 상태에서는 현재 사용자를 판별할 수 없습니다."
-  exit 1
-fi
-
-CURRENT_HOSTNAME="$(hostname)"
-
-echo
-echo "=== ODROID M1S 초기 설정 ==="
-echo "현재 사용자:   $CURRENT_USER"
-echo "현재 호스트명: $CURRENT_HOSTNAME"
-echo
-
-# ─── 1. 새 사용자 이름 입력 ───
-
-while true; do
-  read -r -p "새 사용자 이름을 입력하세요: " NEW_USER
-
-  if [[ -z "$NEW_USER" ]]; then
-    warn "사용자 이름을 입력해 주세요."
-    continue
+  if [[ "${EUID}" -ne 0 ]]; then
+    err "Run this script with sudo or as root."
+    err "Example: sudo bash m1s-initial-setup.sh"
+    exit 1
   fi
 
-  # 유효한 리눅스 사용자 이름인지 확인 (소문자, 숫자, 하이픈, 언더스코어)
-  if [[ ! "$NEW_USER" =~ ^[a-z_][a-z0-9_-]*$ ]]; then
-    warn "사용자 이름은 영문 소문자, 숫자, 하이픈(-), 언더스코어(_)만 사용할 수 있습니다."
-    warn "첫 글자는 소문자 또는 언더스코어여야 합니다."
-    continue
+  local current_user="${SUDO_USER:-}"
+  if [[ -z "$current_user" || "$current_user" == "root" ]]; then
+    err "Run this through sudo. Example: sudo bash m1s-initial-setup.sh"
+    err "The current user cannot be detected when logged in directly as root."
+    exit 1
   fi
 
-  if [[ ${#NEW_USER} -gt 32 ]]; then
-    warn "사용자 이름은 32자 이하여야 합니다."
-    continue
-  fi
+  local current_hostname
+  current_hostname="$(hostname)"
 
-  if [[ "$NEW_USER" == "$CURRENT_USER" ]]; then
-    warn "'$NEW_USER'는 현재 사용 중인 계정과 같습니다. 다른 이름을 입력해 주세요."
-    continue
-  fi
-
-  if id "$NEW_USER" >/dev/null 2>&1; then
-    warn "'$NEW_USER' 계정이 이미 존재합니다. 다른 이름을 입력해 주세요."
-    continue
-  fi
-
-  break
-done
-
-# ─── 2. 비밀번호 입력 ───
-
-while true; do
-  read -r -s -p "새 비밀번호: " NEW_PASS
+  echo
+  echo "=== ODROID M1S Initial Setup ==="
+  echo "Current user:     $current_user"
+  echo "Current hostname: $current_hostname"
   echo
 
-  if [[ -z "$NEW_PASS" ]]; then
-    warn "비밀번호를 입력해 주세요."
-    continue
-  fi
+  local new_user=""
+  local new_pass=""
+  local new_pass_confirm=""
+  local confirm=""
 
-  if [[ ${#NEW_PASS} -lt 4 ]]; then
-    warn "비밀번호는 최소 4자 이상이어야 합니다."
-    continue
-  fi
+  # Step 1: new username
+  while true; do
+    read -r -p "Enter new username: " new_user
 
-  read -r -s -p "비밀번호 확인: " NEW_PASS_CONFIRM
+    if [[ -z "$new_user" ]]; then
+      warn "Enter a username."
+      continue
+    fi
+
+    # Validate Linux username: lowercase letters, numbers, hyphen, underscore
+    if [[ ! "$new_user" =~ ^[a-z_][a-z0-9_-]*$ ]]; then
+      warn "Username may only use lowercase letters, numbers, hyphen (-), and underscore (_)."
+      warn "The first character must be a lowercase letter or underscore."
+      continue
+    fi
+
+    if [[ ${#new_user} -gt 32 ]]; then
+      warn "Username must be 32 characters or shorter."
+      continue
+    fi
+
+    if [[ "$new_user" == "$current_user" ]]; then
+      warn "'$new_user' is the current account. Enter a different username."
+      continue
+    fi
+
+    if id "$new_user" >/dev/null 2>&1; then
+      warn "Account '$new_user' already exists. Enter a different username."
+      continue
+    fi
+
+    break
+  done
+
+  # Step 2: password
+  while true; do
+    read -r -s -p "New password: " new_pass
+    echo
+
+    if [[ -z "$new_pass" ]]; then
+      warn "Enter a password."
+      continue
+    fi
+
+    if [[ ${#new_pass} -lt 4 ]]; then
+      warn "Password must be at least 4 characters."
+      continue
+    fi
+
+    read -r -s -p "Confirm password: " new_pass_confirm
+    echo
+
+    if [[ "$new_pass" != "$new_pass_confirm" ]]; then
+      warn "Passwords do not match. Try again."
+      continue
+    fi
+
+    break
+  done
+
+  # Step 3: summary and confirmation
+  echo
+  echo "=== Change summary ==="
+  echo "New user:         $new_user"
+  echo "Hostname:         $FIXED_HOSTNAME (fixed for umbrel.local)"
+  echo "Current user:     $current_user (not removed now)"
   echo
 
-  if [[ "$NEW_PASS" != "$NEW_PASS_CONFIRM" ]]; then
-    warn "비밀번호가 일치하지 않습니다. 다시 입력해 주세요."
-    continue
-  fi
-
-  break
-done
-
-# ─── 3. 호스트 이름 입력 ───
-
-echo
-read -r -p "새 호스트 이름 [odroid]: " INPUT_HOSTNAME
-if [[ -n "$INPUT_HOSTNAME" ]]; then
-  NEW_HOSTNAME="$INPUT_HOSTNAME"
-fi
-
-# 유효한 호스트 이름인지 확인
-if [[ ! "$NEW_HOSTNAME" =~ ^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$ ]]; then
-  err "호스트 이름은 영문, 숫자, 하이픈(-)만 사용할 수 있고, 하이픈으로 시작/끝날 수 없습니다."
-  exit 1
-fi
-
-if [[ ${#NEW_HOSTNAME} -gt 63 ]]; then
-  err "호스트 이름은 63자 이하여야 합니다."
-  exit 1
-fi
-
-# ─── 4. 요약 및 확인 ───
-
-echo
-echo "=== 변경 요약 ==="
-echo "새 사용자:     $NEW_USER"
-echo "새 호스트명:   $NEW_HOSTNAME"
-echo "현재 사용자:   $CURRENT_USER (지금은 삭제하지 않습니다)"
-echo
-
-if [[ "$DRY_RUN" -eq 1 ]]; then
-  echo "[DRY-RUN 모드] 실제 변경은 수행하지 않습니다."
-  echo
-fi
-
-read -r -p "진행하시겠습니까? [y/N]: " CONFIRM
-if [[ "$CONFIRM" != "y" && "$CONFIRM" != "Y" ]]; then
-  echo "취소되었습니다."
-  exit 0
-fi
-
-echo
-
-# ─── 5. 새 사용자 생성 ───
-
-info "새 사용자 '$NEW_USER' 생성 중..."
-run_cmd useradd -m -s /bin/bash "$NEW_USER"
-
-info "비밀번호 설정 중..."
-if [[ "$DRY_RUN" -eq 1 ]]; then
-  echo "[DRY-RUN] chpasswd (password hidden)"
-else
-  printf '%s:%s\n' "$NEW_USER" "$NEW_PASS" | chpasswd
-fi
-
-info "sudo 그룹에 추가 중..."
-run_cmd usermod -aG sudo "$NEW_USER"
-
-if getent group docker >/dev/null 2>&1; then
-  info "docker 그룹에 추가 중..."
-  run_cmd usermod -aG docker "$NEW_USER"
-fi
-
-# ─── 6. 호스트 이름 변경 ───
-
-if [[ "$NEW_HOSTNAME" != "$CURRENT_HOSTNAME" ]]; then
-  info "호스트 이름을 '$NEW_HOSTNAME'(으)로 변경 중..."
-  run_cmd hostnamectl set-hostname "$NEW_HOSTNAME"
-
-  # /etc/hosts 업데이트
   if [[ "$DRY_RUN" -eq 1 ]]; then
-    echo "[DRY-RUN] /etc/hosts: '$CURRENT_HOSTNAME' → '$NEW_HOSTNAME'"
-  else
-    if grep -q "$CURRENT_HOSTNAME" /etc/hosts; then
-      sed -i "s/$CURRENT_HOSTNAME/$NEW_HOSTNAME/g" /etc/hosts
-    fi
-    # 127.0.1.1 엔트리가 없으면 추가
-    if ! grep -q "127.0.1.1" /etc/hosts; then
-      printf '127.0.1.1\t%s\n' "$NEW_HOSTNAME" >> /etc/hosts
-    fi
+    echo "[DRY-RUN mode] No real changes will be made."
+    echo
   fi
-else
-  info "호스트 이름이 이미 '$NEW_HOSTNAME'입니다. 변경하지 않습니다."
-fi
 
-# ─── 7. 완료 안내 ───
+  read -r -p "Continue? [y/N]: " confirm
+  if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
+    echo "Cancelled."
+    exit 0
+  fi
 
-echo
-echo "========================================="
-echo "  초기 설정 완료!"
-echo "========================================="
-echo
-echo "새 계정 '$NEW_USER'가 생성되었습니다."
-echo "호스트 이름: $NEW_HOSTNAME"
-echo
-echo "다음 단계:"
-echo "  1. 지금 로그아웃하세요: exit"
-echo "  2. 새 계정으로 로그인하세요: $NEW_USER"
-echo "  3. 기존 계정 '$CURRENT_USER'를 삭제하려면 다음을 실행하세요:"
-echo
-echo "     sudo userdel -r $CURRENT_USER"
-echo
-echo "  주의: 기존 계정의 홈 디렉터리(/home/$CURRENT_USER)도 함께 삭제됩니다."
-echo "  필요한 파일이 있다면 삭제 전에 미리 복사해 두세요."
-echo
-if [[ "$DRY_RUN" -eq 1 ]]; then
-  echo "[DRY-RUN] 위 내용은 모두 시뮬레이션입니다. 실제 변경은 없었습니다."
+  echo
+
+  # Step 4: create new user
+  info "Creating new user '$new_user'..."
+  run_cmd useradd -m -s /bin/bash "$new_user"
+
+  info "Setting password..."
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    echo "[DRY-RUN] chpasswd (password hidden)"
+  else
+    printf '%s:%s\n' "$new_user" "$new_pass" | chpasswd
+  fi
+
+  info "Adding user to sudo group..."
+  run_cmd usermod -aG sudo "$new_user"
+
+  if getent group docker >/dev/null 2>&1; then
+    info "Adding user to docker group..."
+    run_cmd usermod -aG docker "$new_user"
+  fi
+
+  # Step 5: keep hostname fixed for umbrel.local
+  if [[ "$FIXED_HOSTNAME" != "$current_hostname" ]]; then
+    info "Setting hostname to '$FIXED_HOSTNAME' for umbrel.local access..."
+    run_cmd hostnamectl set-hostname "$FIXED_HOSTNAME"
+  else
+    info "Hostname is already '$FIXED_HOSTNAME'. No change needed."
+  fi
+  update_fixed_hostname_hosts "$current_hostname" "$FIXED_HOSTNAME"
+
+  # Step 6: completion guidance
+  echo
+  echo "========================================="
+  echo "  Initial setup complete!"
+  echo "========================================="
+  echo
+  echo "New account '$new_user' was created."
+  echo "Hostname: $FIXED_HOSTNAME"
+  echo
+  echo "Next steps:"
+  echo "  1. Log out now: exit"
+  echo "  2. Log in again as the new user: $new_user"
+  echo "  3. To remove the old account '$current_user', run:"
+  echo
+  echo "     sudo userdel -r $current_user"
+  echo
+  echo "  Warning: this also deletes the old home directory (/home/$current_user)."
+  echo "  Copy any needed files before deleting the old account."
+  echo
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    echo "[DRY-RUN] This was only a simulation. No real changes were made."
+  fi
+}
+
+if [[ "${M1S_INITIAL_SETUP_LIB_ONLY:-0}" != "1" ]]; then
+  main "$@"
 fi
