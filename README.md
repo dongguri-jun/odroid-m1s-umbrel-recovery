@@ -763,9 +763,34 @@ http://umbrel.local
 
 Bitcoin 노드가 IBD(초기 블록 다운로드), 블록 다운로드, 리인덱스, 복구 작업을 하는 중이라면 이 스크립트가 컨테이너를 안전하게 멈추기는 하지만, 작업 자체는 중간에 끊깁니다. 가능하면 그런 작업이 한창 진행 중이 아닐 때 실행하세요.
 
-### 14-1. 터미널에서 직접 하는 방법
+### 14-1. Umbrel 웹 화면 안의 고급 설정 터미널에서 하는 방법 (추천)
 
-ODROID M1S에 SSH로 접속했거나, 모니터와 키보드로 직접 로그인한 경우에는 아래 명령을 위에서부터 차례로 입력하세요.
+이미 Umbrel 웹 화면에 접속할 수 있다면, 웹 화면 안의 Terminal에서 진행하는 방법이 가장 쉽습니다.
+
+순서는 다음과 같습니다.
+
+1. Umbrel 웹 화면에 로그인합니다.
+2. **Settings → Advanced settings → Terminal** 로 이동합니다. 한국어 화면에서는 **설정 → 고급 설정 → 터미널** 로 보일 수 있습니다.
+3. 터미널이 열리면 먼저 아래 명령으로 호스트 쉘에 들어갑니다.
+
+```bash
+sudo nsenter -t 1 -m -u -i -n -p -- bash
+```
+
+프롬프트가 `root@umbrel:/#` 형태로 바뀌면 아래 명령을 차례대로 입력합니다.
+
+```bash
+cd /home/*/odroid-m1s-umbrel-recovery
+sudo git -c safe.directory="$(pwd)" fetch https://github.com/dongguri-jun/odroid-m1s-umbrel-recovery.git main
+sudo git -c safe.directory="$(pwd)" reset --hard FETCH_HEAD
+sudo bash scripts/m1s-update-system-packages.sh
+```
+
+스크립트가 재부팅을 실행하면 웹 터미널 연결이 끊기는 것이 정상입니다. 장비가 다시 켜질 때까지 1~3분 정도 기다린 뒤 `http://umbrel.local` 또는 장비 IP 주소로 다시 접속하세요.
+
+### 14-2. SSH나 직접 연결한 터미널에서 하는 방법 (고급)
+
+ODROID M1S에 SSH로 접속할 수 있거나, 모니터와 키보드로 직접 로그인한 경우에는 아래 명령을 위에서부터 차례로 입력해도 됩니다.
 
 ```bash
 cd /home/*/odroid-m1s-umbrel-recovery
@@ -788,31 +813,6 @@ http://umbrel.local
 ```
 
 `umbrel.local`이 열리지 않으면 Fing 앱이나 공유기 화면에서 ODROID M1S의 IP 주소를 확인한 뒤 `http://<장비 IP>`로 접속하면 됩니다.
-
-### 14-2. Umbrel 웹 화면 안의 고급 설정 터미널에서 하는 방법
-
-SSH를 쓰기 어렵다면 Umbrel 웹 화면 안의 Terminal에서도 같은 작업을 할 수 있습니다.
-
-순서는 다음과 같습니다.
-
-1. Umbrel 웹 화면에 로그인합니다.
-2. **Settings → Advanced settings → Terminal** 로 이동합니다. 한국어 화면에서는 **설정 → 고급 설정 → 터미널** 로 보일 수 있습니다.
-3. 터미널이 열리면 먼저 아래 명령으로 호스트 쉘에 들어갑니다.
-
-```bash
-sudo nsenter -t 1 -m -u -i -n -p -- bash
-```
-
-프롬프트가 `root@umbrel:/#` 형태로 바뀌면 아래 명령을 차례대로 입력합니다.
-
-```bash
-cd /home/*/odroid-m1s-umbrel-recovery
-sudo git -c safe.directory="$(pwd)" fetch https://github.com/dongguri-jun/odroid-m1s-umbrel-recovery.git main
-sudo git -c safe.directory="$(pwd)" reset --hard FETCH_HEAD
-sudo bash scripts/m1s-update-system-packages.sh
-```
-
-스크립트가 재부팅을 실행하면 웹 터미널 연결이 끊기는 것이 정상입니다. 장비가 다시 켜질 때까지 1~3분 정도 기다린 뒤 `http://umbrel.local` 또는 장비 IP 주소로 다시 접속하세요.
 
 주의할 점은 다음과 같습니다.
 
