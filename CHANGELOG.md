@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.24
+
+- Normalize the Korean README Bitcoin recovery subsection headings from `1)` / `2)` style to the repository's `12-1` / `12-2` numbered heading style.
+- Add a no-op `0.5.23_to_0.5.24` updater history step so existing installations can record this guide update without changing Umbrel data.
+
 ## 0.5.23
 
 - Reorder the Korean README system-package update section so the Umbrel web Terminal path is presented first as the recommended method, followed by SSH/direct terminal as the advanced path.

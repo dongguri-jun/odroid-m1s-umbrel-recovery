@@ -470,7 +470,7 @@ sudo git -c safe.directory="$(pwd)" reset --hard FETCH_HEAD
 
 Bitcoin 노드가 갑자기 멈추거나 연결이 끊겼을 때, 아래 순서로 진행합니다.
 
-### 1) 공용 헬스체크와 오류 로그를 먼저 모으기
+### 12-1. 공용 헬스체크와 오류 로그를 먼저 모으기
 
 복구 명령을 바로 실행하기 전에, 먼저 아래 공용 헬스체크 명령으로 현재 상태를 확인하세요.
 
@@ -525,7 +525,7 @@ sudo bash scripts/m1s-check-bitcoin-recovery-status.sh
 - **reindex** — blocks는 유지하되 index/chainstate를 더 크게 다시 훑을 때
 - **full resync** — 모든 데이터를 지우고 처음부터 다시 받을 때 (가장 마지막 수단)
 
-### 2) Umbrel 웹 Terminal에서 복구 명령 실행하기 (추천)
+### 12-2. Umbrel 웹 Terminal에서 복구 명령 실행하기 (추천)
 
 이미 Umbrel 웹 화면에 접속할 수 있다면, 웹 화면 안의 Terminal에서 진행하는 방법이 가장 쉽습니다.
 
@@ -562,7 +562,7 @@ sudo bash scripts/m1s-start-bitcoin-full-resync.sh
 sudo bash scripts/m1s-check-bitcoin-recovery-status.sh
 ```
 
-### 3) SSH나 직접 연결한 터미널에서 복구 명령 실행하기 (고급)
+### 12-3. SSH나 직접 연결한 터미널에서 복구 명령 실행하기 (고급)
 
 ODROID M1S에 SSH로 접속할 수 있거나, 모니터와 키보드로 직접 로그인한 경우에는 아래 방식으로 진행해도 됩니다. 먼저 위 **11번의 최신 업데이트 방법**으로 저장소와 스크립트를 최신 상태로 맞춘 뒤, AI가 추천한 복구 방식에 맞는 명령을 아래 3가지 중에서 고르세요.
 
@@ -587,7 +587,7 @@ sudo bash scripts/m1s-start-bitcoin-full-resync.sh
 sudo bash scripts/m1s-check-bitcoin-recovery-status.sh
 ```
 
-### 4) 헬스체크 출력 읽는 법
+### 12-4. 헬스체크 출력 읽는 법
 
 1번의 공용 헬스체크는 복구 명령을 고르기 전에는 현재 상태 판단용으로, 복구를 시작한 뒤에는 진행 상태 확인용으로 사용합니다.
 
