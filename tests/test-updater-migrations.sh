@@ -211,6 +211,7 @@ assert_plan_from_version "0.5.13" "0.5.13_to_0.5.14"
 assert_plan_from_version "0.5.14" "0.5.14_to_0.5.15"
 assert_plan_from_version "0.5.15" "0.5.15_to_0.5.16"
 assert_plan_from_version "0.5.21" "0.5.21_to_0.5.22"
+assert_plan_from_version "0.5.22" "0.5.22_to_0.5.23"
 pass "build_migration_plan covers full, partial, and current installs"
 printf '[unit] install state transitions\n'
 with_test_state
