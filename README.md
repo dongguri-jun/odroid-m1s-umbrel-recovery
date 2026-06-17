@@ -10,7 +10,7 @@
 >
 > 본 가이드의 절차는 **저장장치(SSD)의 데이터를 모두 삭제**합니다. 설치 과정에서 디바이스 손상이나 데이터 손실이 발생할 수 있으니, 진행 전 **중요한 데이터는 반드시 백업**해 주세요. 본 가이드는 무상 자료이며, **설치 결과에 대한 책임은 사용자 본인에게 있습니다.**
 >
-> **전원 케이블을 바로 뽑지 마세요.** Bitcoin 노드가 실행 중일 때 전원을 갑자기 끄면 Bitcoin 데이터가 손상될 수 있습니다. 끌 때는 Umbrel 웹 화면에서 **Settings → Shut down** 또는 **설정 → 종료**를 누른 뒤 **“종료 완료 / 이제 디바이스 전원을 분리해도 좋습니다.”** 화면이 뜰 때까지 기다리세요. 자세한 내용은 아래 **11. 안전하게 종료하기**를 확인하세요.
+> **전원 케이블을 바로 뽑지 마세요.** Bitcoin 노드가 실행 중일 때 전원을 갑자기 끄면 Bitcoin 데이터가 손상될 수 있습니다. 끌 때는 Umbrel 웹 화면에서 **Settings → Shut down** 또는 **설정 → 종료**를 누른 뒤 **“종료 완료 / 이제 디바이스 전원을 분리해도 좋습니다.”** 화면이 뜰 때까지 기다리세요. 자세한 내용은 아래 **13. 안전하게 종료하기**를 확인하세요.
 
 ---
 
@@ -376,57 +376,158 @@ Umbrel 계정을 만든 뒤에는 App Store에서 **Bitcoin 노드 앱**을 설�
 
 발열이 낮아지면 스로틀링을 줄이는 데 도움이 될 수 있으므로, 경우에 따라 동기화가 더 안정적이고 빠르게 진행될 수 있습니다.
 
-## 10-1. Bitcoin 데이터 복구하기
+## 11. 운영 스크립트 업데이트 하기
+
+이 저장소에는 ODROID M1S에서 Umbrel을 더 안정적으로 쓰기 위한 **운영 스크립트**들이 들어 있습니다. 설치, 업데이트, 안전 종료, Bitcoin 복구 상태 확인처럼 실제 사용 중에 필요한 작업을 자동으로 처리해 주는 파일들입니다.
+
+사용자들이 겪는 여러 문제를 확인하면서, 이 운영 스크립트도 계속 업데이트하고 있습니다. 예를 들어 설치 후 접속이 잘 안 되는 문제, SSD 마운트 확인, Bitcoin 복구 상태 확인, 안전 종료 처리 같은 부분이 조금씩 개선될 수 있습니다.
+
+그래서 이미 설치가 끝난 장비라도, 시간이 될 때 아래 업데이트를 한 번씩 실행하는 것을 권장합니다. 업데이트하면 기존 데이터나 비밀번호를 지우지 않고, 최신 운영 스크립트와 필요한 수정 사항만 반영합니다. 지금 겪고 있는 문제가 최신 업데이트에서 이미 해결되어 있을 수도 있습니다.
+
+이미 Umbrel 웹 화면에 접속할 수 있다면, 아래 **11-1번의 웹 화면 방법**이 더 쉽습니다. SSH나 모니터/키보드로 직접 터미널에 들어갈 수 있는 분은 **11-2번**으로 진행해도 됩니다.
+
+### 11-1. 운영스크립트 Umbrel 웹 화면에서 업데이트하기 (추천)
+
+이 방법은 별도의 SSH 앱이나 모니터/키보드 없이, Umbrel 웹 화면 안의 Terminal에서 진행하는 방법입니다.
+
+순서는 다음과 같습니다.
+
+1. Umbrel 웹 화면에 로그인합니다.
+2. **Settings → Advanced settings → Terminal** 로 이동합니다. 한국어 화면에서는 **설정 → 고급 설정 → 터미널** 로 보일 수 있습니다.
+3. 터미널이 열리면, 가장 먼저 아래 한 줄을 입력합니다.
+
+```bash
+sudo nsenter -t 1 -m -u -i -n -p -- bash
+```
+
+이 명령은 **Umbrel 컨테이너 바깥(=ODROID M1S 호스트) 쉘**로 들어가는 명령입니다. 즉, SSH로 직접 접속한 것과 같은 위치에 들어간 셈이 됩니다.
+
+처음 한 번은 화면에 아래와 같이 비밀번호 입력 안내가 나옵니다.
+
+```text
+[sudo] password for umbrel:
+```
+
+여기에는 **Umbrel 웹 화면에 로그인할 때 사용하는 비밀번호**를 그대로 입력하면 됩니다. (입력 중에는 글자가 보이지 않는 것이 정상입니다.)
+
+비밀번호가 맞으면 프롬프트가 아래처럼 `root@umbrel:/#` 형태로 바뀝니다. 그러면 호스트 쉘로 들어간 상태입니다.
+
+```text
+root@umbrel:/#
+```
+
+이 상태에서는 아래 명령을 그대로 입력하면 됩니다. SSH로 접속했을 때와 동일한 명령 세트입니다.
+
+```bash
+cd /home/*/odroid-m1s-umbrel-recovery
+sudo git -c safe.directory="$(pwd)" fetch https://github.com/dongguri-jun/odroid-m1s-umbrel-recovery.git main
+sudo git -c safe.directory="$(pwd)" reset --hard FETCH_HEAD
+sudo bash scripts/m1s-update-umbrel.sh --check
+sudo bash scripts/m1s-update-umbrel.sh
+```
+
+작업이 끝나면 평소대로 터미널 창을 닫으면 됩니다. SSH로 진행할 때와 동일하게 데이터/비밀번호/앱은 그대로 유지됩니다.
+
+주의할 점은 다음과 같습니다.
+
+- 이 방법은 호스트 권한이 있는 쉘로 들어가는 명령이므로, **이 가이드 안에서 안내된 명령 외에 모르는 명령을 함부로 따라 입력하지 마세요.** 이건 SSH로 접속했을 때와 동일한 책임 범위입니다.
+- Umbrel/Docker 이미지의 향후 변경에 따라 이 방법이 동작하지 않을 수도 있습니다. 그런 경우에는 아래 11-2번의 SSH/직접 터미널 방식을 사용하면 됩니다.
+
+### 11-2. 운영스크립트 SSH나 직접 연결한 터미널에서 업데이트하기 (고급)
+
+ODROID M1S에 SSH로 접속할 수 있거나, 모니터와 키보드로 직접 로그인한 경우에는 아래 명령을 위에서부터 차례로 입력해도 됩니다.
+
+```bash
+cd /home/*/odroid-m1s-umbrel-recovery
+sudo git -c safe.directory="$(pwd)" fetch https://github.com/dongguri-jun/odroid-m1s-umbrel-recovery.git main
+sudo git -c safe.directory="$(pwd)" reset --hard FETCH_HEAD
+sudo bash scripts/m1s-update-umbrel.sh --check
+sudo bash scripts/m1s-update-umbrel.sh
+```
+
+각 줄이 하는 일:
+
+1. `cd /home/*/odroid-m1s-umbrel-recovery` — 처음 설치할 때 받아 둔 저장소 폴더로 이동합니다. 별표(`*`)는 "어떤 사용자 이름이든 자동으로 찾기"를 의미하므로, 사용자 이름을 직접 입력할 필요가 없습니다.
+2. `sudo git -c safe.directory="$(pwd)" fetch https://github.com/dongguri-jun/odroid-m1s-umbrel-recovery.git main` — 장비에 저장된 `origin` 설정을 믿지 않고, 공식 GitHub 저장소에서 최신 변경 내역을 직접 가져옵니다.
+3. `sudo git -c safe.directory="$(pwd)" reset --hard FETCH_HEAD` — 방금 공식 저장소에서 가져온 최신 파일 상태와 로컬 파일을 똑같이 맞춥니다. 이 과정에서 로컬의 업데이트 스크립트 자신도 최신 버전으로 교체됩니다.
+4. `sudo bash scripts/m1s-update-umbrel.sh --check` — 아무것도 바꾸지 않고 **현재 설치된 버전 · 최신 버전 · 적용될 수정 목록**만 보여 줍니다. 이미 최신이면 "No migrations needed" 처럼 안내됩니다.
+5. `sudo bash scripts/m1s-update-umbrel.sh` — 실제 업데이트를 적용합니다. 이미 최신이면 아무 작업 없이 끝납니다.
+
+만약 `--check` 결과의 `Script version` 이 `0.5.6` 이하로 나오고 바로 “No migrations needed” 로 끝나면, 그 장비에는 아직 자동 동기화 기능 자체가 없는 상태입니다. 이 경우에만 아래 두 줄을 **처음 한 번만** 실행한 뒤, 위 5줄을 다시 실행하세요.
+
+```bash
+sudo git -c safe.directory="$(pwd)" fetch https://github.com/dongguri-jun/odroid-m1s-umbrel-recovery.git main
+sudo git -c safe.directory="$(pwd)" reset --hard FETCH_HEAD
+```
+
+업데이트 중에는 Umbrel 화면이 잠시 열리지 않을 수 있습니다. 스크립트는 SSD가 `/mnt/fullnode`에 정상 연결되어 있는지 먼저 확인한 뒤, 기존 데이터 위치를 그대로 유지한 상태에서 필요한 부분만 갱신합니다.
+
+내부적으로는 현재 설치 버전에서 최신 버전까지 필요한 단계를 순서대로 적용합니다. 중간에 실패하면 성공한 단계까지만 기록한 뒤 멈추므로, 문제를 해결한 뒤 같은 명령을 다시 실행하면 안전하게 이어집니다.
+
+이미 있는 비밀번호, 앱 데이터, Bitcoin 노드 데이터는 건드리지 않고, 여러 번 실행해도 안전합니다.
+
+## 12. Bitcoin 데이터 복구하기
 
 Bitcoin 노드가 갑자기 멈추거나 연결이 끊겼을 때, 아래 순서로 진행합니다.
 
-### 1) 먼저 어떤 복구가 맞는지 판단하기
+### 1) 공용 헬스체크와 오류 로그를 먼저 모으기
 
-복구 방식은 3가지가 있습니다.
+복구 명령을 바로 실행하기 전에, 먼저 아래 공용 헬스체크 명령으로 현재 상태를 확인하세요.
 
-- **chainstate rebuild** — 블록 데이터는 살리고 chainstate만 다시 만들 때 (가장 먼저 시도)
-- **reindex** — blocks는 유지하되 index/chainstate를 더 크게 다시 훑을 때
-- **full resync** — 모든 데이터를 지우고 처음부터 다시 받을 때 (가장 마지막 수단)
+**Umbrel 웹 Terminal에서 입력하는 방법 (추천)**
 
-잘 모르겠다면 Bitcoin/Umbrel 오류 로그를 AI에게 복사해서 붙여 넣고 아래처럼 물어보세요.
+1. Umbrel 웹 화면에 로그인합니다.
+2. **Settings → Advanced settings → Terminal** 로 이동합니다. 한국어 화면에서는 **설정 → 고급 설정 → 터미널** 로 보일 수 있습니다.
+3. 터미널이 열리면 먼저 아래 명령으로 host shell에 들어갑니다.
+
+```bash
+sudo nsenter -t 1 -m -u -i -n -p -- bash
+```
+
+프롬프트가 `root@umbrel:/#` 형태로 바뀌면, 아래 공용 헬스체크 명령을 입력합니다.
+
+```bash
+sudo bash scripts/m1s-check-bitcoin-recovery-status.sh
+```
+
+**SSH나 직접 연결한 터미널에서 입력하는 방법 (고급)**
+
+ODROID M1S에 SSH로 접속했거나, 모니터와 키보드로 직접 로그인한 경우에는 아래 공용 헬스체크 명령을 바로 입력하면 됩니다.
+
+```bash
+sudo bash scripts/m1s-check-bitcoin-recovery-status.sh
+```
+
+이 출력에는 현재 복구 모드, Bitcoin 로그 힌트, 블록 동기화 상태, SSD 마운트 상태, 디스크 여유 공간, 최근 커널 저장장치 오류 힌트가 함께 나옵니다.
+
+가능하면 Bitcoin/Umbrel 오류 로그도 함께 준비하세요. 에러가 시작되는 부분부터 종료 메시지까지 있으면 좋습니다.
+
+잘 모르겠다면 **공용 헬스체크 출력과 오류 로그를 함께** AI에게 복사해서 붙여 넣고 아래처럼 물어보세요.
 
 ```text
-이 오류 로그를 보면
+아래 공용 헬스체크 출력과 오류 로그를 보면
 1) chainstate rebuild
 2) reindex
 3) full resync
 중 어떤 복구가 맞아?
 그리고 Umbrel Terminal에서 어떤 명령어를 입력하면 돼?
+
+[공용 헬스체크 출력]
+여기에 sudo bash scripts/m1s-check-bitcoin-recovery-status.sh 출력 붙여넣기
+
+[오류 로그]
+여기에 Bitcoin/Umbrel 오류 로그 붙여넣기
 ```
 
-가능하면 에러가 시작되는 부분부터 종료 메시지까지 함께 복사하세요.
+복구 방식은 보통 아래 3가지 중 하나입니다.
 
-### 2) 복구 명령 실행하기 (SSH)
+- **chainstate rebuild** — 블록 데이터는 살리고 chainstate만 다시 만들 때 (가장 먼저 시도)
+- **reindex** — blocks는 유지하되 index/chainstate를 더 크게 다시 훑을 때
+- **full resync** — 모든 데이터를 지우고 처음부터 다시 받을 때 (가장 마지막 수단)
 
-먼저 아래 **12번의 최신 업데이트 방법**으로 저장소와 스크립트를 최신 상태로 맞춘 뒤, AI가 추천한 복구 방식에 맞는 명령을 아래 3가지 중에서 고르세요.
+### 2) Umbrel 웹 Terminal에서 복구 명령 실행하기 (추천)
 
-**chainstate rebuild**
-
-```bash
-sudo bash scripts/m1s-start-bitcoin-chainstate-rebuild.sh
-sudo bash scripts/m1s-check-bitcoin-recovery-status.sh
-```
-
-**reindex**
-
-```bash
-sudo bash scripts/m1s-start-bitcoin-reindex.sh
-sudo bash scripts/m1s-check-bitcoin-recovery-status.sh
-```
-
-**full resync**
-
-```bash
-sudo bash scripts/m1s-start-bitcoin-full-resync.sh
-sudo bash scripts/m1s-check-bitcoin-recovery-status.sh
-```
-
-### 3) Umbrel 웹 Terminal에서 실행하는 경우
+이미 Umbrel 웹 화면에 접속할 수 있다면, 웹 화면 안의 Terminal에서 진행하는 방법이 가장 쉽습니다.
 
 Umbrel 웹 화면 안의 Terminal은 처음에는 **Umbrel 컨테이너 안**이므로, 먼저 host shell로 들어가야 합니다.
 
@@ -438,7 +539,7 @@ Umbrel 웹 화면 안의 Terminal은 처음에는 **Umbrel 컨테이너 안**이
 sudo nsenter -t 1 -m -u -i -n -p -- bash
 ```
 
-프롬프트가 `root@umbrel:/#` 형태로 바뀌면 host shell입니다. 그다음 아래 **12번의 최신 업데이트 방법**으로 저장소와 스크립트를 최신 상태로 맞춘 뒤, AI가 추천한 복구 방식에 맞는 명령을 아래 3가지 중에서 고르세요.
+프롬프트가 `root@umbrel:/#` 형태로 바뀌면 host shell입니다. 그다음 위 **11번의 최신 업데이트 방법**으로 저장소와 스크립트를 최신 상태로 맞춘 뒤, AI가 추천한 복구 방식에 맞는 명령을 아래 3가지 중에서 고르세요.
 
 **chainstate rebuild**
 
@@ -461,16 +562,37 @@ sudo bash scripts/m1s-start-bitcoin-full-resync.sh
 sudo bash scripts/m1s-check-bitcoin-recovery-status.sh
 ```
 
-### 공용 헬스체크
+### 3) SSH나 직접 연결한 터미널에서 복구 명령 실행하기 (고급)
 
-복구를 시작한 뒤에는 아래 명령으로 상태를 반복 확인하면 됩니다.
+ODROID M1S에 SSH로 접속할 수 있거나, 모니터와 키보드로 직접 로그인한 경우에는 아래 방식으로 진행해도 됩니다. 먼저 위 **11번의 최신 업데이트 방법**으로 저장소와 스크립트를 최신 상태로 맞춘 뒤, AI가 추천한 복구 방식에 맞는 명령을 아래 3가지 중에서 고르세요.
+
+**chainstate rebuild**
+
+```bash
+sudo bash scripts/m1s-start-bitcoin-chainstate-rebuild.sh
+sudo bash scripts/m1s-check-bitcoin-recovery-status.sh
+```
+
+**reindex**
+
+```bash
+sudo bash scripts/m1s-start-bitcoin-reindex.sh
+sudo bash scripts/m1s-check-bitcoin-recovery-status.sh
+```
+
+**full resync**
+
+```bash
+sudo bash scripts/m1s-start-bitcoin-full-resync.sh
+sudo bash scripts/m1s-check-bitcoin-recovery-status.sh
+```
+
+### 4) 헬스체크 출력 읽는 법
+
+1번의 공용 헬스체크는 복구 명령을 고르기 전에는 현재 상태 판단용으로, 복구를 시작한 뒤에는 진행 상태 확인용으로 사용합니다.
 
 리인덱스 중에는 특히 **Reindex blk file**, **Reindex file progress**, **Current status** 를 먼저 보면 됩니다.  
 같은 명령을 몇 분 뒤 다시 실행했을 때 이 값들이 올라가면, 실제 리인덱스가 정상 진행 중이라는 뜻입니다.
-
-```bash
-sudo bash scripts/m1s-check-bitcoin-recovery-status.sh
-```
 
 실제 실행하면 이런 식으로 나옵니다.
 
@@ -584,7 +706,7 @@ Use this same command again later to watch the live progress estimate.
 
 ---
 
-## 11. 안전하게 종료하기
+## 13. 안전하게 종료하기
 
 ODROID M1S를 끌 때는 **전원 케이블을 바로 뽑지 마세요.**
 
@@ -623,91 +745,7 @@ http://umbrel.local
 
 ---
 
-## 12. 이미 설치한 분이 최신 버전으로 업데이트하기
-
-이미 한 번 설치된 ODROID M1S에서, 가장 최신 스크립트로 맞추고 업데이트하는 방법입니다. 아래 명령을 위에서부터 차례로 그대로 입력하면 됩니다.
-
-```bash
-cd /home/*/odroid-m1s-umbrel-recovery
-sudo git -c safe.directory="$(pwd)" fetch https://github.com/dongguri-jun/odroid-m1s-umbrel-recovery.git main
-sudo git -c safe.directory="$(pwd)" reset --hard FETCH_HEAD
-sudo bash scripts/m1s-update-umbrel.sh --check
-sudo bash scripts/m1s-update-umbrel.sh
-```
-
-각 줄이 하는 일:
-
-1. `cd /home/*/odroid-m1s-umbrel-recovery` — 처음 설치할 때 받아 둔 저장소 폴더로 이동합니다. 별표(`*`)는 "어떤 사용자 이름이든 자동으로 찾기"를 의미하므로, 사용자 이름을 직접 입력할 필요가 없습니다.
-2. `sudo git -c safe.directory="$(pwd)" fetch https://github.com/dongguri-jun/odroid-m1s-umbrel-recovery.git main` — 장비에 저장된 `origin` 설정을 믿지 않고, 공식 GitHub 저장소에서 최신 변경 내역을 직접 가져옵니다.
-3. `sudo git -c safe.directory="$(pwd)" reset --hard FETCH_HEAD` — 방금 공식 저장소에서 가져온 최신 파일 상태와 로컬 파일을 똑같이 맞춥니다. 이 과정에서 로컬의 업데이트 스크립트 자신도 최신 버전으로 교체됩니다.
-4. `sudo bash scripts/m1s-update-umbrel.sh --check` — 아무것도 바꾸지 않고 **현재 설치된 버전 · 최신 버전 · 적용될 수정 목록**만 보여 줍니다. 이미 최신이면 "No migrations needed" 처럼 안내됩니다.
-5. `sudo bash scripts/m1s-update-umbrel.sh` — 실제 업데이트를 적용합니다. 이미 최신이면 아무 작업 없이 끝납니다.
-
-만약 `--check` 결과의 `Script version` 이 `0.5.6` 이하로 나오고 바로 “No migrations needed” 로 끝나면, 그 장비에는 아직 자동 동기화 기능 자체가 없는 상태입니다. 이 경우에만 아래 두 줄을 **처음 한 번만** 실행한 뒤, 위 5줄을 다시 실행하세요.
-
-```bash
-sudo git -c safe.directory="$(pwd)" fetch https://github.com/dongguri-jun/odroid-m1s-umbrel-recovery.git main
-sudo git -c safe.directory="$(pwd)" reset --hard FETCH_HEAD
-```
-
-업데이트 중에는 Umbrel 화면이 잠시 열리지 않을 수 있습니다. 스크립트는 SSD가 `/mnt/fullnode`에 정상 연결되어 있는지 먼저 확인한 뒤, 기존 데이터 위치를 그대로 유지한 상태에서 필요한 부분만 갱신합니다.
-
-내부적으로는 현재 설치 버전에서 최신 버전까지 필요한 단계를 순서대로 적용합니다. 중간에 실패하면 성공한 단계까지만 기록한 뒤 멈추므로, 문제를 해결한 뒤 같은 명령을 다시 실행하면 안전하게 이어집니다.
-
-이미 있는 비밀번호, 앱 데이터, Bitcoin 노드 데이터는 건드리지 않고, 여러 번 실행해도 안전합니다.
-
-### 12-1. (선택) Umbrel 웹 화면 안에서 같은 작업 하기 (고급)
-
-이 단계는 **선택 사항**입니다. 위 12번처럼 SSH로 진행하는 방식이 기본 경로이고, 그게 가장 단순합니다.
-
-다만 SSH 환경을 준비하기 어려운 경우(예: 휴대폰만 가지고 있거나, 별도의 터미널 앱을 깔기 어려운 경우)에는 **Umbrel 웹 화면 안에 들어 있는 터미널**을 이용해서 같은 작업을 진행할 수도 있습니다.
-
-순서는 다음과 같습니다.
-
-1. Umbrel 웹 화면에 로그인합니다.
-2. **Settings → Advanced settings → Terminal** 로 이동합니다. 한국어 화면에서는 **설정 → 고급 설정 → 터미널** 로 보일 수 있습니다.
-3. 터미널이 열리면, 가장 먼저 아래 한 줄을 입력합니다.
-
-```bash
-sudo nsenter -t 1 -m -u -i -n -p -- bash
-```
-
-이 명령은 **Umbrel 컨테이너 바깥(=ODROID M1S 호스트) 쉘**로 들어가는 명령입니다. 즉, SSH로 직접 접속한 것과 같은 위치에 들어간 셈이 됩니다.
-
-처음 한 번은 화면에 아래와 같이 비밀번호 입력 안내가 나옵니다.
-
-```text
-[sudo] password for umbrel:
-```
-
-여기에는 **Umbrel 웹 화면에 로그인할 때 사용하는 비밀번호**를 그대로 입력하면 됩니다. (입력 중에는 글자가 보이지 않는 것이 정상입니다.)
-
-비밀번호가 맞으면 프롬프트가 아래처럼 `root@umbrel:/#` 형태로 바뀝니다. 그러면 호스트 쉘로 들어간 상태입니다.
-
-```text
-root@umbrel:/#
-```
-
-이 상태에서는 아래 명령을 그대로 입력하면 됩니다. SSH로 접속했을 때와 동일한 명령 세트입니다.
-
-```bash
-cd /home/*/odroid-m1s-umbrel-recovery
-sudo git -c safe.directory="$(pwd)" fetch https://github.com/dongguri-jun/odroid-m1s-umbrel-recovery.git main
-sudo git -c safe.directory="$(pwd)" reset --hard FETCH_HEAD
-sudo bash scripts/m1s-update-umbrel.sh --check
-sudo bash scripts/m1s-update-umbrel.sh
-```
-
-작업이 끝나면 평소대로 터미널 창을 닫으면 됩니다. SSH로 진행할 때와 동일하게 데이터/비밀번호/앱은 그대로 유지됩니다.
-
-주의할 점은 다음과 같습니다.
-
-- 이 방법은 호스트 권한이 있는 쉘로 들어가는 명령이므로, **이 가이드 안에서 안내된 명령 외에 모르는 명령을 함부로 따라 입력하지 마세요.** 이건 SSH로 접속했을 때와 동일한 책임 범위입니다.
-- Umbrel/Docker 이미지의 향후 변경에 따라 이 방법이 동작하지 않을 수도 있습니다. 그런 경우에는 위 12번의 SSH 방식을 사용하면 됩니다.
-
----
-
-## 13. 커널 재시작이 필요한 업데이트하기
+## 14. 커널 재시작이 필요한 업데이트하기
 
 가끔 Ubuntu 보안 업데이트나 커널 업데이트처럼 **재부팅해야 완전히 적용되는 업데이트**가 있습니다.
 
@@ -725,7 +763,7 @@ sudo bash scripts/m1s-update-umbrel.sh
 
 Bitcoin 노드가 IBD(초기 블록 다운로드), 블록 다운로드, 리인덱스, 복구 작업을 하는 중이라면 이 스크립트가 컨테이너를 안전하게 멈추기는 하지만, 작업 자체는 중간에 끊깁니다. 가능하면 그런 작업이 한창 진행 중이 아닐 때 실행하세요.
 
-### 13-1. 터미널에서 직접 하는 방법
+### 14-1. 터미널에서 직접 하는 방법
 
 ODROID M1S에 SSH로 접속했거나, 모니터와 키보드로 직접 로그인한 경우에는 아래 명령을 위에서부터 차례로 입력하세요.
 
@@ -751,7 +789,7 @@ http://umbrel.local
 
 `umbrel.local`이 열리지 않으면 Fing 앱이나 공유기 화면에서 ODROID M1S의 IP 주소를 확인한 뒤 `http://<장비 IP>`로 접속하면 됩니다.
 
-### 13-2. Umbrel 웹 화면 안의 고급 설정 터미널에서 하는 방법
+### 14-2. Umbrel 웹 화면 안의 고급 설정 터미널에서 하는 방법
 
 SSH를 쓰기 어렵다면 Umbrel 웹 화면 안의 Terminal에서도 같은 작업을 할 수 있습니다.
 
@@ -780,11 +818,11 @@ sudo bash scripts/m1s-update-system-packages.sh
 
 - 재부팅 중에는 Umbrel 웹 화면이 열리지 않습니다. 잠시 기다린 뒤 다시 접속하세요.
 - Bitcoin 노드가 IBD, 다운로드, 복구, 리인덱스를 진행 중이라면, 가능하면 작업이 안정된 뒤 실행하는 것이 좋습니다.
-- 이 절차는 Ubuntu 패키지를 업데이트하는 절차입니다. 12번의 저장소 스크립트 업데이트와는 역할이 다르므로, 둘 다 필요할 수 있습니다.
+- 이 절차는 Ubuntu 패키지를 업데이트하는 절차입니다. 11번의 저장소 스크립트 업데이트와는 역할이 다르므로, 둘 다 필요할 수 있습니다.
 
 ---
 
-## 14. 공식 umbrelOS / Umbrel Home과 다른 점
+## 15. 공식 umbrelOS / Umbrel Home과 다른 점
 
 이 설치 방법은 ODROID M1S에 공식 umbrelOS 이미지를 직접 설치하는 방식이 아닙니다.
 
@@ -807,37 +845,37 @@ sudo bash scripts/m1s-update-system-packages.sh
 
 다음 기능은 공식 Umbrel Home / 공식 umbrelOS와 동일하게 지원되지 않을 수 있습니다.
 
-### 14-1. Umbrel UI를 통한 OS / 커널 업데이트
+### 15-1. Umbrel UI를 통한 OS / 커널 업데이트
 
 Umbrel 컨테이너를 업데이트해도 ODROID M1S의 Ubuntu 커널이 함께 업데이트되지는 않습니다.
 
 커널 보안 패치, Ubuntu 패키지 업데이트, 재부팅 필요 여부 확인은 별도의 Ubuntu 시스템 업데이트 절차로 관리해야 합니다. 이 저장소에서는 `scripts/m1s-update-system-packages.sh` 스크립트로 Ubuntu 패키지 업데이트를 별도로 진행합니다.
 
-### 14-2. Umbrel UI를 통한 외장 USB 디스크 관리
+### 15-2. Umbrel UI를 통한 외장 USB 디스크 관리
 
 공식 umbrelOS처럼 Umbrel UI에서 외장 USB 디스크를 자동 감지하거나, 포맷하거나, 마운트/해제하는 기능은 이 설치 방식에서 동일하게 보장되지 않습니다.
 
 외장 USB 저장장치를 사용하려면 Ubuntu 호스트에서 별도로 마운트해야 할 수 있습니다.
 
-### 14-3. Umbrel UI를 통한 NAS / SMB / NFS 네트워크 드라이브 연결
+### 15-3. Umbrel UI를 통한 NAS / SMB / NFS 네트워크 드라이브 연결
 
 공식 umbrelOS의 네트워크 드라이브 연결 기능이 이 Docker 기반 설치 방식에서 동일하게 동작한다고 보장할 수 없습니다.
 
 NAS, SMB, NFS 공유를 사용하려면 Ubuntu 호스트에서 별도로 마운트해야 할 수 있습니다.
 
-### 14-4. Umbrel Settings의 네트워크 파일 공유
+### 15-4. Umbrel Settings의 네트워크 파일 공유
 
 공식 Umbrel Home처럼 Umbrel Settings에서 공유 폴더를 켜고 끄는 방식의 네트워크 파일 공유는 이 설치 방식에서 지원되지 않을 수 있습니다.
 
 Samba 공유가 필요하다면 Ubuntu 호스트에서 별도로 설정해야 합니다.
 
-### 14-5. Umbrel UI를 통한 DNS / 고정 IP 설정
+### 15-5. Umbrel UI를 통한 DNS / 고정 IP 설정
 
 ODROID M1S의 실제 네트워크 설정은 Ubuntu 호스트가 관리합니다.
 
 따라서 DNS, 고정 IP 설정은 Umbrel UI가 아니라 공유기 설정 또는 Ubuntu 네트워크 설정에서 관리하는 것을 권장합니다. 호스트 이름은 `umbrel.local` 접속을 위해 `umbrel`로 유지됩니다.
 
-### 14-6. Ubuntu 호스트 전체 파일시스템 접근
+### 15-6. Ubuntu 호스트 전체 파일시스템 접근
 
 Umbrel Files는 기본적으로 Umbrel 데이터 디렉터리인 `/mnt/fullnode` 기반 경로만 사용합니다.
 
@@ -847,7 +885,7 @@ Umbrel Files는 기본적으로 Umbrel 데이터 디렉터리인 `/mnt/fullnode`
 
 ---
 
-## 15. 더 자세한 자료
+## 16. 더 자세한 자료
 
 설치를 마친 뒤 더 알아보고 싶은 내용이 있다면 아래 자료를 참고하세요.
 

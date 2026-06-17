@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.22
+
+- Rework the Korean README flow so operational script updates appear as their own section before Bitcoin recovery, making it clearer that installed devices should periodically pull the latest maintenance scripts.
+- Make the web Terminal path the recommended route for operational script updates and Bitcoin recovery, while keeping SSH/direct terminal commands as the advanced path.
+- Move Bitcoin recovery health checks before recovery commands and instruct users to share both health-check output and Bitcoin/Umbrel error logs when asking AI which recovery mode to use.
+
 ## 0.5.21
 
 - Keep the public fresh-install path aligned with the validated fixed-hostname setup: initial setup no longer asks for a hostname, keeps `umbrel` for `umbrel.local`, and normalizes the Debian-style `127.0.1.1` hosts entry.
