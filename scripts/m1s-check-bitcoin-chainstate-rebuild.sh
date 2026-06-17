@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SCRIPT_VERSION="0.5.23"
+SCRIPT_VERSION="0.5.24"
 
 usage() {
   cat <<'EOF'
