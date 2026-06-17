@@ -17,7 +17,7 @@ set -Eeuo pipefail
 #   --version      Print script version and exit.
 #   -h, --help     Show this help.
 
-SCRIPT_VERSION="0.5.23"
+SCRIPT_VERSION="0.5.24"
 INSTALL_STATE_DIR="/etc/umbrel-recovery"
 INSTALL_STATE_FILE="$INSTALL_STATE_DIR/installed.json"
 DATA_DIR="/mnt/fullnode"
@@ -86,6 +86,7 @@ MIGRATIONS=(
   "0.5.20_to_0.5.21"
   "0.5.21_to_0.5.22"
   "0.5.22_to_0.5.23"
+  "0.5.23_to_0.5.24"
 )
 
 log() {
@@ -2319,6 +2320,10 @@ postcheck_0_5_21_to_0_5_22() { return 0; }
 precheck_0_5_22_to_0_5_23() { precheck_common_canonical_install; }
 apply_0_5_22_to_0_5_23() { info "0.5.23 updates the public system-package update guide flow; no immediate host mutation required."; }
 postcheck_0_5_22_to_0_5_23() { return 0; }
+
+precheck_0_5_23_to_0_5_24() { precheck_common_canonical_install; }
+apply_0_5_23_to_0_5_24() { info "0.5.24 updates the public Bitcoin recovery subsection heading style; no immediate host mutation required."; }
+postcheck_0_5_23_to_0_5_24() { return 0; }
 
 # ---------------------------------------------------------------------------
 # Main flow
