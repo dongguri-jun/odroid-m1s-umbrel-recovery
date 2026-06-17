@@ -5,6 +5,7 @@
 - Rework the Korean README flow so operational script updates appear as their own section before Bitcoin recovery, making it clearer that installed devices should periodically pull the latest maintenance scripts.
 - Make the web Terminal path the recommended route for operational script updates and Bitcoin recovery, while keeping SSH/direct terminal commands as the advanced path.
 - Move Bitcoin recovery health checks before recovery commands and instruct users to share both health-check output and Bitcoin/Umbrel error logs when asking AI which recovery mode to use.
+- Add a no-op `0.5.21_to_0.5.22` updater history step so existing installations can record this guide update without changing Umbrel data.
 
 ## 0.5.21
 
