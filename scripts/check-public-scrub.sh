@@ -42,6 +42,14 @@ checks = [
         'MAC address',
         re.compile(r'\b[0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5}\b'),
     ),
+    (
+        'local checkout path',
+        re.compile(r'(?<![A-Za-z0-9_])/(?:home/(?!\*)|Users/)[^\s`"\']*(?:Projects|odroid[_-]m1s[_-]umbrel[_-]recovery)[^\s`"\']*'),
+    ),
+    (
+        'expanded safe.directory path',
+        re.compile(r'safe\.directory="/(?:home/(?!\*)|Users/)'),
+    ),
 ]
 
 if private_denylist_file:

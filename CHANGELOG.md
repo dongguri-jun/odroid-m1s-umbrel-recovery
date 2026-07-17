@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.25
+
+- Upgrade the managed Dockur Umbrel stack to the exact 1.7.4 arm64 image and converge Tor to 0.4.9.11 on the running system.
+- Harden the in-place updater so failed replacements roll back to the previous live image and install state is recorded from verified runtime Docker data.
+- Keep the public one-line fresh install path and the existing five-line update path unchanged in both Korean and English guides.
+- Add shell test coverage so the documented command UX, updater invariants, and release notes stay aligned.
+
 ## 0.5.24
 
 - Normalize the Korean README Bitcoin recovery subsection headings from `1)` / `2)` style to the repository's `12-1` / `12-2` numbered heading style.

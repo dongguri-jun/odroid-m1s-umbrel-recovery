@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SCRIPT_VERSION="0.5.24"
+SCRIPT_VERSION="0.5.25"
+INSTALL_STATE_VERSION="0.5.25"
 INSTALL_STATE_DIR="/etc/umbrel-recovery"
 INSTALL_STATE_FILE="$INSTALL_STATE_DIR/installed.json"
 PREINSTALL_RESUME_STATE_FILE="$INSTALL_STATE_DIR/preinstall-resume.json"
@@ -11,7 +12,14 @@ SAFE_SHUTDOWN_SERVICE="/etc/systemd/system/m1s-umbrel-autostart.service"
 DRY_RUN=0
 RELEASE_MODE=0
 AUTO_RESUME_INSTALL="${AUTO_RESUME_INSTALL:-0}"
-IMAGE="dockurr/umbrel:1.7.3@sha256:0447bb98eb7c47bda18788cfa9a7d687901850cf07be833ade0b549013405fe5"
+IMAGE="dockurr/umbrel:1.7.4@sha256:e00c07a838ce3b50641a0a984abe155a7223abacab3426a55409edf21b6e0124"
+RESOLVED_UMBREL_IMAGE_ID=""
+RESOLVED_UMBREL_IMAGE_ARCHITECTURE=""
+EXPECTED_TOR_PROXY_IMAGE="ghcr.io/getumbrel/tor:0.4.9.11"
+CANONICAL_AUTH_CONTAINER="umbrel_auth"
+CANONICAL_TOR_PROXY_CONTAINER="umbrel_tor_proxy"
+UMBREL_RUNTIME_HEALTH_ATTEMPTS="${UMBREL_RUNTIME_HEALTH_ATTEMPTS:-30}"
+UMBREL_RUNTIME_HEALTH_DELAY="${UMBREL_RUNTIME_HEALTH_DELAY:-2}"
 DATA_DIR="/mnt/fullnode"
 HOST_DATA_ALIAS="/data"
 DATA_ALIAS_FSTAB_OPTIONS="bind,nofail,x-systemd.requires-mounts-for=$DATA_DIR"
@@ -1222,6 +1230,33 @@ wait_for_umbrel_container() {
   return 1
 }
 
+verify_pulled_umbrel_image() {
+  local image_id="" image_architecture=""
+
+  image_id="$(docker image inspect --format='{{.Id}}' "$IMAGE" 2>/dev/null || true)"
+  image_architecture="$(docker image inspect --format='{{.Architecture}}' "$IMAGE" 2>/dev/null || true)"
+  if [[ -z "$image_id" ]]; then
+    err "Pulled Umbrel image did not provide the expected arm64 image ID."
+    return 1
+  fi
+  if [[ "$image_architecture" != "arm64" ]]; then
+    err "Pulled Umbrel image architecture is ${image_architecture:-missing}, not arm64."
+    return 1
+  fi
+  RESOLVED_UMBREL_IMAGE_ID="$image_id"
+  RESOLVED_UMBREL_IMAGE_ARCHITECTURE="$image_architecture"
+}
+
+pull_and_verify_umbrel_image() {
+  RESOLVED_UMBREL_IMAGE_ID=""
+  RESOLVED_UMBREL_IMAGE_ARCHITECTURE=""
+  run_cmd docker pull "$IMAGE"
+
+  if [[ "$DRY_RUN" -eq 0 ]]; then
+    verify_pulled_umbrel_image
+  fi
+}
+
 patch_umbrel_shutdown_source() {
   docker exec -i umbrel python3 - <<'PY_INNER'
 from pathlib import Path
@@ -1249,6 +1284,191 @@ verify_umbrel_shutdown_source() {
   docker exec umbrel grep -q 'sleep 45; docker stop --time 15 "$(hostname)"' /opt/umbreld/source/modules/system/system.ts
 }
 
+patch_umbrel_shutdown_ui() {
+  docker exec -i umbrel python3 - <<'PY_INNER'
+import os
+import sys
+from pathlib import Path
+root = Path(os.environ.get('M1S_TEST_UMBREL_UI_ROOT', '/opt/umbreld/ui'))
+source = 'he==="shutting-down"&&!v&&(ce.isError||ce.failureCount>0)&&(b(!0),setTimeout(()=>S(!0),30*Kh))'
+target = 'he==="shutting-down"&&!v&&(b(!0),setTimeout(()=>S(!0),30*Kh))'
+matches = []
+patched_matches = []
+for path in sorted((root / 'assets').glob('*.js')):
+    text = path.read_text(errors='ignore')
+    count = text.count(source)
+    patched_count = text.count(target)
+    if count:
+        matches.append((path, count, text))
+    if patched_count:
+        patched_matches.append((path, patched_count))
+source_count = sum(count for _, count, _ in matches)
+target_count = sum(count for _, count in patched_matches)
+if source_count == 1 and target_count == 0:
+    path, _, text = matches[0]
+    path.write_text(text.replace(source, target, 1))
+elif source_count == 0 and target_count == 1:
+    pass
+else:
+    print(f'Umbrel shutdown UI patch expected exactly one source or one patched branch, found source={source_count} patched={target_count}', file=sys.stderr)
+    raise SystemExit(1)
+PY_INNER
+}
+
+verify_umbrel_shutdown_ui() {
+  docker exec -i umbrel python3 - <<'PY_INNER'
+import os
+import sys
+from pathlib import Path
+root = Path(os.environ.get('M1S_TEST_UMBREL_UI_ROOT', '/opt/umbreld/ui'))
+source = 'he==="shutting-down"&&!v&&(ce.isError||ce.failureCount>0)&&(b(!0),setTimeout(()=>S(!0),30*Kh))'
+target = 'he==="shutting-down"&&!v&&(b(!0),setTimeout(()=>S(!0),30*Kh))'
+source_count = 0
+target_count = 0
+for path in sorted((root / 'assets').glob('*.js')):
+    text = path.read_text(errors='ignore')
+    source_count += text.count(source)
+    target_count += text.count(target)
+if source_count == 0 and target_count == 1:
+    raise SystemExit(0)
+print(f'Umbrel shutdown UI patch verification failed: source={source_count} patched={target_count}', file=sys.stderr)
+raise SystemExit(1)
+PY_INNER
+}
+
+is_expected_tor_proxy_image() {
+  local image_ref="$1"
+  [[ "$image_ref" == "$EXPECTED_TOR_PROXY_IMAGE" ]] && return 0
+  [[ "$image_ref" =~ ^ghcr.io/getumbrel/tor:0\.4\.9\.11@sha256:[0-9a-f]{64}$ ]]
+}
+
+umbrel_runtime_health_once() {
+  local container_state image_ref image_id restart_policy data_mount_source docker_socket_source auth_state tor_proxy_state tor_proxy_image
+
+  container_state="$(docker inspect --format='{{.State.Status}}' umbrel 2>/dev/null || true)"
+  image_ref="$(docker inspect --format='{{.Config.Image}}' umbrel 2>/dev/null || true)"
+  image_id="$(docker inspect --format='{{.Image}}' umbrel 2>/dev/null || true)"
+  restart_policy="$(docker inspect --format='{{.HostConfig.RestartPolicy.Name}}' umbrel 2>/dev/null || true)"
+  data_mount_source="$(docker inspect --format='{{range .Mounts}}{{if eq .Destination "/data"}}{{.Source}}{{end}}{{end}}' umbrel 2>/dev/null || true)"
+  docker_socket_source="$(docker inspect --format='{{range .Mounts}}{{if eq .Destination "/var/run/docker.sock"}}{{.Source}}{{end}}{{end}}' umbrel 2>/dev/null || true)"
+  auth_state="$(docker inspect --format='{{.State.Status}}' "$CANONICAL_AUTH_CONTAINER" 2>/dev/null || true)"
+  tor_proxy_state="$(docker inspect --format='{{.State.Status}}' "$CANONICAL_TOR_PROXY_CONTAINER" 2>/dev/null || true)"
+  tor_proxy_image="$(docker inspect --format='{{.Config.Image}}' "$CANONICAL_TOR_PROXY_CONTAINER" 2>/dev/null || true)"
+
+  if [[ "$container_state" != "running" ]]; then
+    err "Runtime health failed: umbrel container is ${container_state:-missing}, not running."
+    return 1
+  fi
+  if [[ "$image_ref" != "$IMAGE" ]]; then
+    err "Runtime health failed: umbrel image ref is ${image_ref:-missing}, not the expected pinned image."
+    return 1
+  fi
+  if [[ -z "$RESOLVED_UMBREL_IMAGE_ID" || "$RESOLVED_UMBREL_IMAGE_ARCHITECTURE" != "arm64" ]]; then
+    err "Runtime health failed: pulled Umbrel image metadata is missing or not arm64."
+    return 1
+  fi
+  if [[ "$image_id" != "$RESOLVED_UMBREL_IMAGE_ID" ]]; then
+    err "Runtime health failed: umbrel image ID is ${image_id:-missing}, not the pulled arm64 image ID."
+    return 1
+  fi
+  if [[ "$restart_policy" != "always" ]]; then
+    err "Runtime health failed: umbrel restart policy is ${restart_policy:-missing}, not always."
+    return 1
+  fi
+  if [[ "$data_mount_source" != "$HOST_DATA_ALIAS" ]]; then
+    err "Runtime health failed: umbrel /data mount is ${data_mount_source:-missing}, not $HOST_DATA_ALIAS."
+    return 1
+  fi
+  if [[ "$docker_socket_source" != "/var/run/docker.sock" ]]; then
+    err "Runtime health failed: umbrel Docker socket mount is ${docker_socket_source:-missing}."
+    return 1
+  fi
+  if ! verify_umbrel_shutdown_source; then
+    err "Runtime health failed: Umbrel safe-shutdown source patch is missing."
+    return 1
+  fi
+  if ! verify_umbrel_shutdown_ui; then
+    err "Runtime health failed: Umbrel shutdown UI timer patch is missing."
+    return 1
+  fi
+  if ! curl -fsS --max-time 10 http://127.0.0.1 >/dev/null 2>&1; then
+    err "Runtime health failed: Umbrel HTTP endpoint did not respond locally."
+    return 1
+  fi
+  if [[ "$auth_state" != "running" ]]; then
+    err "Runtime health failed: $CANONICAL_AUTH_CONTAINER container is ${auth_state:-missing}, not running."
+    return 1
+  fi
+  if [[ "$tor_proxy_state" != "running" ]]; then
+    err "Runtime health failed: $CANONICAL_TOR_PROXY_CONTAINER container is ${tor_proxy_state:-missing}, not running."
+    return 1
+  fi
+  if ! is_expected_tor_proxy_image "$tor_proxy_image"; then
+    err "Runtime health failed: $CANONICAL_TOR_PROXY_CONTAINER image is ${tor_proxy_image:-missing}, not $EXPECTED_TOR_PROXY_IMAGE or an exact sha256-pinned form."
+    return 1
+  fi
+}
+
+wait_for_umbrel_runtime_health() {
+  local attempt
+
+  for ((attempt = 1; attempt <= UMBREL_RUNTIME_HEALTH_ATTEMPTS; attempt++)); do
+    if umbrel_runtime_health_once >/dev/null 2>&1; then
+      return 0
+    fi
+    if (( attempt < UMBREL_RUNTIME_HEALTH_ATTEMPTS )); then
+      sleep "$UMBREL_RUNTIME_HEALTH_DELAY"
+    fi
+  done
+
+  err "Umbrel runtime health did not meet the required contract after $UMBREL_RUNTIME_HEALTH_ATTEMPTS attempts."
+  umbrel_runtime_health_once
+}
+
+record_install_state() {
+  local image_ref image_id install_timestamp
+
+  if ! umbrel_runtime_health_once; then
+    err "Refusing to record successful install state before runtime health passes."
+    return 1
+  fi
+
+  image_ref="$(docker inspect --format='{{.Config.Image}}' umbrel 2>/dev/null || true)"
+  image_id="$(docker inspect --format='{{.Image}}' umbrel 2>/dev/null || true)"
+  if [[ "$image_ref" != "$IMAGE" || "$image_id" != "$RESOLVED_UMBREL_IMAGE_ID" ]]; then
+    err "Refusing to record install state because live Umbrel image metadata does not match the expected arm64 image."
+    return 1
+  fi
+
+  mkdir -p "$INSTALL_STATE_DIR"
+  install_timestamp="$(date -Is)"
+  python3 - "$INSTALL_STATE_FILE" "$INSTALL_STATE_VERSION" "$install_timestamp" "$image_ref" "$image_id" "$DATA_DIR" "$TARGET_PARTITION" <<'PY'
+import json, os, sys, tempfile
+path, version, ts, image, image_id, data_dir, target = sys.argv[1:8]
+payload = {
+    "version": version,
+    "host_version": version,
+    "installed_at": ts,
+    "installed_by": "m1s-clean-install-umbrel.sh",
+    "image": image,
+    "image_id": image_id,
+    "data_dir": data_dir,
+    "target_partition": target,
+    "applied_steps": [],
+    "in_progress_step": None,
+    "failed_step": None,
+    "last_error": None,
+}
+d = os.path.dirname(path)
+fd, tmp = tempfile.mkstemp(dir=d, prefix="installed.tmp.")
+with os.fdopen(fd, "w") as f:
+    json.dump(payload, f, indent=2)
+    f.write("\n")
+os.chmod(tmp, 0o644)
+os.rename(tmp, path)
+PY
+}
+
 
 install_umbrel_safe_shutdown() {
   info "Installing safe-to-unplug Umbrel shutdown behavior"
@@ -1256,6 +1476,7 @@ install_umbrel_safe_shutdown() {
   if [[ "$DRY_RUN" -eq 1 ]]; then
     echo "[DRY-RUN] create $SAFE_SHUTDOWN_SERVICE"
     echo "[DRY-RUN] patch Umbrel shutdown() to disable Docker auto-restart and delay stopping the top-level umbrel container for the completion screen"
+    echo "[DRY-RUN] patch Umbrel 1.7.4 shutdown UI timer to start from shutting-down state"
     echo "[DRY-RUN] systemctl daemon-reload"
     echo "[DRY-RUN] systemctl enable m1s-umbrel-autostart.service"
     return 0
@@ -1283,6 +1504,8 @@ EOF
 
   patch_umbrel_shutdown_source
   verify_umbrel_shutdown_source || { err "Umbrel shutdown() safe-stop container patch could not be written"; return 1; }
+  patch_umbrel_shutdown_ui || { err "Umbrel shutdown UI timer patch could not be written"; return 1; }
+  verify_umbrel_shutdown_ui || { err "Umbrel shutdown UI timer patch is missing"; return 1; }
 
   systemctl daemon-reload
   systemctl enable m1s-umbrel-autostart.service >/dev/null
@@ -1293,10 +1516,12 @@ EOF
   docker restart --time 60 umbrel >/dev/null
   wait_for_umbrel_container || { err "Umbrel did not restart after safe shutdown container patch."; return 1; }
 
-  if ! verify_umbrel_shutdown_source; then
+  if ! verify_umbrel_shutdown_source || ! verify_umbrel_shutdown_ui; then
     warn "Umbrel shutdown patch was not present after restart; retrying patch and restart once."
     patch_umbrel_shutdown_source
     verify_umbrel_shutdown_source || { err "Umbrel shutdown() safe-stop container patch is missing after retry write"; return 1; }
+    patch_umbrel_shutdown_ui || { err "Umbrel shutdown UI timer patch is missing after retry write"; return 1; }
+    verify_umbrel_shutdown_ui || { err "Umbrel shutdown UI timer patch is missing after retry write"; return 1; }
     docker restart --time 60 umbrel >/dev/null
     wait_for_umbrel_container || { err "Umbrel did not restart after retrying safe shutdown container patch."; return 1; }
   fi
@@ -1419,7 +1644,7 @@ Usage:
 Options:
   --dry-run                  Show actions without changing anything
   --release                  Release mode: remove tailscale too
-  --image IMAGE              Docker image to run (default: pinned dockurr/umbrel 1.7.3 digest)
+  --image IMAGE              Docker image to run (default: pinned dockurr/umbrel 1.7.4 digest)
   --data-dir PATH            Umbrel data directory (default: /mnt/fullnode)
   --target-partition PATH    Target SSD disk or partition to initialize
   --remove-tailscale         Alias for --release
@@ -1446,7 +1671,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     --image)
       if [[ $# -lt 2 ]]; then
-        err "--image requires a value (e.g. --image dockurr/umbrel:1.7.3)"
+        err "--image requires a value (e.g. --image dockurr/umbrel:1.7.4)"
         exit 1
       fi
       IMAGE="$2"
@@ -2514,7 +2739,7 @@ if [[ -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
 fi
 
 info "Pulling and starting Umbrel"
-run_cmd docker pull "$IMAGE"
+pull_and_verify_umbrel_image
 run_shell "docker rm -f umbrel >/dev/null 2>&1 || true"
 # Note: --privileged and docker.sock mount are required by the dockurr/umbrel image
 # to manage its internal Docker containers. --pid=host is required for process management.
@@ -2522,9 +2747,8 @@ run_cmd docker run -d --name umbrel --restart always -p 80:80 -v "$HOST_DATA_ALI
 
 if [[ "$DRY_RUN" -eq 0 ]]; then
   info "Waiting for Umbrel container to stabilize..."
-  sleep 10
-  CONTAINER_STATE="$(docker inspect --format='{{.State.Status}}' umbrel 2>/dev/null || true)"
-  if [[ "$CONTAINER_STATE" != "running" ]]; then
+  if ! wait_for_umbrel_container; then
+    CONTAINER_STATE="$(docker inspect --format='{{.State.Status}}' umbrel 2>/dev/null || true)"
     err "Umbrel container failed to start (state: ${CONTAINER_STATE:-unknown})."
     err "The SSD is mounted at $DATA_DIR and Docker is installed, but the install cannot be marked successful until Umbrel is running."
     err "Check logs with: sudo docker logs umbrel"
@@ -2533,10 +2757,10 @@ if [[ "$DRY_RUN" -eq 0 ]]; then
     exit 1
   else
     info "Umbrel container is running."
-    install_umbrel_safe_shutdown
+    install_umbrel_safe_shutdown || exit 1
   fi
 else
-  install_umbrel_safe_shutdown
+  install_umbrel_safe_shutdown || exit 1
 fi
 
 info "Setting host hostname to umbrel (for native mDNS stability)"
@@ -2650,40 +2874,19 @@ SERVICEUNIT
   systemctl enable avahi-alias-umbrel.service
   systemctl start avahi-alias-umbrel.service
   info "umbrel.local mDNS alias is now active."
+  if ! wait_for_umbrel_runtime_health; then
+    err "The install cannot be marked successful until the full Umbrel runtime-health contract passes."
+    exit 1
+  fi
   report_install_health "$LAN_INTERFACE" "$LAN_IP"
 fi
 
 info "Recording install state"
 if [[ "$DRY_RUN" -eq 1 ]]; then
-  echo "[DRY-RUN] write $INSTALL_STATE_FILE (version=$SCRIPT_VERSION)"
+  echo "[DRY-RUN] write $INSTALL_STATE_FILE (version=$INSTALL_STATE_VERSION)"
 else
-  mkdir -p "$INSTALL_STATE_DIR"
-  INSTALL_TIMESTAMP="$(date -Is)"
-  python3 - "$INSTALL_STATE_FILE" "$SCRIPT_VERSION" "$INSTALL_TIMESTAMP" "$IMAGE" "$DATA_DIR" "$TARGET_PARTITION" <<'PY'
-import json, os, sys, tempfile
-path, version, ts, image, data_dir, target = sys.argv[1:7]
-payload = {
-    "version": version,
-    "host_version": version,
-    "installed_at": ts,
-    "installed_by": "m1s-clean-install-umbrel.sh",
-    "image": image,
-    "data_dir": data_dir,
-    "target_partition": target,
-    "applied_steps": [],
-    "in_progress_step": None,
-    "failed_step": None,
-    "last_error": None,
-}
-d = os.path.dirname(path)
-fd, tmp = tempfile.mkstemp(dir=d, prefix="installed.tmp.")
-with os.fdopen(fd, "w") as f:
-    json.dump(payload, f, indent=2)
-    f.write("\n")
-os.chmod(tmp, 0o644)
-os.rename(tmp, path)
-PY
-  info "Install state written to $INSTALL_STATE_FILE (version=$SCRIPT_VERSION)"
+  record_install_state || exit 1
+  info "Install state written to $INSTALL_STATE_FILE (version=$INSTALL_STATE_VERSION)"
 fi
 
 clear_preinstall_resume_state

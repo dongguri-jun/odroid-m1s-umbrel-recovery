@@ -17,7 +17,7 @@ set -Eeuo pipefail
 #   --version      Print script version and exit.
 #   -h, --help     Show this help.
 
-SCRIPT_VERSION="0.5.24"
+SCRIPT_VERSION="0.5.25"
 INSTALL_STATE_DIR="/etc/umbrel-recovery"
 INSTALL_STATE_FILE="$INSTALL_STATE_DIR/installed.json"
 DATA_DIR="/mnt/fullnode"
@@ -25,7 +25,7 @@ HOST_DATA_ALIAS="/data"
 FSTAB_FILE="${FSTAB_FILE:-/etc/fstab}"
 FULLNODE_FSTAB_OPTIONS="defaults,auto,exec,rw,nofail,x-systemd.device-timeout=10s"
 DATA_ALIAS_FSTAB_OPTIONS="bind,nofail,x-systemd.requires-mounts-for=$DATA_DIR"
-UMBREL_IMAGE="dockurr/umbrel:1.7.3@sha256:0447bb98eb7c47bda18788cfa9a7d687901850cf07be833ade0b549013405fe5"
+UMBREL_IMAGE="dockurr/umbrel:1.7.4@sha256:e00c07a838ce3b50641a0a984abe155a7223abacab3426a55409edf21b6e0124"
 SAFE_SHUTDOWN_SERVICE="/etc/systemd/system/m1s-umbrel-autostart.service"
 OFFICIAL_REPO_SLUG="dongguri-jun/odroid-m1s-umbrel-recovery"
 
@@ -36,6 +36,17 @@ SELF_SYNC_REEXECED=0
 APP_STOP_TIMEOUT_SECONDS=300
 STOPPED_APP_CONTAINERS=()
 APP_CONTAINERS_STOPPED=0
+LEGACY_SYSTEM_CONTAINERS=(auth tor_proxy)
+CANDIDATE_SYSTEM_CONTAINERS=(umbrel_auth umbrel_tor_proxy)
+ALL_KNOWN_SYSTEM_CONTAINERS=("${LEGACY_SYSTEM_CONTAINERS[@]}" "${CANDIDATE_SYSTEM_CONTAINERS[@]}")
+TOR_PROXY_IMAGE="ghcr.io/getumbrel/tor:0.4.9.11"
+CANDIDATE_READINESS_ATTEMPTS=30
+CANDIDATE_RETRY_DELAY_SECONDS=2
+UMBREL_TRANSACTION_ACTIVE=0
+UMBREL_TRANSACTION_MUTATED=0
+UMBREL_TRANSACTION_TARGET_IMAGE_ID=""
+UMBREL_TRANSACTION_FAILURE_MESSAGE=""
+UMBREL_TRANSACTION_APP_CONTAINERS=()
 LEGACY_INCUS_PACKAGES=(incus incus-base incus-client lxd-agent-loader)
 LEGACY_INCUS_SERVICES=(incus.service incus.socket incus-lxcfs.service snap.lxd.daemon.service snap.lxd.daemon.unix.socket)
 LEGACY_INCUS_PATHS=(/var/lib/incus /var/lib/lxd /var/snap/lxd /root/.cache/incus /root/.config/incus)
@@ -87,6 +98,7 @@ MIGRATIONS=(
   "0.5.21_to_0.5.22"
   "0.5.22_to_0.5.23"
   "0.5.23_to_0.5.24"
+  "0.5.24_to_0.5.25"
 )
 
 log() {
@@ -1396,19 +1408,39 @@ assert_fullnode_data_mount_safe() {
 }
 
 load_running_app_containers() {
+  local container
   STOPPED_APP_CONTAINERS=()
   APP_CONTAINERS_STOPPED=0
   command -v docker >/dev/null 2>&1 || return 0
-  mapfile -t STOPPED_APP_CONTAINERS < <(docker ps --format '{{.Names}}' 2>/dev/null | grep -vx 'umbrel' || true)
+  while IFS= read -r container; do
+    [[ -z "$container" || "$container" == "umbrel" ]] && continue
+    is_system_container "$container" && continue
+    STOPPED_APP_CONTAINERS+=("$container")
+  done < <(docker ps --format '{{.Names}}' 2>/dev/null || true)
+}
+
+is_system_container() {
+  local container="$1"
+  local system_container
+  for system_container in "${ALL_KNOWN_SYSTEM_CONTAINERS[@]}"; do
+    [[ "$container" == "$system_container" ]] && return 0
+  done
+  return 1
 }
 
 print_running_app_container_hint() {
   command -v docker >/dev/null 2>&1 || return 0
-  local app_containers
-  app_containers="$(docker ps --format '{{.Names}} {{.Status}}' 2>/dev/null | grep -Eiv '^umbrel ' || true)"
-  if [[ -n "$app_containers" ]]; then
+  local container status
+  local app_containers=()
+  while IFS=' ' read -r container status; do
+    [[ -z "$container" || "$container" == "umbrel" ]] && continue
+    is_system_container "$container" && continue
+    app_containers+=("$container${status:+ $status}")
+  done < <(docker ps --format '{{.Names}} {{.Status}}' 2>/dev/null || true)
+
+  if [[ "${#app_containers[@]}" -gt 0 ]]; then
     warn "Umbrel app containers are running and will be stopped gracefully before the system container update:"
-    printf '%s\n' "$app_containers" | sed 's/^/[WARN]   /'
+    printf '%s\n' "${app_containers[@]}" | sed 's/^/[WARN]   /'
   else
     info "No running Umbrel app container is currently visible alongside the system container."
   fi
@@ -1424,12 +1456,12 @@ stop_running_app_containers() {
   APP_CONTAINERS_STOPPED=1
   if run_cmd docker stop --timeout "$APP_STOP_TIMEOUT_SECONDS" "${STOPPED_APP_CONTAINERS[@]}"; then
     return 0
+  else
+    local status=$?
+    warn "App container stop failed; attempting to restart any containers that were already stopped."
+    start_stopped_app_containers || warn "Failed to restart app containers after stop failure; check Docker manually."
+    return "$status"
   fi
-
-  local status=$?
-  warn "App container stop failed; attempting to restart any containers that were already stopped."
-  start_stopped_app_containers || warn "Failed to restart app containers after stop failure; check Docker manually."
-  return "$status"
 }
 
 start_stopped_app_containers() {
@@ -1466,11 +1498,14 @@ umbrel_image_id() {
   docker image inspect "$image_ref" --format '{{.Id}}' 2>/dev/null || true
 }
 
-run_umbrel_container() {
+run_umbrel_container_with_data_source() {
   local image_ref="$1"
-  local data_source
-  data_source="$(umbrel_container_data_source)"
+  local data_source="$2"
   run_cmd docker run -d --name umbrel --restart always -p 80:80 -v "$data_source:/data" -v /var/run/docker.sock:/var/run/docker.sock --stop-timeout 60 --pid=host --privileged "$image_ref"
+}
+
+run_umbrel_container() {
+  run_umbrel_container_with_data_source "$1" "$(umbrel_container_data_source)"
 }
 
 rollback_umbrel_container() {
@@ -1503,6 +1538,302 @@ wait_for_umbrel_container() {
   return 1
 }
 
+system_container_id() {
+  local container="$1"
+  docker inspect --format '{{.Id}}' "$container" 2>/dev/null || true
+}
+
+system_containers_need_replacement() {
+  local container container_id container_state
+  for container in "${LEGACY_SYSTEM_CONTAINERS[@]}"; do
+    [[ -z "$(system_container_id "$container")" ]] || return 0
+  done
+
+  for container in "${CANDIDATE_SYSTEM_CONTAINERS[@]}"; do
+    container_id="$(system_container_id "$container")"
+    [[ -n "$container_id" ]] || return 0
+    container_state="$(docker inspect --format '{{.State.Status}}' "$container" 2>/dev/null || true)"
+    [[ "$container_state" == "running" ]] || return 0
+  done
+
+  is_expected_tor_proxy_image "$(docker inspect --format '{{.Config.Image}}' umbrel_tor_proxy 2>/dev/null || true)" || return 0
+  return 1
+}
+
+is_expected_tor_proxy_image() {
+  local image_ref="$1"
+  [[ "$image_ref" == "$TOR_PROXY_IMAGE" ]] && return 0
+  [[ "$image_ref" =~ ^ghcr.io/getumbrel/tor:0\.4\.9\.11@sha256:[0-9a-f]{64}$ ]]
+}
+
+candidate_umbrel_container_ready() {
+  local expected_image_id="$1"
+  local expected_data_source="$2"
+  local state image_id image_ref data_source docker_sock_source restart_policy
+
+  state="$(docker inspect --format '{{.State.Status}}' umbrel 2>/dev/null || true)"
+  image_id="$(docker inspect --format '{{.Image}}' umbrel 2>/dev/null || true)"
+  image_ref="$(docker inspect --format '{{.Config.Image}}' umbrel 2>/dev/null || true)"
+  data_source="$(inspect_umbrel_mount_source /data)"
+  docker_sock_source="$(inspect_umbrel_mount_source /var/run/docker.sock)"
+  restart_policy="$(docker inspect --format '{{.HostConfig.RestartPolicy.Name}}' umbrel 2>/dev/null || true)"
+
+  [[ "$state" == "running" ]] \
+    && [[ "$image_id" == "$expected_image_id" ]] \
+    && [[ "$image_ref" == "$UMBREL_IMAGE" ]] \
+    && [[ "$data_source" == "$expected_data_source" ]] \
+    && [[ "$docker_sock_source" == "/var/run/docker.sock" ]] \
+    && [[ "$restart_policy" == "always" ]]
+}
+
+candidate_system_containers_ready() {
+  local old_auth_id="$1"
+  local old_tor_proxy_id="$2"
+  local auth_id tor_proxy_id auth_state tor_proxy_state tor_proxy_image
+
+  auth_id="$(system_container_id umbrel_auth)"
+  tor_proxy_id="$(system_container_id umbrel_tor_proxy)"
+  auth_state="$(docker inspect --format '{{.State.Status}}' umbrel_auth 2>/dev/null || true)"
+  tor_proxy_state="$(docker inspect --format '{{.State.Status}}' umbrel_tor_proxy 2>/dev/null || true)"
+  tor_proxy_image="$(docker inspect --format '{{.Config.Image}}' umbrel_tor_proxy 2>/dev/null || true)"
+
+  [[ -n "$auth_id" && -n "$tor_proxy_id" ]] \
+    && [[ "$auth_state" == "running" && "$tor_proxy_state" == "running" ]] \
+    && [[ -z "$old_auth_id" || "$auth_id" != "$old_auth_id" ]] \
+    && [[ -z "$old_tor_proxy_id" || "$tor_proxy_id" != "$old_tor_proxy_id" ]] \
+    && is_expected_tor_proxy_image "$tor_proxy_image"
+}
+
+report_candidate_system_container_diagnostics() {
+  local auth_id tor_proxy_id auth_state tor_proxy_state tor_proxy_image
+  auth_id="$(system_container_id umbrel_auth)"
+  tor_proxy_id="$(system_container_id umbrel_tor_proxy)"
+  auth_state="$(docker inspect --format '{{.State.Status}}' umbrel_auth 2>/dev/null || true)"
+  tor_proxy_state="$(docker inspect --format '{{.State.Status}}' umbrel_tor_proxy 2>/dev/null || true)"
+  tor_proxy_image="$(docker inspect --format '{{.Config.Image}}' umbrel_tor_proxy 2>/dev/null || true)"
+  err "Candidate system-container diagnostics: umbrel_auth id=${auth_id:-missing} state=${auth_state:-missing}; umbrel_tor_proxy id=${tor_proxy_id:-missing} state=${tor_proxy_state:-missing} image=${tor_proxy_image:-missing}."
+}
+
+wait_for_umbrel_candidate_pre_health() {
+  local expected_image_id="$1"
+  local expected_data_source="$2"
+  local old_auth_id="$3"
+  local old_tor_proxy_id="$4"
+  local attempt
+
+  for ((attempt = 1; attempt <= CANDIDATE_READINESS_ATTEMPTS; attempt++)); do
+    if candidate_umbrel_container_ready "$expected_image_id" "$expected_data_source" \
+      && candidate_system_containers_ready "$old_auth_id" "$old_tor_proxy_id"; then
+      return 0
+    fi
+    if [[ "$attempt" -lt "$CANDIDATE_READINESS_ATTEMPTS" ]]; then
+      sleep "$CANDIDATE_RETRY_DELAY_SECONDS"
+    fi
+  done
+
+  err "Umbrel candidate pre-health did not converge after $CANDIDATE_READINESS_ATTEMPTS attempts."
+  report_candidate_system_container_diagnostics
+  return 1
+}
+
+postcheck_system_containers_ready() {
+  if [[ "$UMBREL_TRANSACTION_MUTATED" -eq 1 ]]; then
+    candidate_system_containers_ready "$UMBREL_TRANSACTION_OLD_AUTH_ID" "$UMBREL_TRANSACTION_OLD_TOR_PROXY_ID"
+    return
+  fi
+
+  if system_containers_need_replacement; then
+    return 1
+  fi
+  return 0
+}
+
+wait_for_postcheck_system_containers() {
+  local attempt
+
+  for ((attempt = 1; attempt <= CANDIDATE_READINESS_ATTEMPTS; attempt++)); do
+    postcheck_system_containers_ready && return 0
+    if [[ "$attempt" -lt "$CANDIDATE_READINESS_ATTEMPTS" ]]; then
+      sleep "$CANDIDATE_RETRY_DELAY_SECONDS"
+    fi
+  done
+  return 1
+}
+
+replace_system_containers() {
+  local container container_id
+  for container in "${ALL_KNOWN_SYSTEM_CONTAINERS[@]}"; do
+    container_id="$(system_container_id "$container")"
+    [[ -n "$container_id" ]] || continue
+    docker stop "$container" >/dev/null || return 1
+    docker rm "$container" >/dev/null || return 1
+  done
+}
+
+reset_umbrel_transaction() {
+  UMBREL_TRANSACTION_ACTIVE=0
+  UMBREL_TRANSACTION_MUTATED=0
+  UMBREL_TRANSACTION_OLD_IMAGE_ID=""
+  UMBREL_TRANSACTION_OLD_IMAGE_REF=""
+  UMBREL_TRANSACTION_OLD_AUTH_ID=""
+  UMBREL_TRANSACTION_OLD_AUTH_IMAGE=""
+  UMBREL_TRANSACTION_OLD_AUTH_STATE=""
+  UMBREL_TRANSACTION_OLD_TOR_PROXY_ID=""
+  UMBREL_TRANSACTION_OLD_TOR_PROXY_IMAGE=""
+  UMBREL_TRANSACTION_OLD_TOR_PROXY_STATE=""
+  UMBREL_TRANSACTION_DATA_SOURCE=""
+  UMBREL_TRANSACTION_APP_CONTAINERS=()
+}
+
+capture_umbrel_transaction_context() {
+  reset_umbrel_transaction
+  UMBREL_TRANSACTION_OLD_IMAGE_ID="$(docker inspect umbrel --format '{{.Image}}' 2>/dev/null || true)"
+  UMBREL_TRANSACTION_OLD_IMAGE_REF="$(docker inspect umbrel --format '{{.Config.Image}}' 2>/dev/null || true)"
+  UMBREL_TRANSACTION_OLD_AUTH_ID="$(system_container_id auth)"
+  UMBREL_TRANSACTION_OLD_AUTH_IMAGE="$(docker inspect auth --format '{{.Config.Image}}' 2>/dev/null || true)"
+  UMBREL_TRANSACTION_OLD_AUTH_STATE="$(docker inspect auth --format '{{.State.Status}}' 2>/dev/null || true)"
+  UMBREL_TRANSACTION_OLD_TOR_PROXY_ID="$(system_container_id tor_proxy)"
+  UMBREL_TRANSACTION_OLD_TOR_PROXY_IMAGE="$(docker inspect tor_proxy --format '{{.Config.Image}}' 2>/dev/null || true)"
+  UMBREL_TRANSACTION_OLD_TOR_PROXY_STATE="$(docker inspect tor_proxy --format '{{.State.Status}}' 2>/dev/null || true)"
+  UMBREL_TRANSACTION_DATA_SOURCE="$(umbrel_container_data_source)"
+  [[ -n "$UMBREL_TRANSACTION_OLD_IMAGE_ID" && -n "$UMBREL_TRANSACTION_OLD_IMAGE_REF" && -n "$UMBREL_TRANSACTION_DATA_SOURCE" ]] || {
+    err "Could not capture the current Umbrel transaction context."
+    return 1
+  }
+  load_running_app_containers
+  UMBREL_TRANSACTION_APP_CONTAINERS=("${STOPPED_APP_CONTAINERS[@]}")
+}
+
+umbrel_transaction_context_is_valid() {
+  [[ -n "$UMBREL_TRANSACTION_OLD_IMAGE_ID" && -n "$UMBREL_TRANSACTION_OLD_IMAGE_REF" && -n "$UMBREL_TRANSACTION_DATA_SOURCE" ]] || return 1
+  if [[ -n "$UMBREL_TRANSACTION_OLD_AUTH_ID" ]]; then
+    [[ -n "$UMBREL_TRANSACTION_OLD_AUTH_IMAGE" && -n "$UMBREL_TRANSACTION_OLD_AUTH_STATE" ]] || return 1
+  fi
+  if [[ -n "$UMBREL_TRANSACTION_OLD_TOR_PROXY_ID" ]]; then
+    [[ -n "$UMBREL_TRANSACTION_OLD_TOR_PROXY_IMAGE" && -n "$UMBREL_TRANSACTION_OLD_TOR_PROXY_STATE" ]] || return 1
+  fi
+}
+
+old_umbrel_stack_ready() {
+  local state image_id data_source docker_sock_source restart_policy auth_state tor_proxy_state
+  state="$(docker inspect umbrel --format '{{.State.Status}}' 2>/dev/null || true)"
+  image_id="$(docker inspect umbrel --format '{{.Image}}' 2>/dev/null || true)"
+  data_source="$(inspect_umbrel_mount_source /data)"
+  docker_sock_source="$(inspect_umbrel_mount_source /var/run/docker.sock)"
+  restart_policy="$(docker inspect umbrel --format '{{.HostConfig.RestartPolicy.Name}}' 2>/dev/null || true)"
+  auth_state="$(docker inspect auth --format '{{.State.Status}}' 2>/dev/null || true)"
+  tor_proxy_state="$(docker inspect tor_proxy --format '{{.State.Status}}' 2>/dev/null || true)"
+
+  [[ "$state" == "running" ]] \
+    && [[ "$image_id" == "$UMBREL_TRANSACTION_OLD_IMAGE_ID" ]] \
+    && [[ "$data_source" == "$UMBREL_TRANSACTION_DATA_SOURCE" ]] \
+    && [[ "$docker_sock_source" == "/var/run/docker.sock" ]] \
+    && [[ "$restart_policy" == "always" ]] \
+    && [[ "$auth_state" == "running" && "$tor_proxy_state" == "running" ]]
+}
+
+wait_for_old_umbrel_stack() {
+  local attempt
+  for ((attempt = 1; attempt <= CANDIDATE_READINESS_ATTEMPTS; attempt++)); do
+    old_umbrel_stack_ready && return 0
+    if [[ "$attempt" -lt "$CANDIDATE_READINESS_ATTEMPTS" ]]; then
+      sleep "$CANDIDATE_RETRY_DELAY_SECONDS"
+    fi
+  done
+  return 1
+}
+
+rollback_umbrel_transaction() {
+  local container
+  [[ "$UMBREL_TRANSACTION_ACTIVE" -eq 1 && "$UMBREL_TRANSACTION_MUTATED" -eq 1 ]] || return 0
+
+  warn "Rolling back the Umbrel candidate to the previous top-level image."
+  for container in umbrel "${ALL_KNOWN_SYSTEM_CONTAINERS[@]}"; do
+    docker rm -f "$container" >/dev/null 2>&1 || true
+  done
+
+  if ! run_umbrel_container_with_data_source "$UMBREL_TRANSACTION_OLD_IMAGE_ID" "$UMBREL_TRANSACTION_DATA_SOURCE" >/dev/null; then
+    err "Rollback failed while starting the previous Umbrel image."
+    return 1
+  fi
+  if ! wait_for_old_umbrel_stack; then
+    err "Rollback failed because the previous Umbrel system stack did not become ready."
+    return 1
+  fi
+  if ! start_stopped_app_containers; then
+    err "Rollback failed while restoring previously running ordinary apps."
+    return 1
+  fi
+  return 0
+}
+
+fail_umbrel_transaction() {
+  local failure_message="$1"
+  UMBREL_TRANSACTION_FAILURE_MESSAGE="$failure_message"
+  if [[ "$UMBREL_TRANSACTION_MUTATED" -eq 1 ]] && ! rollback_umbrel_transaction; then
+    UMBREL_TRANSACTION_FAILURE_MESSAGE="$failure_message; rollback failed"
+    reset_umbrel_transaction
+    return 1
+  fi
+  reset_umbrel_transaction
+  return 1
+}
+
+begin_umbrel_candidate_transaction() {
+  assert_fullnode_data_mount_safe || return 1
+  capture_umbrel_transaction_context || return 1
+  umbrel_transaction_context_is_valid || { err "Captured Umbrel transaction context is incomplete."; return 1; }
+
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    echo "[DRY-RUN] docker pull $UMBREL_IMAGE"
+    echo "[DRY-RUN] stop ordinary apps, replace system containers, and run the candidate only after the image resolves"
+    return 0
+  fi
+
+  if ! docker pull "$UMBREL_IMAGE" >/dev/null; then
+    err "Could not pull candidate image $UMBREL_IMAGE; no containers were stopped."
+    return 1
+  fi
+  UMBREL_TRANSACTION_TARGET_IMAGE_ID="$(umbrel_image_id "$UMBREL_IMAGE")"
+  [[ -n "$UMBREL_TRANSACTION_TARGET_IMAGE_ID" ]] || { err "Could not resolve the pulled candidate image ID."; return 1; }
+  UMBREL_TRANSACTION_ACTIVE=1
+
+  if [[ "$UMBREL_TRANSACTION_OLD_IMAGE_ID" == "$UMBREL_TRANSACTION_TARGET_IMAGE_ID" ]] && ! system_containers_need_replacement; then
+    info "Umbrel candidate image and system containers are already current."
+    return 0
+  fi
+
+  UMBREL_TRANSACTION_MUTATED=1
+  STOPPED_APP_CONTAINERS=("${UMBREL_TRANSACTION_APP_CONTAINERS[@]}")
+  stop_running_app_containers || return 1
+  replace_system_containers || return 1
+  docker stop umbrel >/dev/null || return 1
+  docker rm umbrel >/dev/null || return 1
+  run_umbrel_container_with_data_source "$UMBREL_IMAGE" "$UMBREL_TRANSACTION_DATA_SOURCE" >/dev/null || return 1
+  wait_for_umbrel_candidate_pre_health "$UMBREL_TRANSACTION_TARGET_IMAGE_ID" "$UMBREL_TRANSACTION_DATA_SOURCE" "$UMBREL_TRANSACTION_OLD_AUTH_ID" "$UMBREL_TRANSACTION_OLD_TOR_PROXY_ID"
+}
+
+wait_for_umbrel_http() {
+  local attempt
+  command -v curl >/dev/null 2>&1 || { err "curl is required for Umbrel HTTP readiness verification."; return 1; }
+  for ((attempt = 1; attempt <= CANDIDATE_READINESS_ATTEMPTS; attempt++)); do
+    curl -fsS --max-time 10 http://127.0.0.1/ >/dev/null 2>&1 && return 0
+    if [[ "$attempt" -lt "$CANDIDATE_READINESS_ATTEMPTS" ]]; then
+      sleep "$CANDIDATE_RETRY_DELAY_SECONDS"
+    fi
+  done
+  err "Umbrel HTTP did not become ready after $CANDIDATE_READINESS_ATTEMPTS attempts."
+  return 1
+}
+
+complete_umbrel_transaction() {
+  if ! start_stopped_app_containers; then
+    fail_umbrel_transaction "ordinary app restart failed after candidate postcheck"
+    return 1
+  fi
+  reset_umbrel_transaction
+}
+
 patch_umbrel_shutdown_source() {
   docker exec -i umbrel python3 - <<'PY_INNER'
 from pathlib import Path
@@ -1530,26 +1861,56 @@ verify_umbrel_shutdown_source() {
   docker exec umbrel grep -q 'sleep 45; docker stop --time 15 "$(hostname)"' /opt/umbreld/source/modules/system/system.ts
 }
 
-restore_umbrel_shutdown_ui() {
+patch_umbrel_shutdown_ui() {
   docker exec -i umbrel python3 - <<'PY_INNER'
+import os
+import sys
 from pathlib import Path
-patched = 'd.useEffect(()=>{F==="shutting-down"&&!f&&(p(!0),setTimeout(()=>m(!0),90*Gl))},[f,F,n])'
-original = 'd.useEffect(()=>{F==="shutting-down"&&!f&&(I.isError||I.failureCount>0)&&(p(!0),setTimeout(()=>m(!0),30*Gl))},[f,F,I.failureCount,I.isError,n])'
-for path in Path('/opt/umbreld/ui/assets').glob('*.js'):
+root = Path(os.environ.get('M1S_TEST_UMBREL_UI_ROOT', '/opt/umbreld/ui'))
+source = 'he==="shutting-down"&&!v&&(ce.isError||ce.failureCount>0)&&(b(!0),setTimeout(()=>S(!0),30*Kh))'
+target = 'he==="shutting-down"&&!v&&(b(!0),setTimeout(()=>S(!0),30*Kh))'
+matches = []
+patched_matches = []
+for path in sorted((root / 'assets').glob('*.js')):
     text = path.read_text(errors='ignore')
-    if patched in text:
-        path.write_text(text.replace(patched, original, 1))
-index = Path('/opt/umbreld/ui/index.html')
-html = index.read_text()
-html = html.replace('/assets/index-7c0be990.js?v=m1s-shutdown-0.4.10', '/assets/index-7c0be990.js')
-html = html.replace('/assets/index-7c0be990.js?v=m1s-shutdown-0.4.9', '/assets/index-7c0be990.js')
-index.write_text(html)
+    count = text.count(source)
+    patched_count = text.count(target)
+    if count:
+        matches.append((path, count, text))
+    if patched_count:
+        patched_matches.append((path, patched_count))
+source_count = sum(count for _, count, _ in matches)
+target_count = sum(count for _, count in patched_matches)
+if source_count == 1 and target_count == 0:
+    path, _, text = matches[0]
+    path.write_text(text.replace(source, target, 1))
+elif source_count == 0 and target_count == 1:
+    pass
+else:
+    print(f'Umbrel shutdown UI patch expected exactly one source or one patched branch, found source={source_count} patched={target_count}', file=sys.stderr)
+    raise SystemExit(1)
 PY_INNER
 }
 
-verify_umbrel_shutdown_ui_restored() {
-  docker exec umbrel grep -R -q 'I.isError||I.failureCount>0' /opt/umbreld/ui/assets
-  ! docker exec umbrel grep -q 'm1s-shutdown-0.4.10' /opt/umbreld/ui/index.html
+verify_umbrel_shutdown_ui() {
+  docker exec -i umbrel python3 - <<'PY_INNER'
+import os
+import sys
+from pathlib import Path
+root = Path(os.environ.get('M1S_TEST_UMBREL_UI_ROOT', '/opt/umbreld/ui'))
+source = 'he==="shutting-down"&&!v&&(ce.isError||ce.failureCount>0)&&(b(!0),setTimeout(()=>S(!0),30*Kh))'
+target = 'he==="shutting-down"&&!v&&(b(!0),setTimeout(()=>S(!0),30*Kh))'
+source_count = 0
+target_count = 0
+for path in sorted((root / 'assets').glob('*.js')):
+    text = path.read_text(errors='ignore')
+    source_count += text.count(source)
+    target_count += text.count(target)
+if source_count == 0 and target_count == 1:
+    raise SystemExit(0)
+print(f'Umbrel shutdown UI patch verification failed: source={source_count} patched={target_count}', file=sys.stderr)
+raise SystemExit(1)
+PY_INNER
 }
 
 
@@ -1559,6 +1920,7 @@ install_umbrel_safe_shutdown() {
   if [[ "$DRY_RUN" -eq 1 ]]; then
     echo "[DRY-RUN] create $SAFE_SHUTDOWN_SERVICE"
     echo "[DRY-RUN] patch Umbrel shutdown() to disable Docker auto-restart and delay stopping the top-level umbrel container for the completion screen"
+    echo "[DRY-RUN] patch Umbrel 1.7.4 shutdown UI timer to start from shutting-down state"
     echo "[DRY-RUN] systemctl daemon-reload"
     echo "[DRY-RUN] systemctl enable m1s-umbrel-autostart.service"
     return 0
@@ -1586,6 +1948,8 @@ EOF
 
   patch_umbrel_shutdown_source
   verify_umbrel_shutdown_source || { err "Umbrel shutdown() safe-stop container patch could not be written"; return 1; }
+  patch_umbrel_shutdown_ui || { err "Umbrel shutdown UI timer patch could not be written"; return 1; }
+  verify_umbrel_shutdown_ui || { err "Umbrel shutdown UI timer patch is missing"; return 1; }
 
   systemctl daemon-reload
   systemctl enable m1s-umbrel-autostart.service >/dev/null
@@ -1596,10 +1960,12 @@ EOF
   docker restart --time 60 umbrel >/dev/null
   wait_for_umbrel_container || { err "Umbrel did not restart after safe shutdown container patch."; return 1; }
 
-  if ! verify_umbrel_shutdown_source; then
+  if ! verify_umbrel_shutdown_source || ! verify_umbrel_shutdown_ui; then
     warn "Umbrel shutdown patch was not present after restart; retrying patch and restart once."
     patch_umbrel_shutdown_source
     verify_umbrel_shutdown_source || { err "Umbrel shutdown() safe-stop container patch is missing after retry write"; return 1; }
+    patch_umbrel_shutdown_ui || { err "Umbrel shutdown UI timer patch is missing after retry write"; return 1; }
+    verify_umbrel_shutdown_ui || { err "Umbrel shutdown UI timer patch is missing after retry write"; return 1; }
     docker restart --time 60 umbrel >/dev/null
     wait_for_umbrel_container || { err "Umbrel did not restart after retrying safe shutdown container patch."; return 1; }
   fi
@@ -1614,60 +1980,21 @@ postcheck_umbrel_safe_shutdown() {
   grep -q 'docker update --restart=always umbrel' "$SAFE_SHUTDOWN_SERVICE" || { err "m1s-umbrel-autostart.service does not restore restart policy"; return 1; }
   grep -q 'docker start umbrel' "$SAFE_SHUTDOWN_SERVICE" || { err "m1s-umbrel-autostart.service does not start Umbrel"; return 1; }
   verify_umbrel_shutdown_source || { err "Umbrel shutdown() safe-stop container patch is missing"; return 1; }
+  verify_umbrel_shutdown_ui || { err "Umbrel shutdown UI timer patch is missing"; return 1; }
   local restart_policy
   restart_policy="$(docker inspect umbrel --format '{{.HostConfig.RestartPolicy.Name}}' 2>/dev/null || true)"
   [[ "$restart_policy" == "always" ]] || { err "umbrel restart policy should be always during normal operation, got ${restart_policy:-unknown}"; return 1; }
 }
 
 refresh_umbrel_system_container() {
-  local old_image_id
-  local new_image_id
-
-  info "[0.4.5] Checking Umbrel system container image"
-  assert_fullnode_data_mount_safe
-
-  old_image_id="$(docker inspect umbrel --format '{{.Image}}')"
-
-  if [[ "$DRY_RUN" -eq 1 ]]; then
-    echo "[DRY-RUN] docker pull $UMBREL_IMAGE"
-    echo "[DRY-RUN] if image changed: stop and recreate umbrel with $(umbrel_container_data_source):/data preserved"
-    return 0
-  fi
-
-  info "[0.4.5] Updating Umbrel system image if needed; apps and data stay in $DATA_DIR"
-  docker pull "$UMBREL_IMAGE" >/dev/null
-  new_image_id="$(umbrel_image_id "$UMBREL_IMAGE")"
-
-  if [[ -z "$new_image_id" ]]; then
-    err "[0.4.5] Could not resolve pulled image ID for $UMBREL_IMAGE"
+  if ! begin_umbrel_candidate_transaction; then
+    fail_umbrel_transaction "legacy system container refresh failed"
     return 1
   fi
-
-  if [[ "$old_image_id" == "$new_image_id" ]]; then
-    info "[0.4.5] Umbrel system container image is already current"
-    return 0
-  fi
-
-  info "[0.4.5] Applying Umbrel system container update; web UI may be unavailable briefly"
-  print_running_app_container_hint
-  load_running_app_containers
-  stop_running_app_containers
-  docker stop umbrel >/dev/null
-  docker rm umbrel >/dev/null
-  run_umbrel_container "$UMBREL_IMAGE" >/dev/null
-
-  if ! wait_for_umbrel_container; then
-    rollback_umbrel_container "$old_image_id"
+  if ! complete_umbrel_transaction; then
     return 1
   fi
-
-  if command -v curl >/dev/null 2>&1; then
-    curl -fsS --max-time 10 http://127.0.0.1/ >/dev/null 2>&1 || warn "[0.4.5] Umbrel container is running, but HTTP is not ready yet"
-  fi
-
-  start_stopped_app_containers || warn "[0.4.5] Some previously running Umbrel app containers did not restart cleanly after the system container refresh."
-
-  info "[0.4.5] Umbrel system container updated; existing apps and data were preserved"
+  info "Umbrel system container refresh completed and restored ordinary apps."
 }
 
 patch_to_0_4_5() {
@@ -1683,6 +2010,8 @@ update_install_state() {
   local step="${2:-}"
   local version="${3:-}"
   local message="${4:-}"
+  local runtime_image="${5:-}"
+  local runtime_image_id="${6:-}"
   if [[ "$DRY_RUN" -eq 1 ]]; then
     echo "[DRY-RUN] update $INSTALL_STATE_FILE (action=$action step=${step:-none} version=${version:-unchanged})"
     return 0
@@ -1691,10 +2020,10 @@ update_install_state() {
   mkdir -p "$INSTALL_STATE_DIR"
   local ts
   ts="$(date -Is)"
-  python3 - "$INSTALL_STATE_FILE" "$action" "$step" "$version" "$message" "$ts" "$SCRIPT_VERSION" "$DATA_DIR" "$UMBREL_IMAGE" <<'PY'
+  python3 - "$INSTALL_STATE_FILE" "$action" "$step" "$version" "$message" "$ts" "$SCRIPT_VERSION" "$DATA_DIR" "$UMBREL_IMAGE" "$runtime_image" "$runtime_image_id" <<'PY'
 import json, os, sys, tempfile
 
-path, action, step, version, message, ts, script_version, data_dir, image = sys.argv[1:10]
+path, action, step, version, message, ts, script_version, data_dir, target_image, runtime_image, runtime_image_id = sys.argv[1:12]
 base = {}
 if os.path.exists(path):
     try:
@@ -1709,7 +2038,6 @@ if not isinstance(steps, list):
 base["applied_steps"] = steps
 base["script_version"] = script_version
 base["data_dir"] = base.get("data_dir") or data_dir
-base["image"] = image
 base["updated_at"] = ts
 base["updated_by"] = "m1s-update-umbrel.sh"
 
@@ -1717,6 +2045,7 @@ if action == "started":
     base["in_progress_step"] = step
     base["failed_step"] = None
     base["last_error"] = None
+    base["target_image"] = target_image
 elif action == "completed":
     if step and step not in steps:
         steps.append(step)
@@ -1725,17 +2054,28 @@ elif action == "completed":
     base["in_progress_step"] = None
     base["failed_step"] = None
     base["last_error"] = None
+    base.pop("last_attempted_image", None)
 elif action == "failed":
     base["in_progress_step"] = None
     base["failed_step"] = step
     base["last_error"] = message or "migration step failed"
+    base["last_attempted_image"] = target_image
+    base.pop("target_image", None)
+    if runtime_image and runtime_image_id:
+        base["image"] = runtime_image
+        base["image_id"] = runtime_image_id
 elif action == "finalized":
     if version:
         base["version"] = version
         base["host_version"] = version
+    if runtime_image and runtime_image_id:
+        base["image"] = runtime_image
+        base["image_id"] = runtime_image_id
     base["in_progress_step"] = None
     base["failed_step"] = None
     base["last_error"] = None
+    base.pop("target_image", None)
+    base.pop("last_attempted_image", None)
 else:
     raise SystemExit(f"unknown state action: {action}")
 
@@ -1751,8 +2091,28 @@ PY
 
 mark_step_started() { update_install_state started "$1" "" ""; }
 mark_step_completed() { update_install_state completed "$1" "$2" ""; }
-mark_step_failed() { update_install_state failed "$1" "" "$2"; }
-finalize_install_state() { update_install_state finalized "" "$1" ""; }
+mark_step_failed() {
+  local runtime_image runtime_image_id
+  runtime_image="$(docker inspect umbrel --format '{{.Config.Image}}' 2>/dev/null || true)"
+  runtime_image_id="$(docker inspect umbrel --format '{{.Image}}' 2>/dev/null || true)"
+  update_install_state failed "$1" "" "$2" "$runtime_image" "$runtime_image_id"
+}
+finalize_install_state() {
+  local version="$1"
+  local runtime_image runtime_image_id expected_image_id
+
+  if [[ "$version" != "0.5.25" ]]; then
+    update_install_state finalized "" "$version" ""
+    return 0
+  fi
+
+  runtime_image="$(docker inspect umbrel --format '{{.Config.Image}}' 2>/dev/null || true)"
+  runtime_image_id="$(docker inspect umbrel --format '{{.Image}}' 2>/dev/null || true)"
+  expected_image_id="${UMBREL_TRANSACTION_TARGET_IMAGE_ID:-$(umbrel_image_id "$UMBREL_IMAGE")}"
+  [[ "$runtime_image" == "$UMBREL_IMAGE" ]] || { err "Refusing to finalize 0.5.25 because the live Umbrel image ref is not the candidate target."; return 1; }
+  [[ -n "$expected_image_id" && "$runtime_image_id" == "$expected_image_id" ]] || { err "Refusing to finalize 0.5.25 because the live Umbrel image ID is not the resolved candidate."; return 1; }
+  update_install_state finalized "" "$version" "" "$runtime_image" "$runtime_image_id"
+}
 
 is_step_applied() {
   local step="$1"
@@ -1832,13 +2192,15 @@ run_migration_step() {
   mark_step_started "$step"
   info "[$step] Applying migration ($from_version -> $to_version)"
   if ! "$apply_fn"; then
-    mark_step_failed "$step" "apply failed"
+    mark_step_failed "$step" "${UMBREL_TRANSACTION_FAILURE_MESSAGE:-apply failed}"
+    UMBREL_TRANSACTION_FAILURE_MESSAGE=""
     return 1
   fi
 
   info "[$step] Postcheck"
   if ! "$postcheck_fn"; then
-    mark_step_failed "$step" "postcheck failed"
+    mark_step_failed "$step" "${UMBREL_TRANSACTION_FAILURE_MESSAGE:-postcheck failed}"
+    UMBREL_TRANSACTION_FAILURE_MESSAGE=""
     return 1
   fi
 
@@ -1939,8 +2301,8 @@ apply_0_4_9_to_0_4_10() { install_umbrel_safe_shutdown; }
 postcheck_0_4_9_to_0_4_10() { postcheck_umbrel_safe_shutdown; }
 
 precheck_0_4_10_to_0_4_11() { precheck_common_canonical_install; }
-apply_0_4_10_to_0_4_11() { install_umbrel_safe_shutdown; restore_umbrel_shutdown_ui; }
-postcheck_0_4_10_to_0_4_11() { postcheck_umbrel_safe_shutdown; verify_umbrel_shutdown_ui_restored; }
+apply_0_4_10_to_0_4_11() { install_umbrel_safe_shutdown; }
+postcheck_0_4_10_to_0_4_11() { postcheck_umbrel_safe_shutdown; }
 
 precheck_0_4_11_to_0_4_12() { precheck_common_canonical_install; }
 apply_0_4_11_to_0_4_12() { install_umbrel_safe_shutdown; }
@@ -2325,6 +2687,52 @@ precheck_0_5_23_to_0_5_24() { precheck_common_canonical_install; }
 apply_0_5_23_to_0_5_24() { info "0.5.24 updates the public Bitcoin recovery subsection heading style; no immediate host mutation required."; }
 postcheck_0_5_23_to_0_5_24() { return 0; }
 
+precheck_0_5_24_to_0_5_25() {
+  assert_fullnode_data_mount_safe || return 1
+  [[ -f "$INSTALL_STATE_FILE" ]] || { err "$INSTALL_STATE_FILE is missing; refusing the 1.7.4 transaction."; return 1; }
+  python3 -m json.tool "$INSTALL_STATE_FILE" >/dev/null || { err "$INSTALL_STATE_FILE is not valid JSON."; return 1; }
+  [[ -w "$DATA_DIR" ]] || { err "$DATA_DIR is not writable; refusing the 1.7.4 transaction."; return 1; }
+  docker inspect umbrel >/dev/null 2>&1 || { err "Existing Umbrel top-level container is missing."; return 1; }
+}
+
+apply_0_5_24_to_0_5_25() {
+  UMBREL_TRANSACTION_FAILURE_MESSAGE=""
+  if ! begin_umbrel_candidate_transaction; then
+    fail_umbrel_transaction "candidate start failed"
+    return 1
+  fi
+  if ! install_umbrel_safe_shutdown; then
+    fail_umbrel_transaction "safe-shutdown patch failed"
+    return 1
+  fi
+}
+
+report_candidate_postcheck_failure() {
+  local predicate="$1"
+  local observed_state="$2"
+  err "Candidate postcheck diagnostic: predicate=$predicate observed-state=$observed_state"
+}
+
+postcheck_0_5_24_to_0_5_25() {
+  if ! assert_fullnode_data_mount_safe; then
+    report_candidate_postcheck_failure "mount-safety" "not-safe"
+  elif ! candidate_umbrel_container_ready "$UMBREL_TRANSACTION_TARGET_IMAGE_ID" "$UMBREL_TRANSACTION_DATA_SOURCE"; then
+    report_candidate_postcheck_failure "top-level-readiness" "not-ready"
+  elif ! wait_for_postcheck_system_containers; then
+    report_candidate_postcheck_failure "system-container-readiness" "not-ready"
+  elif ! postcheck_umbrel_safe_shutdown; then
+    report_candidate_postcheck_failure "safe-shutdown-verification" "not-verified"
+  elif ! wait_for_umbrel_http; then
+    report_candidate_postcheck_failure "http-readiness" "not-responsive"
+  else
+    complete_umbrel_transaction
+    return 0
+  fi
+
+  fail_umbrel_transaction "candidate postcheck failed"
+  return 1
+}
+
 # ---------------------------------------------------------------------------
 # Main flow
 # ---------------------------------------------------------------------------
@@ -2391,7 +2799,10 @@ for step in "${PLANNED_MIGRATIONS[@]}"; do
   fi
 done
 
-finalize_install_state "$TARGET_VERSION"
+if ! finalize_install_state "$TARGET_VERSION"; then
+  err "Final install state was not published because live Umbrel runtime verification failed."
+  exit 1
+fi
 
 echo
 echo "==========================================="

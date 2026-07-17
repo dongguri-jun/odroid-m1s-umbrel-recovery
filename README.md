@@ -450,7 +450,7 @@ sudo bash scripts/m1s-update-umbrel.sh
 1. `cd /home/*/odroid-m1s-umbrel-recovery` — 처음 설치할 때 받아 둔 저장소 폴더로 이동합니다. 별표(`*`)는 "어떤 사용자 이름이든 자동으로 찾기"를 의미하므로, 사용자 이름을 직접 입력할 필요가 없습니다.
 2. `sudo git -c safe.directory="$(pwd)" fetch https://github.com/dongguri-jun/odroid-m1s-umbrel-recovery.git main` — 장비에 저장된 `origin` 설정을 믿지 않고, 공식 GitHub 저장소에서 최신 변경 내역을 직접 가져옵니다.
 3. `sudo git -c safe.directory="$(pwd)" reset --hard FETCH_HEAD` — 방금 공식 저장소에서 가져온 최신 파일 상태와 로컬 파일을 똑같이 맞춥니다. 이 과정에서 로컬의 업데이트 스크립트 자신도 최신 버전으로 교체됩니다.
-4. `sudo bash scripts/m1s-update-umbrel.sh --check` — 아무것도 바꾸지 않고 **현재 설치된 버전 · 최신 버전 · 적용될 수정 목록**만 보여 줍니다. 이미 최신이면 "No migrations needed" 처럼 안내됩니다.
+4. `sudo bash scripts/m1s-update-umbrel.sh --check` — 서비스와 데이터 마이그레이션은 적용하지 않지만, 기본 official-origin auto-sync가 저장소 파일을 갱신할 수 있습니다. **현재 설치된 버전 · 최신 버전 · 적용될 수정 목록**만 보여 줍니다. 이미 최신이면 "No migrations needed" 처럼 안내됩니다.
 5. `sudo bash scripts/m1s-update-umbrel.sh` — 실제 업데이트를 적용합니다. 이미 최신이면 아무 작업 없이 끝납니다.
 
 만약 `--check` 결과의 `Script version` 이 `0.5.6` 이하로 나오고 바로 “No migrations needed” 로 끝나면, 그 장비에는 아직 자동 동기화 기능 자체가 없는 상태입니다. 이 경우에만 아래 두 줄을 **처음 한 번만** 실행한 뒤, 위 5줄을 다시 실행하세요.
@@ -850,6 +850,8 @@ http://umbrel.local
 Umbrel 컨테이너를 업데이트해도 ODROID M1S의 Ubuntu 커널이 함께 업데이트되지는 않습니다.
 
 커널 보안 패치, Ubuntu 패키지 업데이트, 재부팅 필요 여부 확인은 별도의 Ubuntu 시스템 업데이트 절차로 관리해야 합니다. 이 저장소에서는 `scripts/m1s-update-system-packages.sh` 스크립트로 Ubuntu 패키지 업데이트를 별도로 진행합니다.
+
+Umbrel UI의 OS 업데이트 버튼은 이 Dockur 기반 설치 방식에서 지원되지 않습니다. Umbrel 업데이트는 11번의 저장소 updater 절차를 사용하세요.
 
 ### 15-2. Umbrel UI를 통한 외장 USB 디스크 관리
 

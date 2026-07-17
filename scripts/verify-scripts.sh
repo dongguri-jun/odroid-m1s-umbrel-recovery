@@ -44,7 +44,13 @@ from pathlib import Path
 import re
 
 version = Path('VERSION').read_text(encoding='utf-8').strip()
-for path in [
+expected_version = '0.5.25'
+if not re.fullmatch(r'\d+\.\d+\.\d+', version):
+    raise SystemExit(f'VERSION must be plain semver MAJOR.MINOR.PATCH, got {version!r}')
+if version != expected_version:
+    raise SystemExit(f'VERSION {version} does not match expected release {expected_version}')
+
+covered = [
     Path('scripts/m1s-clean-install-umbrel.sh'),
     Path('scripts/m1s-update-umbrel.sh'),
     Path('scripts/m1s-initial-setup.sh'),
@@ -55,13 +61,24 @@ for path in [
     Path('scripts/m1s-request-bitcoin-chainstate-rebuild.sh'),
     Path('scripts/m1s-check-bitcoin-recovery-status.sh'),
     Path('scripts/m1s-check-bitcoin-chainstate-rebuild.sh'),
-]:
+]
+detected = sorted(
+    path for path in Path('scripts').glob('*.sh')
+    if re.search(r'^SCRIPT_VERSION="[^"]+"', path.read_text(encoding='utf-8'), flags=re.M)
+)
+if detected != sorted(covered):
+    raise SystemExit(
+        'Version consistency coverage mismatch: detected SCRIPT_VERSION files are ' +
+        ', '.join(str(path) for path in detected)
+    )
+
+for path in covered:
     text = path.read_text(encoding='utf-8')
     match = re.search(r'^SCRIPT_VERSION="([^"]+)"', text, flags=re.M)
     if not match:
         raise SystemExit(f'{path}: SCRIPT_VERSION is missing')
-    if match.group(1) != version:
-        raise SystemExit(f'{path}: SCRIPT_VERSION {match.group(1)} does not match VERSION {version}')
+    if match.group(1) != expected_version:
+        raise SystemExit(f'{path}: SCRIPT_VERSION {match.group(1)} does not match expected {expected_version}')
 print(f'  ok VERSION and script versions match ({version})')
 PY
 
@@ -111,7 +128,12 @@ required = [
     'Refusing to format the root/system disk',
     'TARGET_DISK" == "$ROOT_DISK',
     'run_cmd mkfs.ext4 -F "$TARGET_PARTITION"',
-    'IMAGE="dockurr/umbrel:1.7.3@sha256:',
+    'IMAGE="dockurr/umbrel:1.7.4@sha256:e00c07a838ce3b50641a0a984abe155a7223abacab3426a55409edf21b6e0124"',
+    '--image IMAGE',
+    '    --image)',
+    'RESOLVED_UMBREL_IMAGE_ID=""',
+    'RESOLVED_UMBREL_IMAGE_ARCHITECTURE=""',
+    'EXPECTED_TOR_PROXY_IMAGE="ghcr.io/getumbrel/tor:0.4.9.11"',
     'install_docker_engine_from_official_apt_repo',
     'https://download.docker.com/linux/ubuntu/gpg',
     'docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin',
@@ -119,6 +141,32 @@ required = [
     'expected $TARGET_PARTITION mounted at $DATA_DIR',
     'RequiresMountsFor=$DATA_DIR',
     'docker run -d --name umbrel',
+    'pull_and_verify_umbrel_image',
+    'verify_pulled_umbrel_image',
+    "docker image inspect --format='{{.Id}}' \"$IMAGE\"",
+    "docker image inspect --format='{{.Architecture}}' \"$IMAGE\"",
+    'Pulled Umbrel image architecture is',
+    'RESOLVED_UMBREL_IMAGE_ID="$image_id"',
+    'RESOLVED_UMBREL_IMAGE_ARCHITECTURE="$image_architecture"',
+    'umbrel_runtime_health_once',
+    'wait_for_umbrel_runtime_health',
+    'record_install_state',
+    "docker inspect --format='{{.Config.Image}}' umbrel",
+    "docker inspect --format='{{.Image}}' umbrel",
+    '"$image_ref" != "$IMAGE"',
+    '"$image_id" != "$RESOLVED_UMBREL_IMAGE_ID"',
+    '"image_id": image_id',
+    'HostConfig.RestartPolicy.Name',
+    'eq .Destination "/data"',
+    'eq .Destination "/var/run/docker.sock"',
+    'CANONICAL_AUTH_CONTAINER="umbrel_auth"',
+    'CANONICAL_TOR_PROXY_CONTAINER="umbrel_tor_proxy"',
+    'docker inspect --format=\'{{.State.Status}}\' "$CANONICAL_AUTH_CONTAINER"',
+    'docker inspect --format=\'{{.State.Status}}\' "$CANONICAL_TOR_PROXY_CONTAINER"',
+    'docker inspect --format=\'{{.Config.Image}}\' "$CANONICAL_TOR_PROXY_CONTAINER"',
+    'is_expected_tor_proxy_image',
+    '@sha256:[0-9a-f]{64}',
+    'curl -fsS --max-time 10 http://127.0.0.1',
     'install_umbrel_safe_shutdown',
     'm1s-umbrel-autostart.service',
     'docker update --restart=always umbrel',
@@ -126,6 +174,10 @@ required = [
     'docker exec -i umbrel python3',
     'docker update --restart=no',
     'sleep 45; docker stop --time 15 "$(hostname)"',
+    'patch_umbrel_shutdown_ui',
+    'verify_umbrel_shutdown_ui',
+    'ce.isError||ce.failureCount>0',
+    'he==="shutting-down"&&!v&&(b(!0),setTimeout(()=>S(!0),30*Kh))',
     'require_nvme_target_disk',
     'detect_root_disk',
     'require_emmc_root_disk',
@@ -164,6 +216,9 @@ if missing:
         print(f'  {needle}')
     raise SystemExit(1)
 
+if 'dockurr/umbrel:1.7.3' in text:
+    raise SystemExit('Installer must not retain the old Dockur Umbrel 1.7.3 product pin')
+
 def pos(needle: str) -> int:
     idx = text.find(needle)
     if idx == -1:
@@ -184,6 +239,28 @@ order_checks = [
 for label, before, after in order_checks:
     if pos(before) > pos(after):
         raise SystemExit(f'Order invariant failed: {label}')
+
+install_phase = text[text.find('info "Pulling and starting Umbrel"'):]
+def install_pos(needle: str) -> int:
+    idx = install_phase.find(needle)
+    if idx == -1:
+        raise SystemExit(f'Missing installer runtime sequence text: {needle}')
+    return idx
+
+if install_pos('pull_and_verify_umbrel_image') > install_pos('run_cmd docker run -d --name umbrel'):
+    raise SystemExit('Order invariant failed: pulled image verification must happen before Umbrel run')
+if install_pos('install_umbrel_safe_shutdown') > install_pos('wait_for_umbrel_runtime_health'):
+    raise SystemExit('Order invariant failed: safe shutdown must be installed before runtime health')
+if install_pos('wait_for_umbrel_runtime_health') > install_pos('info "Recording install state"'):
+    raise SystemExit('Order invariant failed: runtime health must pass before install state recording')
+source_branch = 'he==="shutting-down"&&!v&&(ce.isError||ce.failureCount>0)&&(b(!0),setTimeout(()=>S(!0),30*Kh))'
+target_branch = 'he==="shutting-down"&&!v&&(b(!0),setTimeout(()=>S(!0),30*Kh))'
+if text.count(f"source = '{source_branch}'") != 2 or text.count(f"target = '{target_branch}'") != 2:
+    raise SystemExit('Installer must pin the exact 1.7.4 compiled shutdown UI source and target in patch and verify helpers')
+if text.count('text.replace(source, target, 1)') != 1:
+    raise SystemExit('Installer shutdown UI patch must replace exactly one compiled branch occurrence')
+if 'd.useEffect(()=>{F==="shutting-down"' in text or '30*Gl' in text:
+    raise SystemExit('Installer must not retain the obsolete local .tmp minified shutdown UI assumption')
 print('  ok installer safety invariants and critical ordering')
 PY
 
@@ -210,7 +287,15 @@ required = [
     'CURRENT_VERSION',
     'TARGET_VERSION',
     'DATA_DIR="/mnt/fullnode"',
-    'UMBREL_IMAGE="dockurr/umbrel:1.7.3@sha256:',
+    'UMBREL_IMAGE="dockurr/umbrel:1.7.4@sha256:e00c07a838ce3b50641a0a984abe155a7223abacab3426a55409edf21b6e0124"',
+    'LEGACY_SYSTEM_CONTAINERS=(auth tor_proxy)',
+    'CANDIDATE_SYSTEM_CONTAINERS=(umbrel_auth umbrel_tor_proxy)',
+    'ALL_KNOWN_SYSTEM_CONTAINERS=("${LEGACY_SYSTEM_CONTAINERS[@]}" "${CANDIDATE_SYSTEM_CONTAINERS[@]}")',
+    'TOR_PROXY_IMAGE="ghcr.io/getumbrel/tor:0.4.9.11"',
+    'is_expected_tor_proxy_image',
+    '@sha256:[0-9a-f]{64}',
+    'UMBREL_TRANSACTION_TARGET_IMAGE_ID=""',
+    'UMBREL_TRANSACTION_FAILURE_MESSAGE=""',
     'MIGRATIONS=(',
     '"0.1.0_to_0.2.0"',
     '"0.4.4_to_0.4.5"',
@@ -267,6 +352,10 @@ required = [
     'docker exec -i umbrel python3',
     'docker update --restart=no',
     'sleep 45; docker stop --time 15 "$(hostname)"',
+    'patch_umbrel_shutdown_ui',
+    'verify_umbrel_shutdown_ui',
+    'ce.isError||ce.failureCount>0',
+    'he==="shutting-down"&&!v&&(b(!0),setTimeout(()=>S(!0),30*Kh))',
     'precheck_0_4_7_to_0_4_8',
     'apply_0_4_7_to_0_4_8',
     'postcheck_0_4_7_to_0_4_8',
@@ -276,8 +365,6 @@ required = [
     'precheck_0_4_9_to_0_4_10',
     'apply_0_4_9_to_0_4_10',
     'postcheck_0_4_9_to_0_4_10',
-    'restore_umbrel_shutdown_ui',
-    'verify_umbrel_shutdown_ui_restored',
     'precheck_0_4_10_to_0_4_11',
     'apply_0_4_10_to_0_4_11',
     'postcheck_0_4_10_to_0_4_11',
@@ -372,11 +459,31 @@ required = [
     '0.5.21_to_0.5.22',
     '0.5.22_to_0.5.23',
     '0.5.23_to_0.5.24',
+    '0.5.24_to_0.5.25',
     'LEGACY_INCUS_PACKAGES=(incus incus-base incus-client lxd-agent-loader)',
     'cleanup_legacy_incus_lxd_remnants',
     'verify_legacy_incus_lxd_absent',
     'apt-get -o DPkg::Lock::Timeout=300 purge -y "${packages_to_purge[@]}"',
     'rm -rf -- "$path"',
+    'is_system_container',
+    'system_containers_need_replacement',
+    'candidate_umbrel_container_ready',
+    'candidate_system_containers_ready',
+    'replace_system_containers',
+    'rollback_umbrel_transaction',
+    'fail_umbrel_transaction',
+    'begin_umbrel_candidate_transaction',
+    'complete_umbrel_transaction',
+    'precheck_0_5_24_to_0_5_25',
+    'apply_0_5_24_to_0_5_25',
+    'postcheck_0_5_24_to_0_5_25',
+    'last_attempted_image',
+    'target_image',
+    'runtime_image',
+    'runtime_image_id',
+    'expected_image_id="${UMBREL_TRANSACTION_TARGET_IMAGE_ID:-$(umbrel_image_id "$UMBREL_IMAGE")}"',
+    'Refusing to finalize 0.5.25 because the live Umbrel image ref is not the candidate target.',
+    'Refusing to finalize 0.5.25 because the live Umbrel image ID is not the resolved candidate.',
   ]
 missing = [needle for needle in required if needle not in text]
 if missing:
@@ -384,6 +491,9 @@ if missing:
     for needle in missing:
         print(f'  {needle}')
     raise SystemExit(1)
+
+if 'UMBREL_IMAGE="dockurr/umbrel:1.7.3@sha256:' in text:
+    raise SystemExit('Updater must not retain the old Dockur Umbrel 1.7.3 product pin')
 
 def pos(needle: str, haystack: str = text) -> int:
     idx = haystack.find(needle)
@@ -400,9 +510,9 @@ if pos('if [[ "$CHECK_ONLY" -eq 1 ]]', main) > pos('finalize_install_state "$TAR
     raise SystemExit('--check must exit before final install state can be written')
 if pos('mark_step_started "$step"') > pos('if ! "$apply_fn"'):
     raise SystemExit('migration step must be marked in-progress before apply')
-if pos('if ! "$apply_fn"') > pos('mark_step_failed "$step" "apply failed"'):
+if pos('if ! "$apply_fn"') > pos('mark_step_failed "$step" "${UMBREL_TRANSACTION_FAILURE_MESSAGE:-apply failed}"'):
     raise SystemExit('apply failure must be recorded before returning from step')
-if pos('if ! "$postcheck_fn"') > pos('mark_step_failed "$step" "postcheck failed"'):
+if pos('if ! "$postcheck_fn"') > pos('mark_step_failed "$step" "${UMBREL_TRANSACTION_FAILURE_MESSAGE:-postcheck failed}"'):
     raise SystemExit('postcheck failure must be recorded before returning from step')
 completed_block = text[pos('elif action == "completed":'):pos('elif action == "failed":')]
 if 'base["version"] = version' in completed_block or 'base["host_version"] = version' in completed_block:
@@ -417,22 +527,85 @@ if pos('docker update --restart=always umbrel', safe) > pos('docker start umbrel
     raise SystemExit('Boot restore service must restore restart policy before starting Umbrel')
 if pos('systemctl enable m1s-umbrel-autostart.service', safe) > pos('docker restart --time 60 umbrel', safe):
     raise SystemExit('Boot restore service must be enabled before Umbrel is restarted into patched code')
+if 'restore_umbrel_shutdown_ui' in text or 'verify_umbrel_shutdown_ui_restored' in text:
+    raise SystemExit('Updater must not restore the upstream error-gated shutdown UI branch')
+source_branch = 'he==="shutting-down"&&!v&&(ce.isError||ce.failureCount>0)&&(b(!0),setTimeout(()=>S(!0),30*Kh))'
+target_branch = 'he==="shutting-down"&&!v&&(b(!0),setTimeout(()=>S(!0),30*Kh))'
+if text.count(f"source = '{source_branch}'") != 2 or text.count(f"target = '{target_branch}'") != 2:
+    raise SystemExit('Updater must pin the exact 1.7.4 compiled shutdown UI source and target in patch and verify helpers')
+if text.count('text.replace(source, target, 1)') != 1:
+    raise SystemExit('Updater shutdown UI patch must replace exactly one compiled branch occurrence')
+if '90*Gl' in text or 'm1s-shutdown-0.4.' in text:
+    raise SystemExit('Updater must not restore historical cache-busted or 90-second shutdown UI branches')
+if 'd.useEffect(()=>{F==="shutting-down"' in text or '30*Gl' in text:
+    raise SystemExit('Updater must not retain the obsolete local .tmp minified shutdown UI assumption')
+if safe.count('patch_umbrel_shutdown_ui') < 2:
+    raise SystemExit('Safe shutdown install path must patch the compiled shutdown UI before restart and on retry')
+if safe.count('verify_umbrel_shutdown_ui') < 3:
+    raise SystemExit('Safe shutdown install/postcheck path must verify the compiled shutdown UI patch')
+if pos('patch_umbrel_shutdown_ui', safe) > pos('docker restart --time 60 umbrel', safe):
+    raise SystemExit('Compiled shutdown UI patch must be written before Umbrel is restarted into patched code')
 
 refresh = text[pos('refresh_umbrel_system_container()'):]
-if pos('assert_fullnode_data_mount_safe', refresh) > pos('docker pull "$UMBREL_IMAGE"', refresh):
+transaction = text[pos('begin_umbrel_candidate_transaction()'):pos('wait_for_umbrel_http()')]
+if pos('assert_fullnode_data_mount_safe', transaction) > pos('docker pull "$UMBREL_IMAGE"', transaction):
     raise SystemExit('Umbrel data mount safety check must happen before docker pull')
-if pos('load_running_app_containers', refresh) > pos('stop_running_app_containers', refresh):
-    raise SystemExit('Updater must capture running app containers before attempting to stop them')
-if pos('stop_running_app_containers', refresh) > pos('docker stop umbrel', refresh):
-    raise SystemExit('Umbrel app containers must stop before the top-level umbrel container is stopped')
-for mutator in ['docker stop umbrel', 'docker rm umbrel', 'run_umbrel_container "$UMBREL_IMAGE"']:
-    if pos('assert_fullnode_data_mount_safe', refresh) > pos(mutator, refresh):
-        raise SystemExit(f'Umbrel data mount safety check must happen before {mutator}')
-if pos('if [[ "$DRY_RUN" -eq 1 ]]', refresh) > pos('docker pull "$UMBREL_IMAGE"', refresh):
+if pos('load_running_app_containers') > pos('UMBREL_TRANSACTION_APP_CONTAINERS=("${STOPPED_APP_CONTAINERS[@]}")'):
+    raise SystemExit('Updater must capture running ordinary apps into transaction context')
+if pos('is_system_container "$container" && continue') > pos('STOPPED_APP_CONTAINERS+=("$container")'):
+    raise SystemExit('System containers must be excluded before ordinary app capture')
+if pos('if [[ "$DRY_RUN" -eq 1 ]]', transaction) > pos('docker pull "$UMBREL_IMAGE"', transaction):
     raise SystemExit('Dry-run branch must return before docker pull mutates image cache')
-if pos('start_stopped_app_containers', refresh) < pos('wait_for_umbrel_container', refresh):
-    raise SystemExit('Previously running app containers must only restart after the new umbrel container is running')
-print('  ok updater preserves data-mount gates, check/dry-run path, and canonical Umbrel refresh flags')
+if pos('docker pull "$UMBREL_IMAGE"', transaction) > pos('UMBREL_TRANSACTION_ACTIVE=1', transaction):
+    raise SystemExit('Candidate image pull and ID resolution must happen before transaction becomes active')
+if pos('UMBREL_TRANSACTION_ACTIVE=1', transaction) > pos('UMBREL_TRANSACTION_MUTATED=1', transaction):
+    raise SystemExit('Transaction must become active before any container mutation is marked')
+if pos('stop_running_app_containers', transaction) > pos('replace_system_containers', transaction):
+    raise SystemExit('Ordinary app containers must stop before Umbrel-owned system containers are replaced')
+if pos('replace_system_containers', transaction) > pos('docker stop umbrel', transaction):
+    raise SystemExit('System containers must be replaced before the top-level umbrel container is stopped')
+if pos('docker stop umbrel', transaction) > pos('docker rm umbrel', transaction):
+    raise SystemExit('Top-level umbrel must stop before it is removed')
+if pos('docker rm umbrel', transaction) > pos('run_umbrel_container_with_data_source "$UMBREL_IMAGE"', transaction):
+    raise SystemExit('Top-level umbrel must be removed before candidate run')
+if pos('run_umbrel_container_with_data_source "$UMBREL_IMAGE"', transaction) > pos('wait_for_umbrel_candidate_pre_health', transaction):
+    raise SystemExit('Candidate pre-health must run after candidate container start')
+rollback = text[pos('rollback_umbrel_transaction()'):pos('fail_umbrel_transaction()')]
+if pos('for container in umbrel "${ALL_KNOWN_SYSTEM_CONTAINERS[@]}"', rollback) > pos('run_umbrel_container_with_data_source "$UMBREL_TRANSACTION_OLD_IMAGE_ID"', rollback):
+    raise SystemExit('Rollback must remove candidate system stack before restarting old image')
+postcheck_wait = text[pos('wait_for_postcheck_system_containers()'):pos('replace_system_containers()')]
+for required in ['CANDIDATE_READINESS_ATTEMPTS', 'CANDIDATE_RETRY_DELAY_SECONDS', 'postcheck_system_containers_ready']:
+    if required not in postcheck_wait:
+        raise SystemExit('0.5.25 postcheck system readiness must reuse the bounded candidate retry contract')
+postcheck_0525 = text[pos('postcheck_0_5_24_to_0_5_25()'):pos('# ---------------------------------------------------------------------------\n# Main flow')]
+for predicate, observed_state in [
+    ('mount-safety', 'not-safe'),
+    ('top-level-readiness', 'not-ready'),
+    ('system-container-readiness', 'not-ready'),
+    ('safe-shutdown-verification', 'not-verified'),
+    ('http-readiness', 'not-responsive'),
+]:
+    expected = f'report_candidate_postcheck_failure "{predicate}" "{observed_state}"'
+    if expected not in postcheck_0525:
+        raise SystemExit(f'0.5.25 postcheck must identify {predicate} failures with a generalized observed state')
+if pos('candidate_umbrel_container_ready', postcheck_0525) > pos('wait_for_postcheck_system_containers', postcheck_0525):
+    raise SystemExit('0.5.25 postcheck must verify top-level readiness before bounded system-container convergence')
+if pos('wait_for_postcheck_system_containers', postcheck_0525) > pos('postcheck_umbrel_safe_shutdown', postcheck_0525):
+    raise SystemExit('0.5.25 postcheck must verify system containers before safe-shutdown success')
+if pos('postcheck_umbrel_safe_shutdown', postcheck_0525) > pos('wait_for_umbrel_http', postcheck_0525):
+    raise SystemExit('0.5.25 postcheck must verify safe-shutdown before HTTP readiness completes the transaction')
+if pos('fail_umbrel_transaction "candidate postcheck failed"', postcheck_0525) > pos('return 1', postcheck_0525):
+    raise SystemExit('0.5.25 postcheck failure must roll back before returning failure')
+finalize = text[pos('finalize_install_state()'):pos('is_step_applied()')]
+finalize_0525_start = finalize.find('runtime_image="$(docker inspect umbrel --format')
+if finalize_0525_start == -1:
+    raise SystemExit('0.5.25 finalization must inspect the live Umbrel runtime image')
+finalize_0525 = finalize[finalize_0525_start:]
+if pos('docker inspect umbrel --format \'{{.Config.Image}}\'', finalize_0525) > pos('update_install_state finalized', finalize_0525):
+    raise SystemExit('Finalization must derive image ref from live runtime before writing state')
+if pos('docker inspect umbrel --format \'{{.Image}}\'', finalize_0525) > pos('update_install_state finalized', finalize_0525):
+    raise SystemExit('Finalization must derive image ID from live runtime before writing state')
+print('  ok updater preserves data-mount gates, check/dry-run path, 1.7.4 transaction rollback, and runtime-state invariants')
 PY
 
 
@@ -444,7 +617,7 @@ for forbidden in ['mkfs.', 'sfdisk', 'parted', 'wipefs', 'sgdisk', 'gdisk', 'blk
     if forbidden in text:
         raise SystemExit(f'System package updater must never contain destructive disk command: {forbidden}')
 required = [
-    'SCRIPT_VERSION="0.5.24"',
+    'SCRIPT_VERSION="0.5.25"',
     '--dry-run',
     '--no-reboot',
     'STOP_TIMEOUT_SECONDS=300',
@@ -549,6 +722,9 @@ required = [
     'GitHub Release already exists',
     'CHANGELOG.md is missing section',
     'bash scripts/check-public-scrub.sh',
+    'Release notes scrub failed',
+    'release notes expanded $(pwd) to this checkout path',
+    r'safe\.directory="\$\(pwd\)"',
 ]
 missing = [needle for needle in required if needle not in text]
 if missing:
@@ -556,7 +732,7 @@ if missing:
     for needle in missing:
         print(f'  {needle}')
     raise SystemExit(1)
-print('  ok release script gates tags/releases on clean tree, pushed HEAD, changelog, and successful CI')
+print('  ok release script gates tags/releases on clean tree, pushed HEAD, changelog, successful CI, and release-note scrub')
 PY
 
 printf '[verify] public-clean publish guard\n'
@@ -589,6 +765,8 @@ files = {
         'PUBLIC_SCRUB_DENYLIST',
         'private IPv4 address',
         'MAC address',
+        'local checkout path',
+        'expanded safe.directory path',
         'public metadata scrub failed',
     ],
 }

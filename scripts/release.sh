@@ -190,6 +190,29 @@ If the local updater is still `0.5.6` or older and exits with “No migrations n
 PY
 )"
 
+NOTES="$notes" REPO_ROOT="$repo_root" python3 - <<'PY'
+import os
+import re
+
+notes = os.environ['NOTES']
+repo_root = os.environ['REPO_ROOT']
+
+checks = [
+    ('release notes expanded $(pwd) to this checkout path', re.escape(repo_root)),
+    ('release notes contain a local home-directory path', r'(?<![A-Za-z0-9_])/(?:home|Users)/[^\s`"\']+'),
+    ('release notes lost the literal safe.directory=$(pwd) command', r'safe\.directory="\$\(pwd\)"'),
+]
+
+for label, pattern in checks[:2]:
+    if re.search(pattern, notes):
+        raise SystemExit(f'Release notes scrub failed: {label}')
+
+if not re.search(checks[2][1], notes):
+    raise SystemExit(f'Release notes scrub failed: {checks[2][0]}')
+
+print('[release] release notes scrub passed')
+PY
+
 if [[ "$dry_run" -eq 1 ]]; then
   printf '[release] dry-run passed. Would create tag and release %s.\n' "$tag"
   exit 0

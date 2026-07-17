@@ -109,6 +109,54 @@ assert_not_contains "$initial_setup_script" "새 호스트 이름" "Initial setu
 assert_contains "$readme_ko" "호스트 이름은 \`umbrel.local\` 접속을 위해 \`umbrel\`로 유지됩니다." "Korean README should document the fixed hostname policy"
 assert_contains "$readme_en" "The hostname stays fixed to \`umbrel\` for \`umbrel.local\` access." "English README should document the fixed hostname policy"
 
+printf '[unit] installer release interface baseline\n'
+assert_contains "$readme_ko" 'sudo bash scripts/m1s-clean-install-umbrel.sh --release' "Korean guide must preserve the one-line release command"
+assert_contains "$readme_en" 'sudo bash scripts/m1s-clean-install-umbrel.sh --release' "English guide must preserve the one-line release command"
+assert_contains "$installer_script" '    --release)' "Installer must continue to accept --release"
+assert_contains "$installer_script" 'PRESERVE_TAILSCALE=0' "Release mode must retain its existing tailscale behavior"
+extract_fenced_blocks_with() {
+  local file_path="$1"
+  local needle="$2"
+
+  python3 - "$file_path" "$needle" <<'PY'
+import sys
+from pathlib import Path
+
+text = Path(sys.argv[1]).read_text()
+needle = sys.argv[2]
+blocks = []
+parts = text.split('```')
+
+for index in range(1, len(parts), 2):
+    block = parts[index].strip('\n')
+    if needle in block:
+        blocks.append(block)
+
+print('\n\n'.join(blocks))
+PY
+}
+
+expected_release_block=$'bash\nsudo bash scripts/m1s-clean-install-umbrel.sh --release'
+expected_update_block=$'bash\ncd /home/*/odroid-m1s-umbrel-recovery\nsudo git -c safe.directory="$(pwd)" fetch https://github.com/dongguri-jun/odroid-m1s-umbrel-recovery.git main\nsudo git -c safe.directory="$(pwd)" reset --hard FETCH_HEAD\nsudo bash scripts/m1s-update-umbrel.sh --check\nsudo bash scripts/m1s-update-umbrel.sh'
+expected_two_update_blocks="$expected_update_block"$'\n\n'"$expected_update_block"
+
+ko_release_block="$(extract_fenced_blocks_with README.md 'm1s-clean-install-umbrel.sh --release')"
+en_release_block="$(extract_fenced_blocks_with README.en.md 'm1s-clean-install-umbrel.sh --release')"
+assert_eq "$expected_release_block" "$ko_release_block" "Korean README should keep the exact one-line fresh-install command block"
+assert_eq "$expected_release_block" "$en_release_block" "English README should keep the exact one-line fresh-install command block"
+
+ko_update_blocks="$(extract_fenced_blocks_with README.md 'm1s-update-umbrel.sh --check')"
+en_update_blocks="$(extract_fenced_blocks_with README.en.md 'm1s-update-umbrel.sh --check')"
+assert_eq "$expected_two_update_blocks" "$ko_update_blocks" "Korean README should keep both exact five-line update command blocks"
+assert_eq "$expected_two_update_blocks" "$en_update_blocks" "English README should keep both exact five-line update command blocks"
+assert_eq "$ko_update_blocks" "$en_update_blocks" "Korean and English update command blocks should stay byte-identical"
+
+assert_contains "$readme_ko" "서비스와 데이터 마이그레이션은 적용하지 않지만, 기본 official-origin auto-sync가 저장소 파일을 갱신할 수 있습니다." "Korean --check wording should reflect non-mutating but auto-sync-aware behavior"
+assert_contains "$readme_en" "it does not apply any service or data migration, but the default official-origin auto-sync may refresh repository files." "English --check wording should reflect non-mutating but auto-sync-aware behavior"
+assert_contains "$readme_ko" "Umbrel UI의 OS 업데이트 버튼은 이 Dockur 기반 설치 방식에서 지원되지 않습니다." "Korean Docker limitation copy should point users at the repository updater"
+assert_contains "$readme_en" "The Umbrel UI OS update button is not supported in this Dockur-based installation." "English Docker limitation copy should point users at the repository updater"
+pass "One-line --release interface baseline remains intact"
+
 run_hosts_entry_case() {
   local case_name="$1"
   local current_hostname="$2"
@@ -552,5 +600,329 @@ assert_contains "$installer_text" 'Re-checking for stale SSD holders immediately
 assert_contains "$installer_text" 'stop_target_busy_processes
   if ! command -v sfdisk' 'Raw-disk repartition should run holder cleanup immediately before sfdisk'
 pass "Raw-disk repartition path performs a final stale-holder cleanup before sfdisk"
+
+printf '[unit] installer exact image and runtime-health success contract\n'
+EXPECTED_UMBREL_IMAGE='dockurr/umbrel:1.7.4@sha256:e00c07a838ce3b50641a0a984abe155a7223abacab3426a55409edf21b6e0124'
+DEFAULT_RESOLVED_UMBREL_IMAGE_ID='sha256:e00c07a838ce3b50641a0a984abe155a7223abacab3426a55409edf21b6e0124'
+EXPECTED_TOR_PROXY_IMAGE='ghcr.io/getumbrel/tor:0.4.9.11'
+
+assert_eq "$EXPECTED_UMBREL_IMAGE" "$IMAGE" "Installer must pin the exact Dockur Umbrel 1.7.4 arm64 image"
+assert_not_contains "$installer_text" 'dockurr/umbrel:1.7.3' "Installer must not retain the old 1.7.3 product pin"
+assert_contains "$installer_text" '  --image IMAGE' "Installer must continue to advertise the custom image override"
+assert_contains "$installer_text" '    --image)' "Installer must continue to parse the custom image override"
+
+assert_before() {
+  local text="$1"
+  local before="$2"
+  local after="$3"
+  local label="$4"
+  local before_position after_position
+  before_position="$(python3 -c 'import sys; print(sys.stdin.read().find(sys.argv[1]))' "$before" <<<"$text")"
+  after_position="$(python3 -c 'import sys; print(sys.stdin.read().find(sys.argv[1]))' "$after" <<<"$text")"
+  [[ "$before_position" -ge 0 && "$after_position" -ge 0 && "$before_position" -lt "$after_position" ]] || fail "$label"
+}
+
+startup_phase="${installer_text#*info \"Pulling and starting Umbrel\"}"
+assert_before "$startup_phase" 'pull_and_verify_umbrel_image' 'run_cmd docker run -d --name umbrel' "Installer must pull and verify the image before docker run"
+assert_before "$startup_phase" 'install_umbrel_safe_shutdown' 'wait_for_umbrel_runtime_health' "Safe shutdown must be installed before the runtime-health gate"
+assert_before "$startup_phase" 'wait_for_umbrel_runtime_health' 'info "Recording install state"' "Runtime health must pass before success state recording"
+
+RUNTIME_DOCKER_LOG="$TEST_TMPDIR/runtime-docker.log"
+: > "$RUNTIME_DOCKER_LOG"
+FAKE_PULLED_IMAGE_ID="$DEFAULT_RESOLVED_UMBREL_IMAGE_ID"
+FAKE_LIVE_IMAGE_ID="$DEFAULT_RESOLVED_UMBREL_IMAGE_ID"
+FAKE_LIVE_IMAGE_REF="$IMAGE"
+FAKE_PULLED_ARCHITECTURE='arm64'
+FAKE_TOPLEVEL_STATE='running'
+FAKE_LEGACY_AUTH_STATE='missing'
+FAKE_LEGACY_TOR_STATE='missing'
+FAKE_CANONICAL_AUTH_STATE='running'
+FAKE_CANONICAL_TOR_STATE='running'
+FAKE_CANONICAL_TOR_IMAGE="$EXPECTED_TOR_PROXY_IMAGE@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+FAKE_SHUTDOWN_HEALTH=0
+FAKE_HTTP_HEALTH=0
+
+docker() {
+  local format='' container="${!#}" arg
+  printf 'docker' >> "$RUNTIME_DOCKER_LOG"
+  for arg in "$@"; do
+    printf ' %q' "$arg" >> "$RUNTIME_DOCKER_LOG"
+    [[ "$arg" == --format=* ]] && format="${arg#--format=}"
+  done
+  printf '\n' >> "$RUNTIME_DOCKER_LOG"
+
+  case "$1" in
+    pull)
+      return 0
+      ;;
+    image)
+      [[ "${2:-}" == 'inspect' ]] || return 1
+      case "$format" in
+        '{{.Id}}') printf '%s\n' "$FAKE_PULLED_IMAGE_ID" ;;
+        '{{.Architecture}}') printf '%s\n' "$FAKE_PULLED_ARCHITECTURE" ;;
+      esac
+      ;;
+    inspect)
+      case "$format" in
+        *'.State.Status'*)
+          case "$container" in
+            umbrel) printf '%s\n' "$FAKE_TOPLEVEL_STATE" ;;
+            auth) printf '%s\n' "$FAKE_LEGACY_AUTH_STATE" ;;
+            tor_proxy) printf '%s\n' "$FAKE_LEGACY_TOR_STATE" ;;
+            umbrel_auth) printf '%s\n' "$FAKE_CANONICAL_AUTH_STATE" ;;
+            umbrel_tor_proxy) printf '%s\n' "$FAKE_CANONICAL_TOR_STATE" ;;
+          esac
+          ;;
+        *'.Config.Image'*)
+          case "$container" in
+            umbrel) printf '%s\n' "$FAKE_LIVE_IMAGE_REF" ;;
+            tor_proxy) printf '%s\n' "$EXPECTED_TOR_PROXY_IMAGE" ;;
+            umbrel_tor_proxy) printf '%s\n' "$FAKE_CANONICAL_TOR_IMAGE" ;;
+          esac
+          ;;
+        *'.HostConfig.RestartPolicy.Name'*)
+          printf 'always\n'
+          ;;
+        *'.Destination "/data"'*)
+          printf '%s\n' "$HOST_DATA_ALIAS"
+          ;;
+        *'.Destination "/var/run/docker.sock"'*)
+          printf '/var/run/docker.sock\n'
+          ;;
+        *'.Image'*)
+          printf '%s\n' "$FAKE_LIVE_IMAGE_ID"
+          ;;
+      esac
+      ;;
+    exec)
+      return "$FAKE_SHUTDOWN_HEALTH"
+      ;;
+  esac
+}
+
+curl() {
+  {
+    printf 'curl'
+    printf ' %q' "$@"
+    printf '\n'
+  } >> "$RUNTIME_DOCKER_LOG"
+  return "$FAKE_HTTP_HEALTH"
+}
+
+get_exact_data_mount_source() {
+  printf '%s\n' "$TARGET_PARTITION"
+}
+
+sleep() {
+  printf 'sleep %q\n' "$1" >> "$RUNTIME_DOCKER_LOG"
+}
+
+DRY_RUN=0
+DATA_DIR='/mnt/fullnode'
+HOST_DATA_ALIAS='/data'
+TARGET_PARTITION='/dev/nvme0n1p1'
+INSTALL_STATE_DIR="$TEST_TMPDIR/runtime-state"
+INSTALL_STATE_FILE="$INSTALL_STATE_DIR/installed.json"
+UMBREL_RUNTIME_HEALTH_ATTEMPTS=2
+UMBREL_RUNTIME_HEALTH_DELAY=0
+
+pull_and_verify_umbrel_image
+runtime_log="$(<"$RUNTIME_DOCKER_LOG")"
+assert_before "$runtime_log" "docker pull $EXPECTED_UMBREL_IMAGE" "docker image inspect" "Runtime must inspect the pulled image after pulling it"
+assert_eq "$DEFAULT_RESOLVED_UMBREL_IMAGE_ID" "$RESOLVED_UMBREL_IMAGE_ID" "Exact pinned default must retain Docker's resolved local image ID"
+assert_not_contains "$installer_text" 'EXPECTED_UMBREL_IMAGE_ID=' "Installer must not hard-code a Docker-local image ID for the default exact digest"
+
+if ! umbrel_runtime_health_once; then
+  fail "Dockur 1.7.4 canonical umbrel_auth and umbrel_tor_proxy with a valid pinned Tor digest must satisfy installer runtime health"
+fi
+
+if ! is_expected_tor_proxy_image "$EXPECTED_TOR_PROXY_IMAGE"; then
+  fail "installer must accept the tag-only Tor image contract"
+fi
+if ! is_expected_tor_proxy_image "$FAKE_CANONICAL_TOR_IMAGE"; then
+  fail "installer must accept the exact tag with a valid 64-character lowercase digest"
+fi
+for invalid_tor_image in \
+  "ghcr.io/other/tor:0.4.9.11" \
+  "ghcr.io/getumbrel/tor:0.4.9.10" \
+  "ghcr.io/getumbrel/tor:0.4.9.11@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" \
+  "ghcr.io/getumbrel/tor:0.4.9.11@sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" \
+  "ghcr.io/getumbrel/tor:0.4.9.11@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:extra"; do
+  if is_expected_tor_proxy_image "$invalid_tor_image"; then
+    fail "installer Tor image contract must reject $invalid_tor_image"
+  fi
+done
+
+wait_for_umbrel_runtime_health
+runtime_log="$(<"$RUNTIME_DOCKER_LOG")"
+assert_contains "$runtime_log" '.Image' "Runtime health must inspect the live top-level image ID"
+assert_contains "$runtime_log" '.Config.Image' "Runtime health must inspect live image references"
+assert_contains "$runtime_log" '.HostConfig.RestartPolicy.Name' "Runtime health must require the always restart policy"
+assert_contains "$installer_text" 'eq .Destination "/data"' "Runtime health must inspect the /data mount"
+assert_contains "$installer_text" 'eq .Destination "/var/run/docker.sock"' "Runtime health must inspect the Docker socket mount"
+assert_contains "$runtime_log" 'docker inspect --format=\{\{.State.Status\}\} umbrel_auth' "Runtime health must require a running canonical auth container"
+assert_contains "$runtime_log" 'docker inspect --format=\{\{.State.Status\}\} umbrel_tor_proxy' "Runtime health must require a running canonical Tor container"
+assert_contains "$installer_text" "EXPECTED_TOR_PROXY_IMAGE=\"$EXPECTED_TOR_PROXY_IMAGE\"" "Runtime health must require Tor 0.4.9.11"
+assert_contains "$runtime_log" 'docker exec umbrel grep -q docker\ update' "Runtime health must verify the safe-shutdown source patch"
+assert_contains "$runtime_log" 'curl -fsS --max-time' "Runtime health must require local HTTP"
+
+printf '[unit] installer patches pinned 1.7.4 shutdown UI timer branch\n'
+(
+FAKE_UI_ROOT="$TEST_TMPDIR/umbreld-ui"
+FAKE_UI_ASSET_DIR="$FAKE_UI_ROOT/assets"
+mkdir -p "$FAKE_UI_ASSET_DIR"
+source_callback='he==="shutting-down"&&!v&&(ce.isError||ce.failureCount>0)&&(b(!0),setTimeout(()=>S(!0),30*Kh))'
+target_callback='he==="shutting-down"&&!v&&(b(!0),setTimeout(()=>S(!0),30*Kh))'
+# shellcheck disable=SC2016 # Literal React Compiler minified variable names.
+memo_prefix='let $e;e[56]!==v||e[57]!==he||e[58]!==ce.failureCount||e[59]!==ce.isError?($e=()=>{'
+# shellcheck disable=SC2016 # Literal React Compiler minified variable names.
+memo_suffix='},e[56]=v,e[57]=he,e[58]=ce.failureCount,e[59]=ce.isError,e[60]=$e):$e=e[60];let We;e[61]!==v||e[62]!==he||e[63]!==ce.failureCount||e[64]!==ce.isError||e[65]!==a?(We=[v,he,ce.failureCount,ce.isError,a],e[61]=v,e[62]=he,e[63]=ce.failureCount,e[64]=ce.isError,e[65]=a,e[66]=We):We=e[66],C.useEffect($e,We)'
+source_region="${memo_prefix}${source_callback}${memo_suffix}"
+target_region="${memo_prefix}${target_callback}${memo_suffix}"
+asset_path="$FAKE_UI_ASSET_DIR/index-7c0be990.js"
+printf 'before;%s;after\n' "$source_region" > "$asset_path"
+docker() {
+  if [[ "$1" == "exec" ]]; then
+    shift
+    [[ "${1:-}" == "-i" ]] && shift
+    [[ "${1:-}" == "umbrel" ]] || return 1
+    shift
+    M1S_TEST_UMBREL_UI_ROOT="$FAKE_UI_ROOT" "$@"
+    return $?
+  fi
+  return 1
+}
+if verify_umbrel_shutdown_ui >/dev/null 2>&1; then
+  fail "installer shutdown UI verify must reject the current error-gated compiled branch before patching"
+fi
+patch_umbrel_shutdown_ui
+verify_umbrel_shutdown_ui
+patched_asset="$(<"$asset_path")"
+assert_contains "$patched_asset" "$target_region" "patched installer asset should start the 30s timer from shutting-down state alone while preserving React memo/deps"
+assert_contains "$patched_asset" "$memo_suffix" "patched installer asset should preserve the React Compiler dependency array"
+assert_not_contains "$patched_asset" "$source_callback" "patched installer asset should remove only the query-error gate from the callback"
+patch_umbrel_shutdown_ui
+assert_eq "$patched_asset" "$(<"$asset_path")" "installer shutdown UI patch should be idempotent"
+printf 'prefix;%s;%s\n' "$source_region" "$source_region" > "$asset_path"
+if patch_umbrel_shutdown_ui >/dev/null 2>&1; then
+  fail "installer shutdown UI patch must fail closed when the compiled branch is ambiguous"
+fi
+printf 'prefix;%s;%s\n' "$source_region" "$target_region" > "$asset_path"
+if patch_umbrel_shutdown_ui >/dev/null 2>&1; then
+  fail "installer shutdown UI patch must fail closed when source and patched branches coexist"
+fi
+printf 'prefix;%s;%s\n' "$target_region" "$target_region" > "$asset_path"
+if verify_umbrel_shutdown_ui >/dev/null 2>&1; then
+  fail "installer shutdown UI verify must fail closed when the patched branch is duplicated"
+fi
+printf 'prefix;unrelated shutdown bundle\n' > "$asset_path"
+if verify_umbrel_shutdown_ui >/dev/null 2>&1; then
+  fail "installer shutdown UI verify must fail when the compiled branch is absent"
+fi
+)
+pass "Installer replaces only the pinned 1.7.4 shutdown UI timer condition and fails closed"
+
+record_install_state
+state_text="$(<"$INSTALL_STATE_FILE")"
+assert_contains "$state_text" '"version": "0.5.25"' "Success state must declare the managed 0.5.25 version"
+assert_contains "$state_text" "\"image\": \"$EXPECTED_UMBREL_IMAGE\"" "Success state must use the live exact image ref"
+assert_contains "$state_text" "\"image_id\": \"$DEFAULT_RESOLVED_UMBREL_IMAGE_ID\"" "Success state must use Docker's resolved local image ID"
+
+CUSTOM_UMBREL_IMAGE='example.invalid/umbrel:custom-arm64'
+CUSTOM_UMBREL_IMAGE_ID='sha256:custom-arm64-image-id'
+rm -f "$INSTALL_STATE_FILE"
+IMAGE="$CUSTOM_UMBREL_IMAGE"
+FAKE_PULLED_IMAGE_ID="$CUSTOM_UMBREL_IMAGE_ID"
+FAKE_LIVE_IMAGE_ID="$CUSTOM_UMBREL_IMAGE_ID"
+FAKE_LIVE_IMAGE_REF="$CUSTOM_UMBREL_IMAGE"
+FAKE_PULLED_ARCHITECTURE='arm64'
+pull_and_verify_umbrel_image
+assert_eq "$CUSTOM_UMBREL_IMAGE_ID" "$RESOLVED_UMBREL_IMAGE_ID" "Custom arm64 pull must retain its resolved image ID"
+wait_for_umbrel_runtime_health
+record_install_state
+custom_state_text="$(<"$INSTALL_STATE_FILE")"
+assert_contains "$custom_state_text" "\"image\": \"$CUSTOM_UMBREL_IMAGE\"" "Custom arm64 success state must use the live custom image ref"
+assert_contains "$custom_state_text" "\"image_id\": \"$CUSTOM_UMBREL_IMAGE_ID\"" "Custom arm64 success state must use the live custom image ID"
+
+FAKE_LIVE_IMAGE_ID='sha256:stale-custom-image-id'
+set +e
+stale_custom_runtime_output="$(wait_for_umbrel_runtime_health 2>&1)"
+stale_custom_runtime_status=$?
+set -e
+[[ "$stale_custom_runtime_status" -ne 0 ]] || fail "Stale custom live image ID must fail the runtime-health gate"
+assert_contains "$stale_custom_runtime_output" 'pulled arm64 image ID' "Stale custom runtime must explain the resolved image-ID mismatch"
+
+FAKE_LIVE_IMAGE_ID="$CUSTOM_UMBREL_IMAGE_ID"
+FAKE_LIVE_IMAGE_REF='example.invalid/umbrel:wrong-live-ref'
+set +e
+wrong_live_ref_output="$(wait_for_umbrel_runtime_health 2>&1)"
+wrong_live_ref_status=$?
+set -e
+[[ "$wrong_live_ref_status" -ne 0 ]] || fail "Wrong live image ref must fail the runtime-health gate"
+assert_contains "$wrong_live_ref_output" 'image ref' "Wrong live ref must explain the exact image-ref mismatch"
+
+IMAGE="$EXPECTED_UMBREL_IMAGE"
+FAKE_PULLED_IMAGE_ID="$DEFAULT_RESOLVED_UMBREL_IMAGE_ID"
+FAKE_LIVE_IMAGE_ID="$DEFAULT_RESOLVED_UMBREL_IMAGE_ID"
+FAKE_LIVE_IMAGE_REF="$EXPECTED_UMBREL_IMAGE"
+FAKE_PULLED_ARCHITECTURE='arm64'
+pull_and_verify_umbrel_image
+rm -f "$INSTALL_STATE_FILE"
+FAKE_TOPLEVEL_STATE='exited'
+: > "$RUNTIME_DOCKER_LOG"
+set +e
+unhealthy_runtime_output="$(wait_for_umbrel_runtime_health 2>&1)"
+unhealthy_runtime_status=$?
+set -e
+[[ "$unhealthy_runtime_status" -ne 0 ]] || fail "Unhealthy top-level container must fail the runtime-health gate"
+assert_not_contains "$unhealthy_runtime_output" 'Install state written' "Unhealthy runtime must not emit a success-state marker"
+[[ ! -e "$INSTALL_STATE_FILE" ]] || fail "Unhealthy runtime must not write install state"
+assert_contains "$(<"$RUNTIME_DOCKER_LOG")" 'sleep 0' "Unhealthy runtime must use the configured bounded polling delay without real waits"
+
+FAKE_TOPLEVEL_STATE='running'
+FAKE_CANONICAL_TOR_IMAGE='ghcr.io/getumbrel/tor:0.4.9.10'
+set +e
+wrong_tor_runtime_output="$(wait_for_umbrel_runtime_health 2>&1)"
+wrong_tor_runtime_status=$?
+set -e
+[[ "$wrong_tor_runtime_status" -ne 0 ]] || fail "Wrong Tor image must fail the runtime-health gate"
+assert_not_contains "$wrong_tor_runtime_output" 'Install state written' "Wrong Tor runtime must not emit a success-state marker"
+[[ ! -e "$INSTALL_STATE_FILE" ]] || fail "Wrong Tor runtime must not write install state"
+
+FAKE_CANONICAL_TOR_IMAGE="$EXPECTED_TOR_PROXY_IMAGE"
+FAKE_CANONICAL_AUTH_STATE='exited'
+set +e
+missing_auth_runtime_output="$(wait_for_umbrel_runtime_health 2>&1)"
+missing_auth_runtime_status=$?
+set -e
+[[ "$missing_auth_runtime_status" -ne 0 ]] || fail "Missing auth runtime must fail the runtime-health gate"
+assert_not_contains "$missing_auth_runtime_output" 'Install state written' "Missing auth runtime must not emit a success-state marker"
+[[ ! -e "$INSTALL_STATE_FILE" ]] || fail "Missing auth runtime must not write install state"
+
+FAKE_CANONICAL_AUTH_STATE='running'
+IMAGE="$CUSTOM_UMBREL_IMAGE"
+FAKE_PULLED_IMAGE_ID=''
+FAKE_PULLED_ARCHITECTURE='arm64'
+: > "$RUNTIME_DOCKER_LOG"
+set +e
+missing_metadata_output="$(pull_and_verify_umbrel_image 2>&1)"
+missing_metadata_status=$?
+set -e
+[[ "$missing_metadata_status" -ne 0 ]] || fail "Missing pulled image metadata must fail before docker run"
+assert_contains "$missing_metadata_output" 'expected arm64 image ID' "Missing image metadata must explain the failed arm64 identity check"
+assert_not_contains "$(<"$RUNTIME_DOCKER_LOG")" 'docker run' "Missing custom metadata must fail before docker run"
+
+FAKE_PULLED_IMAGE_ID="$CUSTOM_UMBREL_IMAGE_ID"
+FAKE_PULLED_ARCHITECTURE='amd64'
+: > "$RUNTIME_DOCKER_LOG"
+set +e
+wrong_architecture_output="$(pull_and_verify_umbrel_image 2>&1)"
+wrong_architecture_status=$?
+set -e
+[[ "$wrong_architecture_status" -ne 0 ]] || fail "Non-arm64 custom image metadata must fail before docker run"
+assert_contains "$wrong_architecture_output" 'architecture' "Non-arm64 custom image metadata must explain the architecture rejection"
+assert_not_contains "$(<"$RUNTIME_DOCKER_LOG")" 'docker run' "Non-arm64 custom metadata must fail before docker run"
+
+pass "Exact image and bounded runtime-health checks gate success state"
 
 printf '[unit] installer interactive tests complete\n'

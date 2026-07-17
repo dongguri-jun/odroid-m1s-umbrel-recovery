@@ -630,7 +630,7 @@ What each line does:
 1. `cd /home/*/odroid-m1s-umbrel-recovery` — moves into the repository folder downloaded during the first installation. The asterisk (`*`) means "automatically find any username," so you do not need to type the username manually.
 2. `sudo git -c safe.directory="$(pwd)" fetch https://github.com/dongguri-jun/odroid-m1s-umbrel-recovery.git main` — fetches the latest changes directly from the official GitHub repository instead of trusting the device's saved `origin` setting.
 3. `sudo git -c safe.directory="$(pwd)" reset --hard FETCH_HEAD` — resets the local files to match the official repository state that was just fetched. This also replaces the local updater script itself with the latest version.
-4. `sudo bash scripts/m1s-update-umbrel.sh --check` — changes nothing and only shows the **currently installed version, latest version, and list of changes that will be applied**. If it is already up to date, it will show a message like "No migrations needed."
+4. `sudo bash scripts/m1s-update-umbrel.sh --check` — it does not apply any service or data migration, but the default official-origin auto-sync may refresh repository files. It only shows the **currently installed version, latest version, and list of changes that will be applied**. If it is already up to date, it will show a message like "No migrations needed."
 5. `sudo bash scripts/m1s-update-umbrel.sh` — actually applies the update. If it is already up to date, it exits without doing anything.
 
 If the `--check` output says `Script version` is `0.5.6` or older and immediately exits with “No migrations needed,” that device does not have the auto-sync updater yet. In that case only, run the following two lines **once**, then run the 5-line updater flow above again.
@@ -802,6 +802,8 @@ The following features may not be supported in the same way as official Umbrel H
 Updating the Umbrel container does not update the Ubuntu kernel on the ODROID M1S.
 
 Kernel security patches, Ubuntu package updates, and reboot-required checks must be handled through a separate Ubuntu system update procedure. This repository provides `scripts/m1s-update-system-packages.sh` for Ubuntu package updates.
+
+The Umbrel UI OS update button is not supported in this Dockur-based installation. Use the repository updater in section 12 to update Umbrel.
 
 ### 14-2. External USB disk management through the Umbrel UI
 
