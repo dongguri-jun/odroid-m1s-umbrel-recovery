@@ -9,7 +9,7 @@ set -Eeuo pipefail
 #   sudo bash m1s-initial-setup.sh --dry-run
 #   sudo bash m1s-initial-setup.sh --version
 
-SCRIPT_VERSION="0.5.25"
+SCRIPT_VERSION="0.5.26"
 DRY_RUN=0
 FIXED_HOSTNAME="umbrel"
 HOSTS_FILE="${HOSTS_FILE:-/etc/hosts}"

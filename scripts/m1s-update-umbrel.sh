@@ -17,7 +17,7 @@ set -Eeuo pipefail
 #   --version      Print script version and exit.
 #   -h, --help     Show this help.
 
-SCRIPT_VERSION="0.5.25"
+SCRIPT_VERSION="0.5.26"
 INSTALL_STATE_DIR="/etc/umbrel-recovery"
 INSTALL_STATE_FILE="$INSTALL_STATE_DIR/installed.json"
 DATA_DIR="/mnt/fullnode"
@@ -99,6 +99,7 @@ MIGRATIONS=(
   "0.5.22_to_0.5.23"
   "0.5.23_to_0.5.24"
   "0.5.24_to_0.5.25"
+  "0.5.25_to_0.5.26"
 )
 
 log() {
@@ -2732,6 +2733,10 @@ postcheck_0_5_24_to_0_5_25() {
   fail_umbrel_transaction "candidate postcheck failed"
   return 1
 }
+
+precheck_0_5_25_to_0_5_26() { precheck_common_canonical_install; }
+apply_0_5_25_to_0_5_26() { info "0.5.26 restores the existing-device login guidance; no immediate host mutation required."; }
+postcheck_0_5_25_to_0_5_26() { return 0; }
 
 # ---------------------------------------------------------------------------
 # Main flow

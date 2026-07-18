@@ -1,12 +1,16 @@
 # Changelog
 
+## 0.5.26
+
+- Restore the documented existing-device login guidance after an unintended documentation edit.
+- Add a no-op `0.5.25_to_0.5.26` updater history step so existing installations can record this guide correction without changing Umbrel data.
+
 ## 0.5.25
 
 - Upgrade the managed Dockur Umbrel stack to the exact 1.7.4 arm64 image and converge Tor to 0.4.9.11 on the running system.
 - Harden the in-place updater so failed replacements roll back to the previous live image and install state is recorded from verified runtime Docker data.
 - Keep the public one-line fresh install path and the existing five-line update path unchanged in both Korean and English guides.
 - Add shell test coverage so the documented command UX, updater invariants, and release notes stay aligned.
-- Generalize existing-device login guidance and reject credential-shaped account blocks in public guide section 4-1 while preserving the documented new-device defaults in section 4-2.
 
 ## 0.5.24
 

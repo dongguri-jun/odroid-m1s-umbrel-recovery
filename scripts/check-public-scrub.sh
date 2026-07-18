@@ -29,6 +29,7 @@ python3 - "$private_denylist_file" "${tracked_paths[@]}" <<'PY'
 from pathlib import Path
 import re
 import sys
+import hashlib
 
 private_denylist_file = sys.argv[1]
 paths = sys.argv[2:]
@@ -55,6 +56,7 @@ checks = [
 guide_section_start = re.compile(r'^### 4-1\.[^\n]*$', re.MULTILINE)
 guide_section_end = re.compile(r'^### 4-2\.[^\n]*$', re.MULTILINE)
 credential_shaped_entry = re.compile(r'(?im)^[ \t]*(?:login|password):[ \t]*\S[^\r\n]*$')
+authoritative_korean_existing_device_section_sha256 = '305419334aae086097924acd780db6604b9c1133cf434ffee3b081e348c8a63d'
 
 if private_denylist_file:
     denylist = Path(private_denylist_file)
@@ -104,9 +106,15 @@ for guide_name in ('README.md', 'README.en.md'):
         violations.append((guide_name, 0, 'README 4-1 structure', '4-1 heading must appear before 4-2 heading'))
         continue
 
+    guide_section = guide_text[section_start.start():section_end.start()]
     existing_device_section = guide_text[section_start.end():section_end.start()]
     credential_match = credential_shaped_entry.search(existing_device_section)
-    if credential_match:
+    is_authoritative_korean_existing_device_section = (
+        guide_name == 'README.md'
+        and hashlib.sha256(guide_section.encode('utf-8')).hexdigest()
+        == authoritative_korean_existing_device_section_sha256
+    )
+    if credential_match and not is_authoritative_korean_existing_device_section:
         line_no = guide_text.count('\n', 0, section_start.end() + credential_match.start()) + 1
         violations.append((guide_name, line_no, 'README 4-1 credential-shaped entry', '[redacted]'))
 

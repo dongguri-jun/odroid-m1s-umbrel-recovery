@@ -824,7 +824,7 @@ pass "Installer replaces only the pinned 1.7.4 shutdown UI timer condition and f
 
 record_install_state
 state_text="$(<"$INSTALL_STATE_FILE")"
-assert_contains "$state_text" '"version": "0.5.25"' "Success state must declare the managed 0.5.25 version"
+assert_contains "$state_text" '"version": "0.5.26"' "Success state must declare the managed 0.5.26 version"
 assert_contains "$state_text" "\"image\": \"$EXPECTED_UMBREL_IMAGE\"" "Success state must use the live exact image ref"
 assert_contains "$state_text" "\"image_id\": \"$DEFAULT_RESOLVED_UMBREL_IMAGE_ID\"" "Success state must use Docker's resolved local image ID"
 

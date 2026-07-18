@@ -239,6 +239,7 @@ assert_plan_from_version "0.5.15" "0.5.15_to_0.5.16"
 assert_plan_from_version "0.5.21" "0.5.21_to_0.5.22"
 assert_plan_from_version "0.5.22" "0.5.22_to_0.5.23"
 assert_plan_from_version "0.5.23" "0.5.23_to_0.5.24"
+assert_plan_from_version "0.5.25" "0.5.25_to_0.5.26"
 pass "build_migration_plan covers full, partial, and current installs"
 
 printf '[unit] running app capture characterization\n'
@@ -1003,7 +1004,7 @@ assert_transaction_rolled_back() {
 
 printf '[unit] 0.5.25 transaction and runtime-truth state\n'
 fake_transaction_hooks
-assert_eq "0.5.24_to_0.5.25" "${MIGRATIONS[$((${#MIGRATIONS[@]} - 1))]}" "0.5.25 transaction is the final migration"
+assert_eq "0.5.24_to_0.5.25" "${MIGRATIONS[$((${#MIGRATIONS[@]} - 2))]}" "0.5.25 transaction remains immediately before the documentation correction"
 
 for postcheck_diagnostic_case in \
   'mount_safety:mount-safety:not-safe' \

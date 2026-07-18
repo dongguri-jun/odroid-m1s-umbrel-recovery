@@ -44,7 +44,7 @@ from pathlib import Path
 import re
 
 version = Path('VERSION').read_text(encoding='utf-8').strip()
-expected_version = '0.5.25'
+expected_version = '0.5.26'
 if not re.fullmatch(r'\d+\.\d+\.\d+', version):
     raise SystemExit(f'VERSION must be plain semver MAJOR.MINOR.PATCH, got {version!r}')
 if version != expected_version:
@@ -460,6 +460,7 @@ required = [
     '0.5.22_to_0.5.23',
     '0.5.23_to_0.5.24',
     '0.5.24_to_0.5.25',
+    '0.5.25_to_0.5.26',
     'LEGACY_INCUS_PACKAGES=(incus incus-base incus-client lxd-agent-loader)',
     'cleanup_legacy_incus_lxd_remnants',
     'verify_legacy_incus_lxd_absent',
@@ -477,6 +478,9 @@ required = [
     'precheck_0_5_24_to_0_5_25',
     'apply_0_5_24_to_0_5_25',
     'postcheck_0_5_24_to_0_5_25',
+    'precheck_0_5_25_to_0_5_26',
+    'apply_0_5_25_to_0_5_26',
+    'postcheck_0_5_25_to_0_5_26',
     'last_attempted_image',
     'target_image',
     'runtime_image',
@@ -617,7 +621,7 @@ for forbidden in ['mkfs.', 'sfdisk', 'parted', 'wipefs', 'sgdisk', 'gdisk', 'blk
     if forbidden in text:
         raise SystemExit(f'System package updater must never contain destructive disk command: {forbidden}')
 required = [
-    'SCRIPT_VERSION="0.5.25"',
+    'SCRIPT_VERSION="0.5.26"',
     '--dry-run',
     '--no-reboot',
     'STOP_TIMEOUT_SECONDS=300',
