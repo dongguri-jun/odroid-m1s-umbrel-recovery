@@ -305,15 +305,24 @@ pass 'public metadata scrub continues to reject private network, hardware, and c
 
 printf '[unit] public guide scrub allows only the authoritative Korean existing-device section\n'
 authoritative_fixture="$(new_public_scrub_fixture 'authoritative-korean-4-1' '- Public fixture note.')"
-python3 - "$authoritative_fixture/README.md" <<'PY'
+python3 - "$repo_root/README.md" "$repo_root/scripts/check-public-scrub.sh" "$authoritative_fixture/README.md" <<'PY'
 from pathlib import Path
-import subprocess
+import hashlib
+import re
 import sys
 
-source = subprocess.check_output(['git', 'show', '17c05bf^:README.md'])
+readme_path, scrub_path, fixture_path = map(Path, sys.argv[1:])
+scrub_source = scrub_path.read_text(encoding='utf-8')
+match = re.search(r"authoritative_korean_existing_device_section_sha256 = '([0-9a-f]{64})'", scrub_source)
+if not match:
+    raise SystemExit('missing authoritative Korean README 4-1 hash')
+source = readme_path.read_bytes()
 start = source.index(b'### 4-1.')
 end = source.index(b'### 4-2.', start)
-Path(sys.argv[1]).write_bytes(source[start:end] + b'### 4-2. New device\n')
+section = source[start:end]
+if hashlib.sha256(section).hexdigest() != match.group(1):
+    raise SystemExit('current Korean README 4-1 section does not match the authoritative hash')
+fixture_path.write_bytes(section + b'### 4-2. New device\n')
 PY
 if ! run_public_scrub "$authoritative_fixture"; then
   fail 'the authoritative Korean README 4-1 section must pass the public scrub'
