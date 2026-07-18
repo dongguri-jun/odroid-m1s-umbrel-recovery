@@ -6,6 +6,7 @@
 - Harden the in-place updater so failed replacements roll back to the previous live image and install state is recorded from verified runtime Docker data.
 - Keep the public one-line fresh install path and the existing five-line update path unchanged in both Korean and English guides.
 - Add shell test coverage so the documented command UX, updater invariants, and release notes stay aligned.
+- Generalize existing-device login guidance and reject credential-shaped account blocks in public guide section 4-1 while preserving the documented new-device defaults in section 4-2.
 
 ## 0.5.24
 

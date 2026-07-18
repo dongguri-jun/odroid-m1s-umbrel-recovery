@@ -52,6 +52,10 @@ checks = [
     ),
 ]
 
+guide_section_start = re.compile(r'^### 4-1\.[^\n]*$', re.MULTILINE)
+guide_section_end = re.compile(r'^### 4-2\.[^\n]*$', re.MULTILINE)
+credential_shaped_entry = re.compile(r'(?im)^[ \t]*(?:login|password):[ \t]*\S[^\r\n]*$')
+
 if private_denylist_file:
     denylist = Path(private_denylist_file)
     if not denylist.is_file():
@@ -74,6 +78,37 @@ for raw_path in paths:
         for label, pattern in checks:
             if pattern.search(line):
                 violations.append((str(path), line_no, label, line.strip()))
+
+tracked_path_set = set(paths)
+for guide_name in ('README.md', 'README.en.md'):
+    if guide_name not in tracked_path_set:
+        violations.append((guide_name, 0, 'README 4-1 structure', 'required public guide is not tracked'))
+        continue
+
+    guide_path = Path(guide_name)
+    try:
+        guide_text = guide_path.read_text(encoding='utf-8')
+    except (OSError, UnicodeDecodeError):
+        violations.append((guide_name, 0, 'README 4-1 structure', 'required public guide is unreadable as UTF-8'))
+        continue
+
+    section_starts = list(guide_section_start.finditer(guide_text))
+    section_ends = list(guide_section_end.finditer(guide_text))
+    if len(section_starts) != 1 or len(section_ends) != 1:
+        violations.append((guide_name, 0, 'README 4-1 structure', 'expected exactly one 4-1 heading and one 4-2 heading'))
+        continue
+
+    section_start = section_starts[0]
+    section_end = section_ends[0]
+    if section_start.start() >= section_end.start():
+        violations.append((guide_name, 0, 'README 4-1 structure', '4-1 heading must appear before 4-2 heading'))
+        continue
+
+    existing_device_section = guide_text[section_start.end():section_end.start()]
+    credential_match = credential_shaped_entry.search(existing_device_section)
+    if credential_match:
+        line_no = guide_text.count('\n', 0, section_start.end() + credential_match.start()) + 1
+        violations.append((guide_name, line_no, 'README 4-1 credential-shaped entry', '[redacted]'))
 
 if violations:
     print('[scrub] public metadata scrub failed; remove private identifiers before publishing/releasing:', file=sys.stderr)
