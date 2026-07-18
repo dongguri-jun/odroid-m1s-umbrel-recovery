@@ -196,6 +196,13 @@ import re
 
 notes = os.environ['NOTES']
 repo_root = os.environ['REPO_ROOT']
+public_updater_block = '''```bash
+cd /home/*/odroid-m1s-umbrel-recovery
+sudo git -c safe.directory="$(pwd)" fetch https://github.com/dongguri-jun/odroid-m1s-umbrel-recovery.git main
+sudo git -c safe.directory="$(pwd)" reset --hard FETCH_HEAD
+sudo bash scripts/m1s-update-umbrel.sh --check
+sudo bash scripts/m1s-update-umbrel.sh
+```'''
 
 checks = [
     ('release notes expanded $(pwd) to this checkout path', re.escape(repo_root)),
@@ -203,8 +210,13 @@ checks = [
     ('release notes lost the literal safe.directory=$(pwd) command', r'safe\.directory="\$\(pwd\)"'),
 ]
 
+if notes.count(public_updater_block) != 1:
+    raise SystemExit('Release notes scrub failed: exact public updater block changed or duplicated')
+
+notes_without_public_updater_block = notes.replace(public_updater_block, '')
+
 for label, pattern in checks[:2]:
-    if re.search(pattern, notes):
+    if re.search(pattern, notes_without_public_updater_block):
         raise SystemExit(f'Release notes scrub failed: {label}')
 
 if not re.search(checks[2][1], notes):
