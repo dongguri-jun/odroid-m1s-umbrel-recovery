@@ -282,12 +282,17 @@ cat > "$TEST_TMPDIR/bin/systemctl" <<'EOF'
 printf '%s\n' "$*" >> "$SYSTEMCTL_LOG"
 EOF
 chmod +x "$TEST_TMPDIR/bin/"*
+ln -s "$BASH" "$TEST_TMPDIR/bin/bash"
 APT_LOG="$TEST_TMPDIR/apt.log"
 DPKG_LOG="$TEST_TMPDIR/dpkg.log"
 SYSTEMCTL_LOG="$TEST_TMPDIR/systemctl.log"
 export APT_LOG DPKG_LOG SYSTEMCTL_LOG
-PATH="$TEST_TMPDIR/bin:/bin"
 (
+  PATH="$TEST_TMPDIR/bin"
+  export PATH
+  if command -v docker >/dev/null 2>&1; then
+    fail 'Docker absent path should not resolve docker before main'
+  fi
   require_root() { return 0; }
   reboot_required() { return 1; }
   DRY_RUN=0
@@ -295,7 +300,8 @@ PATH="$TEST_TMPDIR/bin:/bin"
   CONTAINERS_STOPPED=0
   REBOOTING=0
   STOPPED_CONTAINERS=()
-  main
+  main_output="$(main 2>&1)"
+  assert_contains "$main_output" 'Docker is not installed or not in PATH; continuing with package update only.' 'Docker absent path should print the exact no-Docker warning'
 )
 [[ ! -e "$TEST_TMPDIR/docker.log" ]] || fail 'Docker absent path should not call docker'
 apt_log="$(cat "$APT_LOG")"
