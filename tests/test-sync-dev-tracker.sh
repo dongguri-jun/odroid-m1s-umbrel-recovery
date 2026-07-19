@@ -38,6 +38,7 @@ print(Path(sys.argv[1]).read_text(encoding='utf-8'))
 PY
 )"
 current_branch="$(git branch --show-current)"
+current_branch="${current_branch:-DETACHED_HEAD}"
 current_version="$(<VERSION)"
 expected_branch_line="Branch: \`${current_branch}\`"
 expected_version_line="Working version: \`${current_version}\`"
