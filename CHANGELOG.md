@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.5.28
+
+- Warn when the host differs from the validated ODROID M1S, Ubuntu 22.04, and Linux 5.10.x profile while allowing every script to continue.
+- Fold the shutdown completion delivery and runtime-state reconciliation work into the release so the safe-shutdown path stays aligned.
+- Extend release and regression coverage for version consistency, public metadata scrubbing, the support-policy fixture files, and the public update-command block used in the guides.
+
+## 0.5.27 (unreleased)
+
+- Reconcile shutdown completion delivery with live runtime state so the completion screen and the underlying container state agree while the node is stopping.
+- Keep the unreleased shutdown path changes scoped to runtime-state reconciliation only.
+
 ## 0.5.26
 
 - Restore the documented existing-device login guidance after an unintended documentation edit.

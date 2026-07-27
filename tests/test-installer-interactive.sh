@@ -622,6 +622,13 @@ assert_before() {
   [[ "$before_position" -ge 0 && "$after_position" -ge 0 && "$before_position" -lt "$after_position" ]] || fail "$label"
 }
 
+printf '[unit] support policy precedes installer and setup mutations\n'
+assert_contains "$installer_text" 'm1s-support-policy.sh' 'Installer must source the shared support policy'
+assert_before "$installer_text" 'm1s_report_host_support' 'info "Stopping and removing Incus containers if present"' 'Installer must report unvalidated hosts before host-state mutation'
+assert_contains "$initial_setup_script" 'm1s-support-policy.sh' 'Initial setup must source the shared support policy'
+assert_before "$initial_setup_script" 'm1s_report_host_support' 'read -r -p "Enter new username: "' 'Initial setup must report unvalidated hosts before collecting mutation inputs'
+pass 'installer and initial setup warnings precede mutation'
+
 startup_phase="${installer_text#*info \"Pulling and starting Umbrel\"}"
 assert_before "$startup_phase" 'pull_and_verify_umbrel_image' 'run_cmd docker run -d --name umbrel' "Installer must pull and verify the image before docker run"
 assert_before "$startup_phase" 'install_umbrel_safe_shutdown' 'wait_for_umbrel_runtime_health' "Safe shutdown must be installed before the runtime-health gate"
@@ -766,21 +773,22 @@ assert_contains "$installer_text" "EXPECTED_TOR_PROXY_IMAGE=\"$EXPECTED_TOR_PROX
 assert_contains "$runtime_log" 'docker exec umbrel grep -q docker\ update' "Runtime health must verify the safe-shutdown source patch"
 assert_contains "$runtime_log" 'curl -fsS --max-time' "Runtime health must require local HTTP"
 
-printf '[unit] installer patches pinned 1.7.4 shutdown UI timer branch\n'
+printf '[unit] installer writes content-hashed 75s shutdown UI asset\n'
 (
 FAKE_UI_ROOT="$TEST_TMPDIR/umbreld-ui"
 FAKE_UI_ASSET_DIR="$FAKE_UI_ROOT/assets"
 mkdir -p "$FAKE_UI_ASSET_DIR"
 source_callback='he==="shutting-down"&&!v&&(ce.isError||ce.failureCount>0)&&(b(!0),setTimeout(()=>S(!0),30*Kh))'
-target_callback='he==="shutting-down"&&!v&&(b(!0),setTimeout(()=>S(!0),30*Kh))'
+public_callback='he==="shutting-down"&&!v&&(b(!0),setTimeout(()=>S(!0),30*Kh))'
+canonical_callback='he==="shutting-down"&&!v&&(b(!0),setTimeout(()=>S(!0),75*Kh))'
 # shellcheck disable=SC2016 # Literal React Compiler minified variable names.
 memo_prefix='let $e;e[56]!==v||e[57]!==he||e[58]!==ce.failureCount||e[59]!==ce.isError?($e=()=>{'
 # shellcheck disable=SC2016 # Literal React Compiler minified variable names.
 memo_suffix='},e[56]=v,e[57]=he,e[58]=ce.failureCount,e[59]=ce.isError,e[60]=$e):$e=e[60];let We;e[61]!==v||e[62]!==he||e[63]!==ce.failureCount||e[64]!==ce.isError||e[65]!==a?(We=[v,he,ce.failureCount,ce.isError,a],e[61]=v,e[62]=he,e[63]=ce.failureCount,e[64]=ce.isError,e[65]=a,e[66]=We):We=e[66],C.useEffect($e,We)'
 source_region="${memo_prefix}${source_callback}${memo_suffix}"
-target_region="${memo_prefix}${target_callback}${memo_suffix}"
-asset_path="$FAKE_UI_ASSET_DIR/index-7c0be990.js"
-printf 'before;%s;after\n' "$source_region" > "$asset_path"
+public_region="${memo_prefix}${public_callback}${memo_suffix}"
+canonical_region="${memo_prefix}${canonical_callback}${memo_suffix}"
+
 docker() {
   if [[ "$1" == "exec" ]]; then
     shift
@@ -792,39 +800,330 @@ docker() {
   fi
   return 1
 }
-if verify_umbrel_shutdown_ui >/dev/null 2>&1; then
-  fail "installer shutdown UI verify must reject the current error-gated compiled branch before patching"
-fi
+
+reset_shutdown_ui_fixture() {
+  rm -rf "$FAKE_UI_ROOT"
+  mkdir -p "$FAKE_UI_ASSET_DIR"
+}
+
+write_shutdown_index() {
+  printf '<script type="module" crossorigin src="%s"></script>\n' "$1" > "$FAKE_UI_ROOT/index.html"
+}
+
+write_vite_modulepreload_shutdown_index() {
+  cp tests/fixtures/shutdown-ui-cache/vite-modulepreload-six-js-refs.html "$FAKE_UI_ROOT/index.html"
+}
+
+write_vite_shared_entry_modulepreload_shutdown_index() {
+  cp tests/fixtures/shutdown-ui-cache/vite-modulepreload-shared-entry-six-js-refs.html "$FAKE_UI_ROOT/index.html"
+}
+
+write_vite_split_chunk_shutdown_fixture() {
+  cp -R tests/fixtures/shutdown-ui-cache/vite-split-chunk/. "$FAKE_UI_ROOT/"
+}
+
+hashed_shutdown_name_for() {
+  python3 - "$1" "$2" <<'PY'
+import hashlib
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+stem = sys.argv[2]
+digest = hashlib.sha256(path.read_bytes()).hexdigest()[:12]
+print(f"{stem}.m1s-{digest}.js")
+PY
+}
+
+assert_hashed_shutdown_patch() {
+  local label="$1"
+  local region="$2"
+  reset_shutdown_ui_fixture
+  local old_asset="$FAKE_UI_ASSET_DIR/index-7c0be990.js"
+  printf 'before;%s;after\n' "$region" > "$old_asset"
+  write_shutdown_index '/assets/index-7c0be990.js'
+  local old_asset_before old_index_before
+  old_asset_before="$(<"$old_asset")"
+  old_index_before="$(<"$FAKE_UI_ROOT/index.html")"
+  if verify_umbrel_shutdown_ui >/dev/null 2>&1; then
+    fail "$label verify must reject a non-canonical shutdown UI before patching"
+  fi
+  patch_umbrel_shutdown_ui
+  verify_umbrel_shutdown_ui
+  assert_eq "$old_asset_before" "$(<"$old_asset")" "$label old immutable asset bytes must remain unchanged"
+  [[ "$old_index_before" != "$(<"$FAKE_UI_ROOT/index.html")" ]] || fail "$label index must be rewritten to a new hashed URL"
+  local new_asset_name new_asset_path expected_name index_text patched_asset
+  new_asset_name="$(basename "$(compgen -G "$FAKE_UI_ASSET_DIR/index-7c0be990.m1s-*.js")")"
+  new_asset_path="$FAKE_UI_ASSET_DIR/$new_asset_name"
+  expected_name="$(hashed_shutdown_name_for "$new_asset_path" 'index-7c0be990')"
+  assert_eq "$expected_name" "$new_asset_name" "$label filename must contain the canonical content hash"
+  patched_asset="$(<"$new_asset_path")"
+  index_text="$(<"$FAKE_UI_ROOT/index.html")"
+  assert_contains "$patched_asset" "$canonical_region" "$label patched asset should use the 75s status-only branch"
+  assert_contains "$patched_asset" "$memo_suffix" "$label patched asset should preserve the React Compiler dependency array"
+  assert_not_contains "$patched_asset" "$source_callback" "$label patched asset should remove the upstream error gate"
+  assert_not_contains "$patched_asset" "$public_callback" "$label patched asset should remove the 30s status-only branch"
+  assert_contains "$index_text" "/assets/$new_asset_name" "$label index must reference the new hashed asset"
+  patch_umbrel_shutdown_ui
+  assert_eq "$patched_asset" "$(<"$new_asset_path")" "$label canonical rerun must leave hashed asset bytes unchanged"
+  assert_eq "$index_text" "$(<"$FAKE_UI_ROOT/index.html")" "$label canonical rerun must leave index unchanged"
+}
+
+assert_patch_fails_without_index_mutation() {
+  local label="$1"
+  local before_index=""
+  [[ -f "$FAKE_UI_ROOT/index.html" ]] && before_index="$(<"$FAKE_UI_ROOT/index.html")"
+  if patch_umbrel_shutdown_ui >/dev/null 2>&1; then
+    fail "$label should fail closed"
+  fi
+  local after_index=""
+  [[ -f "$FAKE_UI_ROOT/index.html" ]] && after_index="$(<"$FAKE_UI_ROOT/index.html")"
+  assert_eq "$before_index" "$after_index" "$label must not mutate index.html"
+}
+
+assert_hashed_shutdown_patch 'upstream error-gated 30s branch' "$source_region"
+assert_hashed_shutdown_patch 'public v0.5.28 status-only 30s branch' "$public_region"
+
+assert_vite_modulepreload_shutdown_patch() {
+  reset_shutdown_ui_fixture
+  local old_asset="$FAKE_UI_ASSET_DIR/entry-module.js"
+  printf 'before;%s;after\n' "$source_region" > "$old_asset"
+  write_vite_modulepreload_shutdown_index
+  local old_asset_before old_index_before
+  old_asset_before="$(<"$old_asset")"
+  old_index_before="$(<"$FAKE_UI_ROOT/index.html")"
+  patch_umbrel_shutdown_ui
+  verify_umbrel_shutdown_ui
+  assert_eq "$old_asset_before" "$(<"$old_asset")" "Vite modulepreload fixture must preserve the old immutable asset"
+  [[ "$old_index_before" != "$(<"$FAKE_UI_ROOT/index.html")" ]] || fail "Vite modulepreload fixture must rewrite index.html"
+  local new_asset_name new_asset_path expected_name index_text patched_asset
+  new_asset_name="$(basename "$(compgen -G "$FAKE_UI_ASSET_DIR/entry-module.m1s-*.js")")"
+  new_asset_path="$FAKE_UI_ASSET_DIR/$new_asset_name"
+  expected_name="$(hashed_shutdown_name_for "$new_asset_path" 'entry-module')"
+  assert_eq "$expected_name" "$new_asset_name" "Vite modulepreload fixture filename must contain the content hash"
+  patched_asset="$(<"$new_asset_path")"
+  index_text="$(<"$FAKE_UI_ROOT/index.html")"
+  assert_contains "$patched_asset" "$canonical_region" "Vite modulepreload fixture must patch the executable module entry"
+  assert_contains "$index_text" 'href="/assets/chunk-alpha.js"' "Vite modulepreload fixture must preserve modulepreload hints"
+  assert_contains "$index_text" "/assets/$new_asset_name" "Vite modulepreload fixture must retarget only the executable module entry"
+  assert_not_contains "$index_text" 'src="/assets/entry-module.js"' "Vite modulepreload fixture must remove the old executable module entry reference"
+  assert_contains "$index_text" "{\"imports\":{\"/assets/entry-module.js\":\"/assets/$new_asset_name\"}}" "Vite modulepreload fixture must map old dependent imports to the generated entry"
+  patch_umbrel_shutdown_ui
+  assert_eq "$patched_asset" "$(<"$new_asset_path")" "Vite modulepreload fixture rerun must leave the generated asset unchanged"
+  assert_eq "$index_text" "$(<"$FAKE_UI_ROOT/index.html")" "Vite modulepreload fixture rerun must leave index.html unchanged"
+}
+
+assert_vite_modulepreload_shutdown_patch
+
+assert_vite_shared_entry_modulepreload_shutdown_patch() {
+  reset_shutdown_ui_fixture
+  local old_asset="$FAKE_UI_ASSET_DIR/entry-module.js"
+  printf 'before;%s;after\n' "$source_region" > "$old_asset"
+  write_vite_shared_entry_modulepreload_shutdown_index
+  patch_umbrel_shutdown_ui
+  verify_umbrel_shutdown_ui
+  local new_asset_name index_text
+  new_asset_name="$(basename "$(compgen -G "$FAKE_UI_ASSET_DIR/entry-module.m1s-*.js")")"
+  index_text="$(<"$FAKE_UI_ROOT/index.html")"
+  assert_contains "$index_text" 'href="/assets/entry-module.js"' "Shared-entry modulepreload hint must remain unchanged"
+  assert_contains "$index_text" "src=\"/assets/$new_asset_name\"" "Shared-entry executable script must point to the generated asset"
+  assert_not_contains "$index_text" 'src="/assets/entry-module.js"' "Shared-entry executable script must not retain the old asset"
+}
+
+assert_vite_shared_entry_modulepreload_shutdown_patch
+
+assert_late_preloaded_map_fails_closed() {
+  reset_shutdown_ui_fixture
+  write_vite_split_chunk_shutdown_fixture
+  printf 'before;%s;after\n' "$source_region" > "$FAKE_UI_ASSET_DIR/old-entry.js"
+  patch_umbrel_shutdown_ui
+  local generated_name before_index after_index patch_exit verify_exit
+  generated_name="$(basename "$(compgen -G "$FAKE_UI_ASSET_DIR/old-entry.m1s-*.js")")"
+  printf '<link rel="modulepreload" href="/assets/dependent.js">\n<script type="importmap" data-m1s-shutdown-ui>{"imports":{"/assets/old-entry.js":"/assets/%s"}}</script>\n<script type="module" src="/assets/%s"></script>\n' "$generated_name" "$generated_name" > "$FAKE_UI_ROOT/index.html"
+  before_index="$(<"$FAKE_UI_ROOT/index.html")"
+  if patch_umbrel_shutdown_ui >/dev/null 2>&1; then patch_exit=0; else patch_exit=$?; fi
+  if verify_umbrel_shutdown_ui >/dev/null 2>&1; then verify_exit=0; else verify_exit=$?; fi
+  after_index="$(<"$FAKE_UI_ROOT/index.html")"
+  [[ "$patch_exit" -ne 0 && "$verify_exit" -ne 0 ]] || fail "late preloaded managed map must be rejected by patch and verification: patch_exit=$patch_exit verify_exit=$verify_exit"
+  assert_eq "$before_index" "$after_index" 'late preloaded managed map must not mutate index.html'
+}
+
+assert_late_preloaded_map_fails_closed
+
+assert_vite_split_chunk_import_map_patch() {
+  reset_shutdown_ui_fixture
+  write_vite_split_chunk_shutdown_fixture
+  local old_asset="$FAKE_UI_ASSET_DIR/old-entry.js"
+  printf 'before;%s;after\nimport("./settings-content.js")\n' "$source_region" > "$old_asset"
+  local old_asset_before
+  old_asset_before="$(<"$old_asset")"
+  patch_umbrel_shutdown_ui
+  local new_asset_name index_text expected_map managed_map_offset modulepreload_offset module_script_offset
+  new_asset_name="$(basename "$(compgen -G "$FAKE_UI_ASSET_DIR/old-entry.m1s-*.js")")"
+  index_text="$(<"$FAKE_UI_ROOT/index.html")"
+  expected_map="{\"imports\":{\"/assets/old-entry.js\":\"/assets/$new_asset_name\"}}"
+  assert_eq "$old_asset_before" "$(<"$old_asset")" "Split-chunk fixture must preserve the immutable original entry"
+  assert_contains "$index_text" "$expected_map" "Split-chunk fixture must map the dependent old-entry import to the generated entry"
+  assert_contains "$index_text" 'data-m1s-shutdown-ui' "Split-chunk fixture must install one managed import map"
+  [[ "$(grep -o 'data-m1s-shutdown-ui' <<<"$index_text" | wc -l)" -eq 1 ]] || fail "Split-chunk fixture must install exactly one managed import map"
+  managed_map_offset="$(python3 -c 'import sys; print(sys.stdin.read().find("data-m1s-shutdown-ui"))' <<<"$index_text")"
+  modulepreload_offset="$(python3 -c 'import sys; print(sys.stdin.read().find("rel=\"modulepreload\""))' <<<"$index_text")"
+  module_script_offset="$(python3 -c 'import sys; print(sys.stdin.read().find("<script type=\"module\""))' <<<"$index_text")"
+  [[ "$managed_map_offset" -ge 0 && "$managed_map_offset" -lt "$modulepreload_offset" && "$managed_map_offset" -lt "$module_script_offset" ]] || fail "Split-chunk fixture must insert the import map before modulepreload and module execution"
+  [[ "${index_text%%<script type=\"module\"*}" == *'data-m1s-shutdown-ui'* ]] || fail "Split-chunk fixture must insert the import map before module execution"
+  assert_contains "$(<"$FAKE_UI_ASSET_DIR/dependent.js")" 'import "./old-entry.js"' "Split-chunk fixture must retain the preloaded dependent static original import"
+  assert_contains "$(<"$FAKE_UI_ASSET_DIR/settings-content.js")" 'import "./old-entry.js"' "Split-chunk fixture must retain the dependent Vite static old-entry import"
+  verify_umbrel_shutdown_ui
+}
+
+assert_vite_split_chunk_import_map_patch
+
+reset_shutdown_ui_fixture
+canonical_asset="$FAKE_UI_ASSET_DIR/index-7c0be990.js"
+printf 'before;%s;after\n' "$canonical_region" > "$canonical_asset"
+canonical_name="$(hashed_shutdown_name_for "$canonical_asset" 'index-7c0be990')"
+cp "$canonical_asset" "$FAKE_UI_ASSET_DIR/$canonical_name"
+write_shutdown_index "/assets/$canonical_name"
+canonical_index_before="$(<"$FAKE_UI_ROOT/index.html")"
+canonical_asset_before="$(<"$FAKE_UI_ASSET_DIR/$canonical_name")"
 patch_umbrel_shutdown_ui
 verify_umbrel_shutdown_ui
-patched_asset="$(<"$asset_path")"
-assert_contains "$patched_asset" "$target_region" "patched installer asset should start the 30s timer from shutting-down state alone while preserving React memo/deps"
-assert_contains "$patched_asset" "$memo_suffix" "patched installer asset should preserve the React Compiler dependency array"
-assert_not_contains "$patched_asset" "$source_callback" "patched installer asset should remove only the query-error gate from the callback"
+[[ "$canonical_index_before" != "$(<"$FAKE_UI_ROOT/index.html")" ]] || fail "canonical hashed shutdown UI without a managed map must be repaired"
+assert_eq "$canonical_asset_before" "$(<"$FAKE_UI_ASSET_DIR/$canonical_name")" "canonical hashed shutdown UI rerun should be byte-idempotent"
+canonical_index_after_repair="$(<"$FAKE_UI_ROOT/index.html")"
+assert_contains "$canonical_index_after_repair" "{\"imports\":{\"/assets/index-7c0be990.js\":\"/assets/$canonical_name\"}}" "canonical repair must map the immutable original entry"
 patch_umbrel_shutdown_ui
-assert_eq "$patched_asset" "$(<"$asset_path")" "installer shutdown UI patch should be idempotent"
-printf 'prefix;%s;%s\n' "$source_region" "$source_region" > "$asset_path"
-if patch_umbrel_shutdown_ui >/dev/null 2>&1; then
-  fail "installer shutdown UI patch must fail closed when the compiled branch is ambiguous"
-fi
-printf 'prefix;%s;%s\n' "$source_region" "$target_region" > "$asset_path"
-if patch_umbrel_shutdown_ui >/dev/null 2>&1; then
-  fail "installer shutdown UI patch must fail closed when source and patched branches coexist"
-fi
-printf 'prefix;%s;%s\n' "$target_region" "$target_region" > "$asset_path"
-if verify_umbrel_shutdown_ui >/dev/null 2>&1; then
-  fail "installer shutdown UI verify must fail closed when the patched branch is duplicated"
-fi
-printf 'prefix;unrelated shutdown bundle\n' > "$asset_path"
-if verify_umbrel_shutdown_ui >/dev/null 2>&1; then
-  fail "installer shutdown UI verify must fail when the compiled branch is absent"
-fi
+assert_eq "$canonical_index_after_repair" "$(<"$FAKE_UI_ROOT/index.html")" "canonical managed-map rerun should be byte-idempotent"
+
+assert_bad_managed_import_map_fails_closed() {
+  local label="$1"
+  local mode="$2"
+  reset_shutdown_ui_fixture
+  printf 'before;%s;after\n' "$source_region" > "$FAKE_UI_ASSET_DIR/index-7c0be990.js"
+  write_shutdown_index '/assets/index-7c0be990.js'
+  patch_umbrel_shutdown_ui
+  local generated_name managed_map maps
+  generated_name="$(basename "$(compgen -G "$FAKE_UI_ASSET_DIR/index-7c0be990.m1s-*.js")")"
+  managed_map="<script type=\"importmap\" data-m1s-shutdown-ui>{\"imports\":{\"/assets/index-7c0be990.js\":\"/assets/$generated_name\"}}</script>"
+  case "$mode" in
+    malformed) maps='<script type="importmap" data-m1s-shutdown-ui>{not-json}</script>' ;;
+    duplicate) maps="$managed_map$managed_map" ;;
+    wrong-target) maps='<script type="importmap" data-m1s-shutdown-ui>{"imports":{"/assets/index-7c0be990.js":"/assets/wrong.m1s-000000000000.js"}}</script>' ;;
+    unsafe-target) maps='<script type="importmap" data-m1s-shutdown-ui>{"imports":{"/assets/index-7c0be990.js":"/assets/index-7c0be990.m1s-000000000000.js?unsafe"}}</script>' ;;
+    unsafe-fragment) maps='<script type="importmap" data-m1s-shutdown-ui>{"imports":{"/assets/index-7c0be990.js":"/assets/index-7c0be990.m1s-000000000000.js#unsafe"}}</script>' ;;
+    conflicting-unmanaged) maps="<script type=\"importmap\">{\"imports\":{\"/assets/index-7c0be990.js\":\"/assets/conflict.js\"}}</script>$managed_map" ;;
+    *) fail "unknown managed import map test mode: $mode" ;;
+  esac
+  printf '%s\n<script type="module" src="/assets/%s"></script>\n' "$maps" "$generated_name" > "$FAKE_UI_ROOT/index.html"
+  assert_patch_fails_without_index_mutation "$label"
+  if verify_umbrel_shutdown_ui >/dev/null 2>&1; then
+    fail "$label verification should fail closed"
+  fi
+}
+
+assert_bad_managed_import_map_fails_closed 'malformed managed import map' malformed
+assert_bad_managed_import_map_fails_closed 'duplicate managed import maps' duplicate
+assert_bad_managed_import_map_fails_closed 'wrong managed import-map target' wrong-target
+assert_bad_managed_import_map_fails_closed 'unsafe managed import-map target' unsafe-target
+assert_bad_managed_import_map_fails_closed 'fragment managed import-map target' unsafe-fragment
+assert_bad_managed_import_map_fails_closed 'conflicting unmanaged import map' conflicting-unmanaged
+
+assert_forged_managed_marker_fails_closed() {
+  reset_shutdown_ui_fixture
+  printf 'before;%s;after\n' "$source_region" > "$FAKE_UI_ASSET_DIR/index-7c0be990.js"
+  write_shutdown_index '/assets/index-7c0be990.js'
+  patch_umbrel_shutdown_ui
+  local generated_name before_index after_index patch_exit verify_exit
+  generated_name="$(basename "$(compgen -G "$FAKE_UI_ASSET_DIR/index-7c0be990.m1s-*.js")")"
+  printf '<script type="importmap" title="x data-m1s-shutdown-ui z">{"imports":{"/assets/index-7c0be990.js":"/assets/%s"}}</script>\n<script type="module" src="/assets/%s"></script>\n' "$generated_name" "$generated_name" > "$FAKE_UI_ROOT/index.html"
+  before_index="$(<"$FAKE_UI_ROOT/index.html")"
+  if patch_umbrel_shutdown_ui >/dev/null 2>&1; then patch_exit=0; else patch_exit=$?; fi
+  if verify_umbrel_shutdown_ui >/dev/null 2>&1; then verify_exit=0; else verify_exit=$?; fi
+  after_index="$(<"$FAKE_UI_ROOT/index.html")"
+  [[ "$patch_exit" -ne 0 && "$verify_exit" -ne 0 ]] || fail "forged title marker must be rejected by patch and verification: patch_exit=$patch_exit verify_exit=$verify_exit"
+  assert_eq "$before_index" "$after_index" 'forged title marker must not mutate index.html'
+}
+
+assert_forged_managed_marker_fails_closed
+
+reset_shutdown_ui_fixture
+printf 'before;%s;after\n' "$source_region" > "$FAKE_UI_ASSET_DIR/index-7c0be990.js"
+write_shutdown_index '/assets/index-7c0be990.js'
+patch_umbrel_shutdown_ui
+rm "$FAKE_UI_ASSET_DIR/index-7c0be990.js"
+assert_patch_fails_without_index_mutation 'missing original immutable asset'
+
+reset_shutdown_ui_fixture
+printf 'before;%s;after\n' "$source_region" > "$FAKE_UI_ASSET_DIR/index-7c0be990.js"
+printf '<script type="importmap" data-m1s-shutdown-ui>{"imports":{"/assets/index-7c0be990.js":"/assets/index-7c0be990.m1s-deadbeefcafe.js"}}</script><script type="module" src="/assets/index-7c0be990.m1s-deadbeefcafe.js"></script>\n' > "$FAKE_UI_ROOT/index.html"
+assert_patch_fails_without_index_mutation 'missing generated target asset'
+
+reset_shutdown_ui_fixture
+printf 'before;%s;after\n' "$source_region" > "$FAKE_UI_ASSET_DIR/index-7c0be990.js"
+write_shutdown_index '/assets/index-7c0be990.js'
+patch_umbrel_shutdown_ui
+printf 'stale;%s\n' "$canonical_region" > "$FAKE_UI_ASSET_DIR/index-7c0be990.m1s-000000000000.js"
+assert_patch_fails_without_index_mutation 'stale generated asset after canonical patch'
+
+reset_shutdown_ui_fixture
+printf 'before;%s;%s;after\n' "$source_region" "$source_region" > "$FAKE_UI_ASSET_DIR/index-7c0be990.js"
+write_shutdown_index '/assets/index-7c0be990.js'
+assert_patch_fails_without_index_mutation 'duplicate source branches'
+
+reset_shutdown_ui_fixture
+printf 'before;%s;%s;%s;after\n' "$source_region" "$public_region" "$canonical_region" > "$FAKE_UI_ASSET_DIR/index-7c0be990.js"
+write_shutdown_index '/assets/index-7c0be990.js'
+assert_patch_fails_without_index_mutation 'mixed source/30/75 branches'
+
+reset_shutdown_ui_fixture
+printf 'before;%s;after\n' "$source_region" > "$FAKE_UI_ASSET_DIR/index-7c0be990.js"
+printf '<script type="module" src="/assets/index-7c0be990.js"></script><script type="module" src="/assets/index-7c0be990.js"></script>\n' > "$FAKE_UI_ROOT/index.html"
+assert_patch_fails_without_index_mutation 'duplicate index asset references'
+
+reset_shutdown_ui_fixture
+printf 'before;%s;after\n' "$source_region" > "$FAKE_UI_ASSET_DIR/index-7c0be990.js"
+assert_patch_fails_without_index_mutation 'missing index'
+
+reset_shutdown_ui_fixture
+write_shutdown_index '/assets/index-7c0be990.js'
+assert_patch_fails_without_index_mutation 'missing referenced asset'
+
+reset_shutdown_ui_fixture
+printf 'before;%s;after\n' "$source_region" > "$FAKE_UI_ASSET_DIR/index-7c0be990.css"
+write_shutdown_index '/assets/index-7c0be990.css'
+assert_patch_fails_without_index_mutation 'non-JS index reference'
+
+reset_shutdown_ui_fixture
+printf 'before;%s;after\n' "$source_region" > "$FAKE_UI_ROOT/escape.js"
+write_shutdown_index '/assets/../escape.js'
+assert_patch_fails_without_index_mutation 'path traversal index reference'
+
+reset_shutdown_ui_fixture
+printf 'before;%s;after\n' "$source_region" > "$FAKE_UI_ASSET_DIR/index-7c0be990.js"
+write_shutdown_index '/assets/index-7c0be990.js?unsafe'
+assert_patch_fails_without_index_mutation 'query-bearing index reference'
+
+reset_shutdown_ui_fixture
+printf 'before;%s;after\n' "$source_region" > "$FAKE_UI_ASSET_DIR/index-7c0be990.js"
+write_shutdown_index '/assets/index-7c0be990.js#unsafe'
+assert_patch_fails_without_index_mutation 'fragment-bearing index reference'
+
+reset_shutdown_ui_fixture
+printf 'before;%s;after\n' "$canonical_region" > "$FAKE_UI_ASSET_DIR/index-7c0be990.m1s-deadbeefcafe.js"
+write_shutdown_index '/assets/index-7c0be990.m1s-deadbeefcafe.js'
+assert_patch_fails_without_index_mutation 'mismatched filename hash'
+
+reset_shutdown_ui_fixture
+printf 'before;%s;after\n' "$source_region" > "$FAKE_UI_ASSET_DIR/index-7c0be990.js"
+printf 'stale;%s\n' "$canonical_region" > "$FAKE_UI_ASSET_DIR/index-7c0be990.m1s-000000000000.js"
+write_shutdown_index '/assets/index-7c0be990.js'
+assert_patch_fails_without_index_mutation 'stale generated hashed asset'
 )
-pass "Installer replaces only the pinned 1.7.4 shutdown UI timer condition and fails closed"
+pass "Installer writes a deterministic 75s hashed shutdown UI asset and fails closed"
 
 record_install_state
 state_text="$(<"$INSTALL_STATE_FILE")"
-assert_contains "$state_text" '"version": "0.5.26"' "Success state must declare the managed 0.5.26 version"
+assert_contains "$state_text" '"version": "0.5.28"' "Success state must declare the managed 0.5.28 version"
 assert_contains "$state_text" "\"image\": \"$EXPECTED_UMBREL_IMAGE\"" "Success state must use the live exact image ref"
 assert_contains "$state_text" "\"image_id\": \"$DEFAULT_RESOLVED_UMBREL_IMAGE_ID\"" "Success state must use Docker's resolved local image ID"
 

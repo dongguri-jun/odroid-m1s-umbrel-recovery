@@ -111,6 +111,39 @@ if not re.search(rf'^##\s+{re.escape(version)}\s*$', text, flags=re.M):
     raise SystemExit(f'CHANGELOG.md is missing section: ## {version}')
 PY
 
+python3 - <<'PY'
+from pathlib import Path
+
+required_files = [
+    Path('scripts/m1s-support-policy.sh'),
+    Path('tests/test-support-policy.sh'),
+    Path('tests/fixtures/shutdown-ui-cache/server.py'),
+]
+missing = [str(path) for path in required_files if not path.is_file()]
+if missing:
+    raise SystemExit('Release prerequisite missing: ' + ', '.join(missing))
+
+guides = {
+    'README.md': [
+        'ODROID M1S + Ubuntu 22.04 Server + Linux 5.10.x',
+        'Ubuntu 20.04/24.04 Server',
+        'Linux 6.1 이상',
+    ],
+    'README.en.md': [
+        'ODROID M1S + Ubuntu 22.04 Server + Linux 5.10.x',
+        'Ubuntu 20.04/24.04 Server',
+        'Linux 6.1+',
+    ],
+}
+for guide_name, required_terms in guides.items():
+    text = Path(guide_name).read_text(encoding='utf-8')
+    if 'Ubuntu 20.04 / 22.04 / 24.04 Server' in text:
+        raise SystemExit(f'{guide_name} contains the unsupported broad Ubuntu baseline')
+    missing_terms = [term for term in required_terms if term not in text]
+    if missing_terms:
+        raise SystemExit(f'{guide_name} is missing release guidance terms: {", ".join(missing_terms)}')
+PY
+
 bash scripts/check-public-scrub.sh
 
 if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then

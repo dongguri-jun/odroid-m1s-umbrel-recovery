@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SCRIPT_VERSION="0.5.26"
+SCRIPT_VERSION="0.5.28"
 DRY_RUN=0
 NO_REBOOT=0
 STOP_TIMEOUT_SECONDS=300
@@ -9,6 +9,9 @@ APT_LOCK_TIMEOUT_SECONDS=300
 STOPPED_CONTAINERS=()
 CONTAINERS_STOPPED=0
 REBOOTING=0
+
+# shellcheck source=scripts/m1s-support-policy.sh
+source "$(dirname "${BASH_SOURCE[0]}")/m1s-support-policy.sh"
 
 usage() {
   cat <<'EOF'
@@ -236,6 +239,7 @@ on_error() {
 
 main() {
   parse_args "$@"
+  m1s_report_host_support
   require_root
   require_cmd apt-get
 

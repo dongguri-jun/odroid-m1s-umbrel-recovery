@@ -44,11 +44,9 @@ from pathlib import Path
 import re
 
 version = Path('VERSION').read_text(encoding='utf-8').strip()
-expected_version = '0.5.26'
+expected_version = version
 if not re.fullmatch(r'\d+\.\d+\.\d+', version):
     raise SystemExit(f'VERSION must be plain semver MAJOR.MINOR.PATCH, got {version!r}')
-if version != expected_version:
-    raise SystemExit(f'VERSION {version} does not match expected release {expected_version}')
 
 covered = [
     Path('scripts/m1s-clean-install-umbrel.sh'),
@@ -254,11 +252,54 @@ if install_pos('install_umbrel_safe_shutdown') > install_pos('wait_for_umbrel_ru
 if install_pos('wait_for_umbrel_runtime_health') > install_pos('info "Recording install state"'):
     raise SystemExit('Order invariant failed: runtime health must pass before install state recording')
 source_branch = 'he==="shutting-down"&&!v&&(ce.isError||ce.failureCount>0)&&(b(!0),setTimeout(()=>S(!0),30*Kh))'
-target_branch = 'he==="shutting-down"&&!v&&(b(!0),setTimeout(()=>S(!0),30*Kh))'
-if text.count(f"source = '{source_branch}'") != 2 or text.count(f"target = '{target_branch}'") != 2:
-    raise SystemExit('Installer must pin the exact 1.7.4 compiled shutdown UI source and target in patch and verify helpers')
-if text.count('text.replace(source, target, 1)') != 1:
-    raise SystemExit('Installer shutdown UI patch must replace exactly one compiled branch occurrence')
+public_branch = 'he==="shutting-down"&&!v&&(b(!0),setTimeout(()=>S(!0),30*Kh))'
+canonical_branch = 'he==="shutting-down"&&!v&&(b(!0),setTimeout(()=>S(!0),75*Kh))'
+required_shutdown_tokens = [
+    f"SOURCE_ERROR_30 = '{source_branch}'",
+    f"PUBLIC_STATUS_30 = '{public_branch}'",
+    f"CANONICAL_STATUS_75 = '{canonical_branch}'",
+    'SCRIPT_TAG_RE = re.compile',
+    'LINK_TAG_RE = re.compile',
+    'IMPORT_MAP_TAG_RE = re.compile',
+    'ATTRIBUTE_RE = re.compile',
+    'def has_managed_import_map_attribute(attributes):',
+    "return 'data-m1s-shutdown-ui' in attributes",
+    'def has_modulepreload_rel(attributes):',
+    "return 'modulepreload' in attributes.get('rel', '').lower().split()",
+    'EXECUTABLE_SCRIPT_TYPES',
+    'ASSET_REF_RE = re.compile',
+    'def executable_script_candidates(index_text):',
+    'def module_graph_trigger_starts(index_text, executable_candidates):',
+    'expected exactly one executable index script reference',
+    'ASSET_REF_RE.fullmatch(ref)',
+    'attribute_spans = {}',
+    "script_tag.start('attrs') + attribute_spans['src'][0]",
+    'selected executable script reference does not match its index span',
+    "json.dumps({'imports': {original_ref: target_ref}}, separators=(',', ':'))",
+    'def import_map_candidates(index_text):',
+    'managed import map does not exactly map the original entry to the generated entry',
+    'rewritten_index_text = index_text[:ref_start] + new_ref + index_text[ref_end:]',
+    'trigger_starts = module_graph_trigger_starts(index_text, candidates)',
+    'insertion_start = min(trigger_starts)',
+    'new_index_text = rewritten_index_text[:insertion_start] + managed_import_map_tag(ref, new_ref)',
+    'HASHED_NAME_RE = re.compile',
+    'hashlib.sha256(patched_bytes).hexdigest()[:12]',
+    "new_name = f'{base_stem}.m1s-{digest}.js'",
+    "new_ref = f'/assets/{new_name}'",
+    'atomic_write(new_path, patched_bytes)',
+    'atomic_write(INDEX, new_index_text.encode',
+]
+missing_shutdown_tokens = [token for token in required_shutdown_tokens if token not in text]
+if missing_shutdown_tokens:
+    raise SystemExit(f'Installer shutdown UI patch is missing content-hash/index binding tokens: {missing_shutdown_tokens}')
+if 'index_text.replace(ref, new_ref, 1)' in text:
+    raise SystemExit('Installer must rewrite only the selected executable script src span')
+if 'MANAGED_IMPORT_MAP_ATTR_' + 'RE' in text:
+    raise SystemExit('Installer must determine managed import maps from parsed attribute names')
+if 'managed import map must precede module execution' in text:
+    raise SystemExit('Installer must require the managed import map before every module graph trigger')
+if 'path.write_text(text.replace(source, target, 1))' in text or "target = 'he===\"shutting-down\"&&!v&&(b(!0),setTimeout(()=>S(!0),30*Kh))'" in text:
+    raise SystemExit('Installer must not mutate the old asset in place or keep the 30-second branch as canonical')
 if 'd.useEffect(()=>{F==="shutting-down"' in text or '30*Gl' in text:
     raise SystemExit('Installer must not retain the obsolete local .tmp minified shutdown UI assumption')
 print('  ok installer safety invariants and critical ordering')
@@ -267,6 +308,7 @@ PY
 printf '[verify] updater safety invariants\n'
 python3 - <<'PY'
 from pathlib import Path
+import re
 text = Path('scripts/m1s-update-umbrel.sh').read_text(encoding='utf-8')
 for forbidden in ['mkfs.', 'sfdisk', 'parted', 'wipefs', 'sgdisk', 'gdisk', 'blkdiscard', 'shred']:
     if forbidden in text:
@@ -354,8 +396,38 @@ required = [
     'sleep 45; docker stop --time 15 "$(hostname)"',
     'patch_umbrel_shutdown_ui',
     'verify_umbrel_shutdown_ui',
-    'ce.isError||ce.failureCount>0',
-    'he==="shutting-down"&&!v&&(b(!0),setTimeout(()=>S(!0),30*Kh))',
+    'SOURCE_ERROR_30',
+    'PUBLIC_STATUS_30',
+    'CANONICAL_STATUS_75',
+    'SCRIPT_TAG_RE = re.compile',
+    'LINK_TAG_RE = re.compile',
+    'IMPORT_MAP_TAG_RE = re.compile',
+    'ATTRIBUTE_RE = re.compile',
+    'def has_managed_import_map_attribute(attributes):',
+    "return 'data-m1s-shutdown-ui' in attributes",
+    'def has_modulepreload_rel(attributes):',
+    "return 'modulepreload' in attributes.get('rel', '').lower().split()",
+    'EXECUTABLE_SCRIPT_TYPES',
+    'ASSET_REF_RE = re.compile',
+    'def executable_script_candidates(index_text):',
+    'def module_graph_trigger_starts(index_text, executable_candidates):',
+    'expected exactly one executable index script reference',
+    'ASSET_REF_RE.fullmatch(ref)',
+    'attribute_spans = {}',
+    "script_tag.start('attrs') + attribute_spans['src'][0]",
+    'selected executable script reference does not match its index span',
+    "json.dumps({'imports': {original_ref: target_ref}}, separators=(',', ':'))",
+    'def import_map_candidates(index_text):',
+    'managed import map does not exactly map the original entry to the generated entry',
+    'rewritten_index_text = index_text[:ref_start] + new_ref + index_text[ref_end:]',
+    'trigger_starts = module_graph_trigger_starts(index_text, candidates)',
+    'insertion_start = min(trigger_starts)',
+    'new_index_text = rewritten_index_text[:insertion_start] + managed_import_map_tag(ref, new_ref)',
+    'he==="shutting-down"&&!v&&(b(!0),setTimeout(()=>S(!0),75*Kh))',
+    'hashlib.sha256(patched_bytes).hexdigest()[:12]',
+    "new_name = f'{base_stem}.m1s-{digest}.js'",
+    'atomic_write(new_path, patched_bytes)',
+    'atomic_write(INDEX, new_index_text.encode',
     'precheck_0_4_7_to_0_4_8',
     'apply_0_4_7_to_0_4_8',
     'postcheck_0_4_7_to_0_4_8',
@@ -485,9 +557,12 @@ required = [
     'target_image',
     'runtime_image',
     'runtime_image_id',
-    'expected_image_id="${UMBREL_TRANSACTION_TARGET_IMAGE_ID:-$(umbrel_image_id "$UMBREL_IMAGE")}"',
-    'Refusing to finalize 0.5.25 because the live Umbrel image ref is not the candidate target.',
-    'Refusing to finalize 0.5.25 because the live Umbrel image ID is not the resolved candidate.',
+    'verified_umbrel_runtime_snapshot',
+    'VERIFIED_UMBREL_RUNTIME_IMAGE',
+    'VERIFIED_UMBREL_RUNTIME_IMAGE_ID',
+    'skips live Umbrel runtime verification and final state publication',
+    'Refusing to finalize because the live Umbrel runtime image reference could not be verified.',
+    'Refusing to finalize because the live Umbrel runtime image ID could not be verified.',
   ]
 missing = [needle for needle in required if needle not in text]
 if missing:
@@ -534,11 +609,42 @@ if pos('systemctl enable m1s-umbrel-autostart.service', safe) > pos('docker rest
 if 'restore_umbrel_shutdown_ui' in text or 'verify_umbrel_shutdown_ui_restored' in text:
     raise SystemExit('Updater must not restore the upstream error-gated shutdown UI branch')
 source_branch = 'he==="shutting-down"&&!v&&(ce.isError||ce.failureCount>0)&&(b(!0),setTimeout(()=>S(!0),30*Kh))'
-target_branch = 'he==="shutting-down"&&!v&&(b(!0),setTimeout(()=>S(!0),30*Kh))'
-if text.count(f"source = '{source_branch}'") != 2 or text.count(f"target = '{target_branch}'") != 2:
-    raise SystemExit('Updater must pin the exact 1.7.4 compiled shutdown UI source and target in patch and verify helpers')
-if text.count('text.replace(source, target, 1)') != 1:
-    raise SystemExit('Updater shutdown UI patch must replace exactly one compiled branch occurrence')
+public_branch = 'he==="shutting-down"&&!v&&(b(!0),setTimeout(()=>S(!0),30*Kh))'
+canonical_branch = 'he==="shutting-down"&&!v&&(b(!0),setTimeout(()=>S(!0),75*Kh))'
+required_shutdown_tokens = [
+    f"SOURCE_ERROR_30 = '{source_branch}'",
+    f"PUBLIC_STATUS_30 = '{public_branch}'",
+    f"CANONICAL_STATUS_75 = '{canonical_branch}'",
+    'IMPORT_MAP_TAG_RE = re.compile',
+    'LINK_TAG_RE = re.compile',
+    'def has_managed_import_map_attribute(attributes):',
+    "return 'data-m1s-shutdown-ui' in attributes",
+    'def has_modulepreload_rel(attributes):',
+    "return 'modulepreload' in attributes.get('rel', '').lower().split()",
+    'def module_graph_trigger_starts(index_text, executable_candidates):',
+    'def import_map_candidates(index_text):',
+    "json.dumps({'imports': {original_ref: target_ref}}, separators=(',', ':'))",
+    'managed import map must precede every module graph trigger',
+    'managed import map does not exactly map the original entry to the generated entry',
+    'ASSET_REF_RE = re.compile',
+    'HASHED_NAME_RE = re.compile',
+    'hashlib.sha256(patched_bytes).hexdigest()[:12]',
+    "new_name = f'{base_stem}.m1s-{digest}.js'",
+    "new_ref = f'/assets/{new_name}'",
+    'atomic_write(new_path, patched_bytes)',
+    'atomic_write(INDEX, new_index_text.encode',
+]
+missing_shutdown_tokens = [token for token in required_shutdown_tokens if token not in text]
+if missing_shutdown_tokens:
+    raise SystemExit(f'Updater shutdown UI patch is missing content-hash/index binding tokens: {missing_shutdown_tokens}')
+if 'index_text.replace(ref, new_ref, 1)' in text:
+    raise SystemExit('Updater must rewrite only the selected executable script src span')
+if 'MANAGED_IMPORT_MAP_ATTR_' + 'RE' in text:
+    raise SystemExit('Updater must determine managed import maps from parsed attribute names')
+if 'managed import map must precede module execution' in text:
+    raise SystemExit('Updater must require the managed import map before every module graph trigger')
+if 'path.write_text(text.replace(source, target, 1))' in text or "target = 'he===\"shutting-down\"&&!v&&(b(!0),setTimeout(()=>S(!0),30*Kh))'" in text:
+    raise SystemExit('Updater must not mutate the old asset in place or keep the 30-second branch as canonical')
 if '90*Gl' in text or 'm1s-shutdown-0.4.' in text:
     raise SystemExit('Updater must not restore historical cache-busted or 90-second shutdown UI branches')
 if 'd.useEffect(()=>{F==="shutting-down"' in text or '30*Gl' in text:
@@ -600,16 +706,957 @@ if pos('postcheck_umbrel_safe_shutdown', postcheck_0525) > pos('wait_for_umbrel_
     raise SystemExit('0.5.25 postcheck must verify safe-shutdown before HTTP readiness completes the transaction')
 if pos('fail_umbrel_transaction "candidate postcheck failed"', postcheck_0525) > pos('return 1', postcheck_0525):
     raise SystemExit('0.5.25 postcheck failure must roll back before returning failure')
+snapshot = text[pos('verified_umbrel_runtime_snapshot()'):pos('finalize_install_state()')]
+candidate_ready = text[pos('candidate_umbrel_container_ready()'):pos('candidate_system_containers_ready()')]
+configured_ref_helper = text[
+    pos('umbrel_image_ref_resolves_to_image_id()'):pos('run_umbrel_container_with_data_source()')
+]
 finalize = text[pos('finalize_install_state()'):pos('is_step_applied()')]
-finalize_0525_start = finalize.find('runtime_image="$(docker inspect umbrel --format')
-if finalize_0525_start == -1:
-    raise SystemExit('0.5.25 finalization must inspect the live Umbrel runtime image')
-finalize_0525 = finalize[finalize_0525_start:]
-if pos('docker inspect umbrel --format \'{{.Config.Image}}\'', finalize_0525) > pos('update_install_state finalized', finalize_0525):
-    raise SystemExit('Finalization must derive image ref from live runtime before writing state')
-if pos('docker inspect umbrel --format \'{{.Image}}\'', finalize_0525) > pos('update_install_state finalized', finalize_0525):
-    raise SystemExit('Finalization must derive image ID from live runtime before writing state')
-print('  ok updater preserves data-mount gates, check/dry-run path, 1.7.4 transaction rollback, and runtime-state invariants')
+if '0.5.25' in finalize or re.search(r'if \[\[ .*\bversion\b.*(?:==|!=|=~)', finalize):
+    raise SystemExit('Finalization must not special-case a target version')
+for required in [
+    '[[ -n "$image_ref" && -n "$expected_image_id" ]] || return 1',
+    'resolved_image_id="$(docker image inspect "$image_ref" --format \'{{.Id}}\' 2>/dev/null || true)"',
+    '[[ "$resolved_image_id" == "$expected_image_id" ]]',
+]:
+    if required not in configured_ref_helper:
+        raise SystemExit(f'Configured image-ref proof is missing required verification: {required}')
+for required in [
+    'runtime_image="$(docker inspect umbrel --format \'{{.Config.Image}}\' 2>/dev/null || true)"',
+    'runtime_image_id="$(docker inspect umbrel --format \'{{.Image}}\' 2>/dev/null || true)"',
+    'expected_image_id="$(umbrel_image_id "$UMBREL_IMAGE")"',
+    '[[ -n "$runtime_image" ]]',
+    '[[ -n "$expected_image_id" && -n "$runtime_image_id" && "$runtime_image_id" == "$expected_image_id" ]]',
+    'umbrel_image_ref_resolves_to_image_id "$runtime_image" "$expected_image_id"',
+    'VERIFIED_UMBREL_RUNTIME_IMAGE="$UMBREL_IMAGE"',
+    'VERIFIED_UMBREL_RUNTIME_IMAGE_ID="$runtime_image_id"',
+]:
+    if required not in snapshot:
+        raise SystemExit(f'Live runtime snapshot is missing required verification: {required}')
+for required in [
+    '[[ "$image_id" == "$expected_image_id" ]]',
+    'umbrel_image_ref_resolves_to_image_id "$image_ref" "$expected_image_id"',
+]:
+    if required not in candidate_ready:
+        raise SystemExit(f'Candidate readiness is missing required configured-ref verification: {required}')
+if pos('docker inspect umbrel --format \'{{.Config.Image}}\'', snapshot) > pos('VERIFIED_UMBREL_RUNTIME_IMAGE="$UMBREL_IMAGE"', snapshot):
+    raise SystemExit('Live runtime image ref must be read before the verified snapshot is published')
+if pos('docker inspect umbrel --format \'{{.Image}}\'', snapshot) > pos('VERIFIED_UMBREL_RUNTIME_IMAGE_ID="$runtime_image_id"', snapshot):
+    raise SystemExit('Live runtime image ID must be read before the verified snapshot is published')
+if pos('expected_image_id="$(umbrel_image_id "$UMBREL_IMAGE")"', snapshot) > pos('VERIFIED_UMBREL_RUNTIME_IMAGE_ID="$runtime_image_id"', snapshot):
+    raise SystemExit('Pinned Umbrel image ID must resolve before the verified snapshot is published')
+if pos('umbrel_image_ref_resolves_to_image_id "$runtime_image" "$expected_image_id"', snapshot) > pos('VERIFIED_UMBREL_RUNTIME_IMAGE="$UMBREL_IMAGE"', snapshot):
+    raise SystemExit('Configured runtime image ref must resolve to the expected ID before canonical image metadata is published')
+if finalize.count('update_install_state finalized') != 1:
+    raise SystemExit('Finalization must publish install state through exactly one finalized update')
+if pos('if [[ "$DRY_RUN" -eq 1 ]]', finalize) > pos('verified_umbrel_runtime_snapshot', finalize):
+    raise SystemExit('Dry-run must skip live runtime verification before finalization can inspect Docker')
+if pos('verified_umbrel_runtime_snapshot', finalize) > pos('update_install_state finalized', finalize):
+    raise SystemExit('Every target finalization must verify the live runtime snapshot before state publication')
+if 'update_install_state finalized "" "$version" "" "$VERIFIED_UMBREL_RUNTIME_IMAGE" "$VERIFIED_UMBREL_RUNTIME_IMAGE_ID"' not in finalize:
+    raise SystemExit('Finalization must atomically publish version and verified runtime metadata together')
+
+def runtime_contract_failure(message: str) -> None:
+    raise SystemExit(f'Runtime-truth control-flow contract failed: {message}')
+
+PROTECTED_FUNCTION_SUCCESSORS = {
+    'verify_umbrel_runtime_truth': 'finalize_install_state',
+    'finalize_install_state': 'report_umbrel_runtime_truth',
+    'report_umbrel_runtime_truth': 'install_state_matches_verified_runtime',
+    'repair_current_umbrel_runtime': 'reconcile_current_version_runtime',
+    'reconcile_current_version_runtime': 'is_step_applied',
+}
+
+def function_body(source: str, name: str) -> str:
+    header = re.search(rf'(?m)^{re.escape(name)}\(\) \{{\n', source)
+    if not header:
+        runtime_contract_failure(f'missing function body: {name}')
+    start = header.end()
+    successor = PROTECTED_FUNCTION_SUCCESSORS.get(name)
+    if successor:
+        boundary = re.search(rf'(?m)^{re.escape(successor)}\(\) \{{\n', source[start:])
+        if not boundary:
+            runtime_contract_failure(f'missing protected successor for function: {name}')
+        end = start + boundary.start()
+    else:
+        boundary = re.search(
+            r'(?m)^if \[\[ "\$\{BASH_SOURCE\[0\]\}" == "\$0" \]\]; then\n',
+            source[start:],
+        )
+        if not boundary:
+            runtime_contract_failure(f'missing protected main guard after function: {name}')
+        end = start + boundary.start()
+    enclosed = source[start:end]
+    closing = re.search(r'(?s)^(?P<body>.*)\n}\s*\Z', enclosed)
+    if not closing:
+        runtime_contract_failure(f'function body has no isolated closing brace: {name}')
+    body = closing.group('body')
+    if re.search(
+        r'(?m)^[ \t]*(?:function[ \t]+)?[A-Za-z_][A-Za-z0-9_]*[ \t]*\(\)[ \t]*\{',
+        body,
+    ):
+        runtime_contract_failure(f'protected function must not declare nested functions: {name}')
+    return body
+
+def executable_code(source: str) -> str:
+    output = ['\n' if char == '\n' else ' ' for char in source]
+    length = len(source)
+
+    def walk(index: int, terminator: str | None = None) -> int:
+        while index < length:
+            char = source[index]
+            if terminator and char == terminator:
+                output[index] = char
+                return index + 1
+            if char == '#':
+                while index < length and source[index] != '\n':
+                    index += 1
+                continue
+            if char == '\\':
+                output[index] = char
+                if index + 1 < length:
+                    output[index + 1] = source[index + 1]
+                index += 2
+                continue
+            if char == "'":
+                index += 1
+                while index < length and source[index] != "'":
+                    index += 1
+                index += 1
+                continue
+            if char == '"':
+                index += 1
+                while index < length and source[index] != '"':
+                    if source[index] == '\\':
+                        index += 2
+                    elif source.startswith('$(', index):
+                        output[index:index + 2] = '$('
+                        index = walk(index + 2, ')')
+                    elif source[index] == '$':
+                        variable = re.match(
+                            r'\$(?:\{[^}\n]*\}|[A-Za-z_][A-Za-z0-9_]*)',
+                            source[index:],
+                        )
+                        if variable:
+                            end = index + variable.end()
+                            output[index:end] = source[index:end]
+                            index = end
+                        else:
+                            index += 1
+                    elif source[index] == '`':
+                        output[index] = '`'
+                        index = walk(index + 1, '`')
+                    else:
+                        index += 1
+                index += 1
+                continue
+            if source.startswith('$(', index):
+                output[index:index + 2] = '$('
+                index = walk(index + 2, ')')
+                continue
+            if char == '`':
+                output[index] = '`'
+                index = walk(index + 1, '`')
+                continue
+            output[index] = char
+            index += 1
+        if terminator:
+            runtime_contract_failure(f'unclosed executable substitution: {terminator}')
+        return index
+
+    walk(0)
+    return ''.join(output)
+
+def executable_call_positions(source: str, call: str) -> list[int]:
+    code = executable_code(source)
+    pattern = re.compile(
+        rf'(?mx)(?:^|[;|&(){{}}]|\b(?:then|do|else|elif|if)\b)'
+        rf'[ \t]*(?:![ \t]*)?(?P<call>{re.escape(call)})'
+        rf'(?![A-Za-z0-9_])(?![ \t]*\(\)[ \t]*\{{)'
+    )
+    return [match.start('call') for match in pattern.finditer(code)]
+
+
+def executable_commands(source: str) -> list[str]:
+    code = executable_code(source)
+    shell_keywords = r'(?:if|then|fi|elif|else|for|while|until|case|esac|do|done|in|function)'
+    pattern = re.compile(
+        r'(?mx)(?:^|[;|&(){}]|`|\b(?:then|do|else|elif|if)\b)'
+        r'[ \t]*(?:![ \t]*)?'
+        r'(?:(?:[A-Za-z_][A-Za-z0-9_]*=[^ \t;|&(){}\n`]*)[ \t]+)*'
+        r'(?P<command>'
+        r'\$(?:\{[^}\n]*\}|[A-Za-z_][A-Za-z0-9_]*)'
+        rf'|(?!(?:{shell_keywords})\b)(?![A-Za-z_][A-Za-z0-9_]*=)[A-Za-z_][A-Za-z0-9_]*'
+        r')'
+    )
+    return [match.group('command') for match in pattern.finditer(code)]
+
+
+def require_approved_commands(source: str, label: str, allowed: frozenset[str]) -> None:
+    unexpected = sorted(set(executable_commands(source)) - allowed)
+    if unexpected:
+        runtime_contract_failure(
+            f'{label} must not invoke unapproved command: {unexpected[0]}'
+        )
+
+def require_executable_call(source: str, call: str, message: str) -> int:
+    positions = executable_call_positions(source, call)
+    if not positions:
+        runtime_contract_failure(message)
+    return positions[0]
+
+def if_block(source: str, condition: str, label: str) -> tuple[str, int, int]:
+    code = executable_code(source)
+    header = re.search(
+        rf'(?m)^[ \t]*if[ \t]+{condition}[ \t]*;[ \t]*then\b',
+        code,
+    )
+    if not header:
+        runtime_contract_failure(f'missing {label} route')
+    depth = 0
+    for token in re.finditer(r'\b(?:if|fi)\b', code[header.start():]):
+        if token.group(0) == 'if':
+            depth += 1
+        else:
+            depth -= 1
+            if depth == 0:
+                closing_start = header.start() + token.start()
+                closing_end = header.start() + token.end()
+                return source[header.end():closing_start], header.start(), closing_end
+    runtime_contract_failure(f'unclosed {label} route')
+
+def simple_branch_statements(source: str, label: str) -> list[tuple[str, str]]:
+    code = executable_code(source)
+    if re.search(
+        r'\b(?:if|then|fi|elif|else|for|while|until|case|esac|do|done|function)\b|[|&(){}]',
+        code,
+    ):
+        runtime_contract_failure(f'{label} route must use only simple allowlisted statements')
+    statements = []
+    for raw_statement in re.split(r'[;\n]', code):
+        statement = raw_statement.strip()
+        if not statement:
+            continue
+        match = re.fullmatch(
+            r'(?P<command>[A-Za-z_][A-Za-z0-9_]*)(?:[ \t]+(?P<args>.*?))?',
+            statement,
+        )
+        if not match:
+            runtime_contract_failure(f'{label} route has unsupported executable syntax')
+        statements.append((match.group('command'), (match.group('args') or '').strip()))
+    return statements
+
+def reject_dynamic_dispatch(source: str, label: str) -> None:
+    code = executable_code(source)
+    command_prefix = r'(?mx)(?:^|[;|&(){}]|\b(?:then|do|else|elif|if)\b)[ \t]*(?:![ \t]*)?'
+    variable = re.search(
+        command_prefix + r'(?P<command>\$(?:\{[^}\n]*\}|[A-Za-z_][A-Za-z0-9_]*))',
+        code,
+    )
+    if variable:
+        runtime_contract_failure(
+            f'{label} must not use dynamic command dispatch: variable invocation'
+        )
+    launcher = re.search(
+        command_prefix + r'(?P<command>eval|builtin|command|bash|sh|source|xargs|\.)'
+        r'(?![A-Za-z0-9_])',
+        code,
+    )
+    if launcher:
+        runtime_contract_failure(
+            f'{label} must not use dynamic command dispatch: {launcher.group("command")}'
+        )
+
+def validate_runtime_truth_control_flow(source: str) -> None:
+    snapshot = source[source.index('verified_umbrel_runtime_snapshot()'):source.index('finalize_install_state()')]
+    verifier = function_body(source, 'verify_umbrel_runtime_truth')
+    finalize_body = function_body(source, 'finalize_install_state')
+    repair = function_body(source, 'repair_current_umbrel_runtime')
+    reconcile = function_body(source, 'reconcile_current_version_runtime')
+    report = function_body(source, 'report_umbrel_runtime_truth')
+    main_body = function_body(source, 'main')
+
+    if executable_commands('data_source=canonical\n'):
+        runtime_contract_failure('executable command extraction must ignore assignments')
+    if executable_commands('data_source="$(inspect_umbrel_mount_source /data)"\n') != [
+        'inspect_umbrel_mount_source'
+    ]:
+        runtime_contract_failure('executable command extraction must retain command substitutions')
+    if executable_commands('value=`umbrel_image_id "$UMBREL_IMAGE"`\n') != [
+        'umbrel_image_id'
+    ]:
+        runtime_contract_failure('executable command extraction must retain backtick substitutions')
+    if executable_commands('if true; then nested_runtime_check; fi\n') != [
+        'true',
+        'nested_runtime_check',
+    ]:
+        runtime_contract_failure('executable command extraction must retain inline nested commands')
+    if 'umbrel_image_ref_resolves_to_image_id "$runtime_image" "$expected_image_id"' not in snapshot:
+        runtime_contract_failure(
+            'runtime snapshot must prove the configured image ref resolves to the expected immutable ID'
+        )
+    if 'VERIFIED_UMBREL_RUNTIME_IMAGE="$UMBREL_IMAGE"' not in snapshot:
+        runtime_contract_failure(
+            'runtime snapshot must publish the canonical configured Umbrel image ref'
+        )
+
+    allowed_commands = {
+        'verify_umbrel_runtime_truth': frozenset({
+            'assert_fullnode_data_mount_safe',
+            'candidate_umbrel_container_ready',
+            'docker',
+            'inspect_umbrel_mount_source',
+            'local',
+            'postcheck_umbrel_safe_shutdown',
+            'report_umbrel_runtime_truth_failure',
+            'return',
+            'system_containers_need_replacement',
+            'true',
+            'umbrel_image_id',
+            'verified_umbrel_runtime_snapshot',
+            'wait_for_umbrel_http',
+        }),
+        'finalize_install_state': frozenset({
+            'echo',
+            'local',
+            'return',
+            'update_install_state',
+            'verified_umbrel_runtime_snapshot',
+            'verify_umbrel_runtime_truth',
+        }),
+        'report_umbrel_runtime_truth': frozenset({
+            'info',
+            'return',
+            'verify_umbrel_runtime_truth',
+        }),
+        'repair_current_umbrel_runtime': frozenset({
+            'assert_fullnode_data_mount_safe',
+            'begin_umbrel_candidate_transaction',
+            'complete_umbrel_transaction',
+            'err',
+            'fail_umbrel_transaction',
+            'install_umbrel_safe_shutdown',
+            'return',
+            'verify_umbrel_runtime_truth',
+            'wait_for_postcheck_system_containers',
+        }),
+        'reconcile_current_version_runtime': frozenset({
+            'finalize_install_state',
+            'info',
+            'install_state_matches_verified_runtime',
+            'local',
+            'repair_current_umbrel_runtime',
+            'report_umbrel_runtime_truth',
+            'return',
+        }),
+    }
+    for label, body in (
+        ('verify_umbrel_runtime_truth', verifier),
+        ('finalize_install_state', finalize_body),
+        ('report_umbrel_runtime_truth', report),
+        ('repair_current_umbrel_runtime', repair),
+        ('reconcile_current_version_runtime', reconcile),
+    ):
+        reject_dynamic_dispatch(body, label)
+    reject_dynamic_dispatch(main_body, 'main')
+
+    required_predicate_calls = (
+        'verified_umbrel_runtime_snapshot',
+        'assert_fullnode_data_mount_safe',
+        'candidate_umbrel_container_ready',
+        'system_containers_need_replacement',
+        'postcheck_umbrel_safe_shutdown',
+        'wait_for_umbrel_http',
+    )
+    for call in required_predicate_calls:
+        require_executable_call(
+            verifier,
+            call,
+            f'full runtime verifier must compose executable predicate: {call}',
+        )
+    for mount in ('/data', '/var/run/docker.sock'):
+        require_executable_call(
+            verifier,
+            f'inspect_umbrel_mount_source {mount}',
+            f'full runtime verifier must compose executable predicate: inspect_umbrel_mount_source {mount}',
+        )
+
+    snapshot_position = require_executable_call(
+        finalize_body,
+        'verified_umbrel_runtime_snapshot',
+        'finalize_install_state must prove the live runtime snapshot',
+    )
+    full_verifier_position = require_executable_call(
+        finalize_body,
+        'verify_umbrel_runtime_truth',
+        'finalize_install_state must invoke full runtime truth verification',
+    )
+    publication_positions = executable_call_positions(
+        finalize_body,
+        'update_install_state finalized',
+    )
+    if len(publication_positions) != 1:
+        runtime_contract_failure(
+            'finalize_install_state must contain exactly one final state publication'
+        )
+    if len(executable_call_positions(source, 'update_install_state finalized')) != 1:
+        runtime_contract_failure(
+            'no image-only publication path may exist outside finalize_install_state'
+        )
+    publication_position = publication_positions[0]
+    if snapshot_position > full_verifier_position:
+        runtime_contract_failure(
+            'runtime snapshot must precede full runtime truth verification in finalization'
+        )
+    if full_verifier_position > publication_position:
+        runtime_contract_failure(
+            'full runtime truth verification must precede final state publication'
+        )
+
+    newer_body, newer_start, _ = if_block(
+        main_body,
+        r'version_lt[ \t]+\$TARGET_VERSION[ \t]+\$CURRENT_VERSION',
+        'current>target',
+    )
+    equal_body, equal_start, _ = if_block(
+        main_body,
+        r'\[\[[ \t]+\$\{#PLANNED_MIGRATIONS\[@\]\}[ \t]+-eq[ \t]+0[ \t]+\]\]',
+        'current==target',
+    )
+    if newer_start > equal_start:
+        runtime_contract_failure('current>target route must precede the current==target route')
+    newer_mutators = (
+        'reconcile_current_version_runtime',
+        'repair_current_umbrel_runtime',
+        'begin_umbrel_candidate_transaction',
+        'ensure_fullnode_mount_from_state',
+        'global_preflight',
+        'run_migration_step',
+        'finalize_install_state',
+        'update_install_state',
+    )
+    for mutator in newer_mutators:
+        if executable_call_positions(newer_body, mutator):
+            runtime_contract_failure(
+                f'current>target route must not call mutator: {mutator}'
+            )
+    main_mutation_calls = (
+        'reconcile_current_version_runtime',
+        'ensure_fullnode_mount_from_state',
+        'global_preflight',
+        'run_migration_step',
+        'finalize_install_state',
+    )
+    for call in main_mutation_calls:
+        position = require_executable_call(
+            main_body,
+            call,
+            f'main flow must retain runtime/state operation: {call}',
+        )
+        if newer_start > position:
+            runtime_contract_failure(
+                f'current>target route must precede mount/runtime/state operation: {call}'
+            )
+    if not executable_call_positions(equal_body, 'reconcile_current_version_runtime'):
+        runtime_contract_failure(
+            'current==target route must reconcile runtime truth after newer-version return'
+        )
+    if simple_branch_statements(newer_body, 'current>target') != [('echo', ''), ('return', '0')]:
+        runtime_contract_failure('current>target route must return without mutation')
+    if simple_branch_statements(equal_body, 'current==target') != [
+        ('reconcile_current_version_runtime', '$TARGET_VERSION'),
+        ('return', ''),
+    ]:
+        runtime_contract_failure('current==target route must return through reconciliation')
+
+    require_executable_call(
+        report,
+        'verify_umbrel_runtime_truth',
+        'report-only runtime truth must invoke the full runtime verifier',
+    )
+    for mutator in (
+        'repair_current_umbrel_runtime',
+        'begin_umbrel_candidate_transaction',
+        'finalize_install_state',
+        'update_install_state',
+        'ensure_fullnode_mount_from_state',
+    ):
+        if executable_call_positions(report, mutator):
+            runtime_contract_failure(
+                f'report-only runtime truth must not call mutator: {mutator}'
+            )
+
+    check_body, _, check_end = if_block(
+        reconcile,
+        r'\[\[[ \t]+\$CHECK_ONLY[ \t]+-eq[ \t]+1[ \t]+\]\]',
+        'CHECK_ONLY reconciliation',
+    )
+    check_mutators = (
+        'repair_current_umbrel_runtime',
+        'begin_umbrel_candidate_transaction',
+        'finalize_install_state',
+        'update_install_state',
+        'ensure_fullnode_mount_from_state',
+    )
+    for mutator in check_mutators:
+        if executable_call_positions(check_body, mutator):
+            runtime_contract_failure(
+                f'CHECK_ONLY route must not call mutator: {mutator}'
+            )
+    check_report_position = require_executable_call(
+        check_body,
+        'report_umbrel_runtime_truth',
+        'CHECK_ONLY route must report full runtime truth',
+    )
+    check_return_position = require_executable_call(
+        check_body,
+        'return',
+        'CHECK_ONLY route must return after report-only runtime truth',
+    )
+    if check_report_position > check_return_position:
+        runtime_contract_failure('CHECK_ONLY route must report runtime truth before returning')
+    if simple_branch_statements(check_body, 'CHECK_ONLY') != [
+        ('report_umbrel_runtime_truth', ''),
+        ('return', ''),
+    ]:
+        runtime_contract_failure('CHECK_ONLY route must return after report-only runtime truth')
+    for call in ('repair_current_umbrel_runtime', 'finalize_install_state'):
+        position = require_executable_call(
+            reconcile,
+            call,
+            f'reconciliation must retain apply-mode operation: {call}',
+        )
+        if position < check_end:
+            runtime_contract_failure(
+                f'CHECK_ONLY route must return before reconciliation operation: {call}'
+            )
+
+    identity_position = require_executable_call(
+        repair,
+        'assert_fullnode_data_mount_safe',
+        'repair_current_umbrel_runtime must prove data identity',
+    )
+    transaction_positions = executable_call_positions(
+        repair,
+        'begin_umbrel_candidate_transaction',
+    )
+    if len(transaction_positions) != 1:
+        runtime_contract_failure(
+            'repair_current_umbrel_runtime must begin exactly one forced repair transaction'
+        )
+    transaction_position = transaction_positions[0]
+    if identity_position > transaction_position:
+        runtime_contract_failure(
+            'repair_current_umbrel_runtime must prove data identity before forced repair'
+        )
+    if not executable_call_positions(repair, 'begin_umbrel_candidate_transaction 1'):
+        runtime_contract_failure(
+            'repair_current_umbrel_runtime must use the forced candidate transaction exactly once'
+        )
+    safe_shutdown_position = require_executable_call(
+        repair,
+        'install_umbrel_safe_shutdown',
+        'repair_current_umbrel_runtime must install safe shutdown during repair',
+    )
+    repair_wait_positions = executable_call_positions(
+        repair,
+        'wait_for_postcheck_system_containers',
+    )
+    if len(repair_wait_positions) != 1:
+        runtime_contract_failure(
+            'repair_current_umbrel_runtime must wait exactly once after safe-shutdown installation'
+        )
+    repair_wait_position = repair_wait_positions[0]
+    repair_verifier_position = require_executable_call(
+        repair,
+        'verify_umbrel_runtime_truth',
+        'repair_current_umbrel_runtime must fully re-verify after repair',
+    )
+    completion_position = require_executable_call(
+        repair,
+        'complete_umbrel_transaction',
+        'repair_current_umbrel_runtime must complete only after re-verification',
+    )
+    if transaction_position > repair_verifier_position:
+        runtime_contract_failure(
+            'repair_current_umbrel_runtime must re-verify after the forced repair'
+        )
+    if transaction_position > safe_shutdown_position:
+        runtime_contract_failure(
+            'repair_current_umbrel_runtime must install safe shutdown after the forced repair transaction'
+        )
+    if safe_shutdown_position > repair_wait_position:
+        runtime_contract_failure(
+            'repair_current_umbrel_runtime must wait for system containers after safe-shutdown installation'
+        )
+    if repair_wait_position > repair_verifier_position:
+        runtime_contract_failure(
+            'repair_current_umbrel_runtime must wait for system containers before full re-verification'
+        )
+    repair_wait_failure, repair_wait_failure_position, _ = if_block(
+        repair,
+        r'![ \t]*wait_for_postcheck_system_containers',
+        'current-version system-container convergence failure',
+    )
+    require_executable_call(
+        repair_wait_failure,
+        'fail_umbrel_transaction',
+        'current-version system-container convergence failure must roll back through fail_umbrel_transaction',
+    )
+    if 'fail_umbrel_transaction "current-version system-container convergence did not complete within bounded readiness attempts."' not in repair_wait_failure:
+        runtime_contract_failure(
+            'current-version system-container convergence failure must use a generalized rollback message'
+        )
+    if not (safe_shutdown_position < repair_wait_failure_position < repair_verifier_position):
+        runtime_contract_failure(
+            'current-version system-container convergence failure must roll back before full re-verification'
+        )
+    if repair_verifier_position > completion_position:
+        runtime_contract_failure(
+            'repair_current_umbrel_runtime must complete after full re-verification'
+        )
+    if executable_call_positions(repair, 'finalize_install_state'):
+        runtime_contract_failure(
+            'repair_current_umbrel_runtime must not finalize before reconciliation re-verifies'
+        )
+    repair_call_positions = executable_call_positions(reconcile, 'repair_current_umbrel_runtime')
+    if len(repair_call_positions) != 1:
+        runtime_contract_failure(
+            'reconciliation must contain exactly one bounded repair path'
+        )
+    repair_call_position = repair_call_positions[0]
+    finalization_positions = executable_call_positions(reconcile, 'finalize_install_state')
+    if not finalization_positions or finalization_positions[-1] < repair_call_position:
+        runtime_contract_failure(
+            'reconciliation must finalize only after the bounded repair re-verifies'
+        )
+    for label, body in (
+        ('verify_umbrel_runtime_truth', verifier),
+        ('finalize_install_state', finalize_body),
+        ('report_umbrel_runtime_truth', report),
+        ('repair_current_umbrel_runtime', repair),
+        ('reconcile_current_version_runtime', reconcile),
+    ):
+        require_approved_commands(body, label, allowed_commands[label])
+
+validate_runtime_truth_control_flow(text)
+
+mutants = (
+    (
+        'missing-full-verifier-call',
+        text.replace('  verify_umbrel_runtime_truth 1 || return 1\n', '', 1),
+        'Runtime-truth control-flow contract failed: finalize_install_state must invoke full runtime truth verification',
+    ),
+    (
+        'missing-configured-ref-resolution',
+        text.replace(
+            '  umbrel_image_ref_resolves_to_image_id "$runtime_image" "$expected_image_id" || {\n'
+            '    report_umbrel_runtime_truth_failure "top-level-image-reference" "not-canonical" "Refusing to finalize because the live Umbrel runtime image reference could not be verified."\n'
+            '    return 1\n'
+            '  }\n',
+            '',
+            1,
+        ),
+        'Runtime-truth control-flow contract failed: runtime snapshot must prove the configured image ref resolves to the expected immutable ID',
+    ),
+    (
+        'publication-before-verification',
+        text.replace(
+            '  verified_umbrel_runtime_snapshot || return 1\n'
+            '  verify_umbrel_runtime_truth 1 || return 1\n'
+            '  update_install_state finalized "" "$version" "" "$VERIFIED_UMBREL_RUNTIME_IMAGE" "$VERIFIED_UMBREL_RUNTIME_IMAGE_ID"\n',
+            '  verified_umbrel_runtime_snapshot || return 1\n'
+            '  update_install_state finalized "" "$version" "" "$VERIFIED_UMBREL_RUNTIME_IMAGE" "$VERIFIED_UMBREL_RUNTIME_IMAGE_ID"\n'
+            '  verify_umbrel_runtime_truth 1 || return 1\n',
+            1,
+        ),
+        'Runtime-truth control-flow contract failed: full runtime truth verification must precede final state publication',
+    ),
+    (
+        'newer-version-repair-route',
+        text.replace(
+            '  echo "Installed version is newer than this updater target; no repair or state publication will run."\n'
+            '  return 0\n',
+            '  echo "Installed version is newer than this updater target; no repair or state publication will run."\n'
+            '  repair_current_umbrel_runtime\n'
+            '  return 0\n',
+            1,
+        ),
+        'Runtime-truth control-flow contract failed: current>target route must not call mutator: repair_current_umbrel_runtime',
+    ),
+    (
+        'check-only-mutator-route',
+        text.replace(
+            '  if [[ "$CHECK_ONLY" -eq 1 ]]; then\n'
+            '    report_umbrel_runtime_truth\n'
+            '    return\n'
+            '  fi\n',
+            '  if [[ "$CHECK_ONLY" -eq 1 ]]; then\n'
+            '    repair_current_umbrel_runtime\n'
+            '    return\n'
+            '  fi\n',
+            1,
+        ),
+        'Runtime-truth control-flow contract failed: CHECK_ONLY route must not call mutator: repair_current_umbrel_runtime',
+    ),
+    (
+        'check-only-nested-inline-repair',
+        text.replace(
+            '  if [[ "$CHECK_ONLY" -eq 1 ]]; then\n'
+            '    report_umbrel_runtime_truth\n'
+            '    return\n'
+            '  fi\n',
+            '  if [[ "$CHECK_ONLY" -eq 1 ]]; then\n'
+            '    report_umbrel_runtime_truth\n'
+            '    if true; then repair_current_umbrel_runtime; fi\n'
+            '    return\n'
+            '  fi\n',
+            1,
+        ),
+        'Runtime-truth control-flow contract failed: CHECK_ONLY route must not call mutator: repair_current_umbrel_runtime',
+    ),
+    (
+        'newer-version-nested-inline-repair',
+        text.replace(
+            '  echo "Installed version is newer than this updater target; no repair or state publication will run."\n'
+            '  return 0\n',
+            '  echo "Installed version is newer than this updater target; no repair or state publication will run."\n'
+            '  if true; then repair_current_umbrel_runtime; fi\n'
+            '  return 0\n',
+            1,
+        ),
+        'Runtime-truth control-flow contract failed: current>target route must not call mutator: repair_current_umbrel_runtime',
+    ),
+    (
+        'second-inline-final-state-publication',
+        text.replace(
+            '  update_install_state finalized "" "$version" "" "$VERIFIED_UMBREL_RUNTIME_IMAGE" "$VERIFIED_UMBREL_RUNTIME_IMAGE_ID"\n',
+            '  update_install_state finalized "" "$version" "" "$VERIFIED_UMBREL_RUNTIME_IMAGE" "$VERIFIED_UMBREL_RUNTIME_IMAGE_ID"; update_install_state finalized "" "$version" "" "$VERIFIED_UMBREL_RUNTIME_IMAGE" "$VERIFIED_UMBREL_RUNTIME_IMAGE_ID"\n',
+            1,
+        ),
+        'Runtime-truth control-flow contract failed: finalize_install_state must contain exactly one final state publication',
+    ),
+    (
+        'inline-transaction-before-identity',
+        text.replace(
+            '  if ! assert_fullnode_data_mount_safe >/dev/null 2>&1; then\n'
+            '    err "Current-version runtime repair requires proven data identity and an existing top-level Umbrel container."\n'
+            '    return 1\n'
+            '  fi\n'
+            '  if ! begin_umbrel_candidate_transaction 1; then\n',
+            '  if ! begin_umbrel_candidate_transaction 1; then\n'
+            '    return 1\n'
+            '  fi; if ! assert_fullnode_data_mount_safe >/dev/null 2>&1; then\n'
+            '    err "Current-version runtime repair requires proven data identity and an existing top-level Umbrel container."\n'
+            '    return 1\n'
+            '  fi\n'
+            '  if false; then\n',
+            1,
+        ),
+        'Runtime-truth control-flow contract failed: repair_current_umbrel_runtime must prove data identity before forced repair',
+    ),
+    (
+        'completion-before-reverification',
+        text.replace(
+            '  if ! verify_umbrel_runtime_truth; then\n'
+            '    fail_umbrel_transaction "current-version runtime repair did not converge"\n'
+            '    return 1\n'
+            '  fi\n'
+            '  complete_umbrel_transaction\n',
+            '  complete_umbrel_transaction\n'
+            '  if ! verify_umbrel_runtime_truth; then\n'
+            '    fail_umbrel_transaction "current-version runtime repair did not converge"\n'
+            '    return 1\n'
+            '  fi\n',
+            1,
+        ),
+        'Runtime-truth control-flow contract failed: repair_current_umbrel_runtime must complete after full re-verification',
+    ),
+    (
+        'missing-repair-system-convergence-wait',
+        text.replace(
+            '  if ! wait_for_postcheck_system_containers; then\n'
+            '    err "Current-version system-container convergence did not complete within bounded readiness attempts."\n'
+            '    fail_umbrel_transaction "current-version system-container convergence did not complete within bounded readiness attempts."\n'
+            '    return 1\n'
+            '  fi\n',
+            '',
+            1,
+        ),
+        'Runtime-truth control-flow contract failed: repair_current_umbrel_runtime must wait exactly once after safe-shutdown installation',
+    ),
+    (
+        'repair-system-convergence-wait-after-full-verification',
+        text.replace(
+            '  if ! wait_for_postcheck_system_containers; then\n'
+            '    err "Current-version system-container convergence did not complete within bounded readiness attempts."\n'
+            '    fail_umbrel_transaction "current-version system-container convergence did not complete within bounded readiness attempts."\n'
+            '    return 1\n'
+            '  fi\n'
+            '  if ! verify_umbrel_runtime_truth; then\n'
+            '    fail_umbrel_transaction "current-version runtime repair did not converge"\n'
+            '    return 1\n'
+            '  fi\n',
+            '  if ! verify_umbrel_runtime_truth; then\n'
+            '    fail_umbrel_transaction "current-version runtime repair did not converge"\n'
+            '    return 1\n'
+            '  fi\n'
+            '  if ! wait_for_postcheck_system_containers; then\n'
+            '    err "Current-version system-container convergence did not complete within bounded readiness attempts."\n'
+            '    fail_umbrel_transaction "current-version system-container convergence did not complete within bounded readiness attempts."\n'
+            '    return 1\n'
+            '  fi\n',
+            1,
+        ),
+        'Runtime-truth control-flow contract failed: repair_current_umbrel_runtime must wait for system containers before full re-verification',
+    ),
+    (
+        'extra-inline-bounded-repair',
+        text.replace(
+            '  repair_current_umbrel_runtime || return 1\n',
+            '  repair_current_umbrel_runtime || return 1; repair_current_umbrel_runtime || return 1\n',
+            1,
+        ),
+        'Runtime-truth control-flow contract failed: reconciliation must contain exactly one bounded repair path',
+    ),
+    (
+        'finalization-before-bounded-repair',
+        text.replace(
+            '  repair_current_umbrel_runtime || return 1\n'
+            '  finalize_install_state "$target_version"\n',
+            '  finalize_install_state "$target_version"\n'
+            '  repair_current_umbrel_runtime || return 1\n',
+            1,
+        ),
+        'Runtime-truth control-flow contract failed: reconciliation must finalize only after the bounded repair re-verifies',
+    ),
+    (
+        'quoted-fake-data-inspect',
+        text.replace(
+            '  data_source="$(inspect_umbrel_mount_source /data)"\n'
+            '  expected_image_id="$(umbrel_image_id "$UMBREL_IMAGE")"\n'
+            '  if ! candidate_umbrel_container_ready "$expected_image_id" "$data_source"; then\n',
+            '  data_source="$(printf \'%s\' \'inspect_umbrel_mount_source /data\')"\n'
+            '  expected_image_id="$(umbrel_image_id "$UMBREL_IMAGE")"\n'
+            '  if ! candidate_umbrel_container_ready "$expected_image_id" "$data_source"; then\n',
+            1,
+        ),
+        'Runtime-truth control-flow contract failed: full runtime verifier must compose executable predicate: inspect_umbrel_mount_source /data',
+    ),
+    (
+        'commented-fake-data-inspect',
+        text.replace(
+            '  data_source="$(inspect_umbrel_mount_source /data)"\n'
+            '  expected_image_id="$(umbrel_image_id "$UMBREL_IMAGE")"\n'
+            '  if ! candidate_umbrel_container_ready "$expected_image_id" "$data_source"; then\n',
+            '  data_source="$(printf \'%s\' unavailable)"\n'
+            '  # inspect_umbrel_mount_source /data\n'
+            '  expected_image_id="$(umbrel_image_id "$UMBREL_IMAGE")"\n'
+            '  if ! candidate_umbrel_container_ready "$expected_image_id" "$data_source"; then\n',
+            1,
+        ),
+        'Runtime-truth control-flow contract failed: full runtime verifier must compose executable predicate: inspect_umbrel_mount_source /data',
+    ),
+    (
+        'report-eval-repair-dispatch',
+        text.replace(
+            '  if verify_umbrel_runtime_truth; then\n'
+            '    info "Runtime truth diagnostic: predicate=all observed-state=canonical"\n'
+            '    return 0\n',
+            '  if verify_umbrel_runtime_truth; then\n'
+            '    info "Runtime truth diagnostic: predicate=all observed-state=canonical"\n'
+            '    eval repair_current_umbrel_runtime\n'
+            '    return 0\n',
+            1,
+        ),
+        'Runtime-truth control-flow contract failed: report_umbrel_runtime_truth must not use dynamic command dispatch: eval',
+    ),
+    (
+        'report-variable-repair-dispatch',
+        text.replace(
+            '  if verify_umbrel_runtime_truth; then\n'
+            '    info "Runtime truth diagnostic: predicate=all observed-state=canonical"\n'
+            '    return 0\n',
+            '  if verify_umbrel_runtime_truth; then\n'
+            '    info "Runtime truth diagnostic: predicate=all observed-state=canonical"\n'
+            '    fn=repair_current_umbrel_runtime\n'
+            '    "$fn"\n'
+            '    return 0\n',
+            1,
+        ),
+        'Runtime-truth control-flow contract failed: report_umbrel_runtime_truth must not use dynamic command dispatch: variable invocation',
+    ),
+    (
+        'report-shell-c-repair-dispatch',
+        text.replace(
+            '  if verify_umbrel_runtime_truth; then\n'
+            '    info "Runtime truth diagnostic: predicate=all observed-state=canonical"\n'
+            '    return 0\n',
+            '  if verify_umbrel_runtime_truth; then\n'
+            '    info "Runtime truth diagnostic: predicate=all observed-state=canonical"\n'
+            '    bash -c \'repair_current_umbrel_runtime\'\n'
+            '    return 0\n',
+            1,
+        ),
+        'Runtime-truth control-flow contract failed: report_umbrel_runtime_truth must not use dynamic command dispatch: bash',
+    ),
+    (
+        'report-timeout-shell-dispatch',
+        text.replace(
+            '  if verify_umbrel_runtime_truth; then\n'
+            '    info "Runtime truth diagnostic: predicate=all observed-state=canonical"\n'
+            '    return 0\n',
+            '  if verify_umbrel_runtime_truth; then\n'
+            '    info "Runtime truth diagnostic: predicate=all observed-state=canonical"\n'
+            '    timeout bash -c \'repair_current_umbrel_runtime\'\n'
+            '    return 0\n',
+            1,
+        ),
+        'Runtime-truth control-flow contract failed: report_umbrel_runtime_truth must not invoke unapproved command: timeout',
+    ),
+    (
+        'report-env-shell-dispatch',
+        text.replace(
+            '  if verify_umbrel_runtime_truth; then\n'
+            '    info "Runtime truth diagnostic: predicate=all observed-state=canonical"\n'
+            '    return 0\n',
+            '  if verify_umbrel_runtime_truth; then\n'
+            '    info "Runtime truth diagnostic: predicate=all observed-state=canonical"\n'
+            '    env sh -c \'repair_current_umbrel_runtime\'\n'
+            '    return 0\n',
+            1,
+        ),
+        'Runtime-truth control-flow contract failed: report_umbrel_runtime_truth must not invoke unapproved command: env',
+    ),
+    (
+        'report-python-shell-dispatch',
+        text.replace(
+            '  if verify_umbrel_runtime_truth; then\n'
+            '    info "Runtime truth diagnostic: predicate=all observed-state=canonical"\n'
+            '    return 0\n',
+            '  if verify_umbrel_runtime_truth; then\n'
+            '    info "Runtime truth diagnostic: predicate=all observed-state=canonical"\n'
+            '    python3 -c \'repair_current_umbrel_runtime\'\n'
+            '    return 0\n',
+            1,
+        ),
+        'Runtime-truth control-flow contract failed: report_umbrel_runtime_truth must not invoke unapproved command: python3',
+    ),
+)
+for name, mutant, expected_message in mutants:
+    if mutant == text:
+        runtime_contract_failure(f'negative mutant construction failed: {name}')
+    try:
+        validate_runtime_truth_control_flow(mutant)
+    except SystemExit as failure:
+        if str(failure) != expected_message:
+            runtime_contract_failure(
+                f'negative mutant {name} rejected for unexpected reason: {failure}'
+            )
+        print(f'  ok rejected {name}: {failure}')
+    else:
+        runtime_contract_failure(f'negative mutant was accepted: {name}')
+print('  ok updater preserves data-mount gates, dry-run semantics, rollback truth, and all-target runtime-state invariants')
 PY
 
 
@@ -621,7 +1668,7 @@ for forbidden in ['mkfs.', 'sfdisk', 'parted', 'wipefs', 'sgdisk', 'gdisk', 'blk
     if forbidden in text:
         raise SystemExit(f'System package updater must never contain destructive disk command: {forbidden}')
 required = [
-    'SCRIPT_VERSION="0.5.26"',
+    'SCRIPT_VERSION="0.5.28"',
     '--dry-run',
     '--no-reboot',
     'STOP_TIMEOUT_SECONDS=300',

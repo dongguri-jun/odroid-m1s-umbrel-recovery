@@ -6,6 +6,7 @@ cd "$repo_root"
 
 config_path="${TRACKER_SYNC_CONFIG_PATH:-.tracker-sync.json}"
 tracker_path_override="${DEV_TRACKER_PATH:-}"
+task_ledger_path_override="${TASK_LEDGER_PATH:-}"
 run_local_gates=0
 print_tracked_paths=0
 declare -a record_device_checks=()
@@ -99,7 +100,9 @@ elif [[ -n "$(git status --short)" ]]; then
   release_status="not released (working tree has uncommitted changes)"
 fi
 
-changed_json="$(python3 - <<'PY'
+changed_json="${TRACKER_CHANGED_JSON_OVERRIDE:-}"
+if [[ -z "$changed_json" ]]; then
+  changed_json="$(python3 - <<'PY'
 import json
 import subprocess
 
@@ -115,7 +118,8 @@ for line in lines:
     rows.append({'status': status, 'path': path})
 print(json.dumps(rows))
 PY
-)"
+  )"
+fi
 
 record_device_checks_json="$(python3 -c 'import json, sys; print(json.dumps(sys.argv[1:]))' "${record_device_checks[@]}")"
 record_operational_events_json="$(python3 -c 'import json, sys; items=[]
@@ -126,6 +130,7 @@ print(json.dumps(items))' "${record_operational_events[@]}")"
 
 CONFIG_PATH="$config_path" \
 TRACKER_PATH_OVERRIDE="$tracker_path_override" \
+TASK_LEDGER_PATH_OVERRIDE="$task_ledger_path_override" \
 BRANCH_NAME="$branch_name" \
 WORKING_VERSION="$working_version" \
 RELEASE_STATUS="$release_status" \
@@ -141,6 +146,9 @@ from __future__ import annotations
 import json
 import os
 import re
+import subprocess
+import sys
+import tempfile
 from datetime import datetime
 from fnmatch import fnmatch
 from pathlib import Path
@@ -151,6 +159,7 @@ include_globs = config.get('include_globs', [])
 exclude_globs = config.get('exclude_globs', [])
 pending_checks = config.get('pending_checks', [])
 tracker_path = Path(os.environ['TRACKER_PATH_OVERRIDE'] or config.get('tracker_path', '.local/dev-tracker.md'))
+task_ledger_path = Path(os.environ['TASK_LEDGER_PATH_OVERRIDE'] or config.get('task_ledger_path', '.local/task-ledger.json'))
 if not include_globs:
     raise SystemExit('tracker sync config must define include_globs')
 
@@ -177,6 +186,7 @@ AUTO_MARKERS = [
     'pending-device-tests',
     'release-blockers',
     'next-actions',
+    'local-tasks',
 ]
 AUTO_BLOCK_RE = re.compile(
     r'(?P<start><!-- AUTO:BEGIN (?P<name>[a-z\-]+) -->)\n?(?P<body>.*?)(?P<end><!-- AUTO:END (?P=name) -->)',
@@ -190,8 +200,28 @@ if unknown_ids:
     raise SystemExit('Unknown device check id(s): ' + ', '.join(unknown_ids))
 
 
-def bootstrap_tracker(path: Path) -> None:
+def write_private_tracker(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(prefix=f'.{path.name}.', dir=path.parent)
+    temporary_path = Path(temporary_name)
+    try:
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, 'w', encoding='utf-8') as temporary_file:
+            temporary_file.write(text)
+            temporary_file.flush()
+            os.fsync(temporary_file.fileno())
+        os.replace(temporary_path, path)
+        descriptor = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+    finally:
+        if temporary_path.exists():
+            temporary_path.unlink()
+
+
+def bootstrap_tracker(path: Path) -> None:
     device_verified_lines = '\n'.join(f'- [ ] {label}' for _, label in DEVICE_CHECKS) or '- [ ] No pending checks configured'
     pending_lines = '\n'.join(f'- [ ] {label}' for _, label in DEVICE_CHECKS) or '- [x] No remaining checks are configured.'
     text = f"""# Dev Tracker
@@ -242,22 +272,48 @@ _Last updated: not yet synced_
 1. Run `bash scripts/sync-dev-tracker.sh --run-local-gates`.
 <!-- AUTO:END next-actions -->
 
+## Local tasks
+<!-- AUTO:BEGIN local-tasks -->
+- No local tasks recorded.
+<!-- AUTO:END local-tasks -->
+
 ## Historical notes
 """
-    path.write_text(text, encoding='utf-8')
+    write_private_tracker(path, text)
 
 
 if not tracker_path.exists():
     bootstrap_tracker(tracker_path)
 
 text = tracker_path.read_text(encoding='utf-8')
+history_header = '## Historical notes'
+if history_header not in text:
+    raise SystemExit('dev tracker must preserve a manual historical notes section')
+local_tasks_begin = '<!-- AUTO:BEGIN local-tasks -->'
+local_tasks_end = '<!-- AUTO:END local-tasks -->'
+has_local_tasks_block = local_tasks_begin in text or local_tasks_end in text
+if has_local_tasks_block and (local_tasks_begin not in text or local_tasks_end not in text):
+    raise SystemExit('local-tasks auto block markers are incomplete')
+if not has_local_tasks_block:
+    local_tasks_block = f"## Local tasks\n{local_tasks_begin}\n- No local tasks recorded.\n{local_tasks_end}\n\n"
+    text = text.replace(history_header, local_tasks_block + history_header, 1)
 for marker in AUTO_MARKERS:
     if f'<!-- AUTO:BEGIN {marker} -->' not in text or f'<!-- AUTO:END {marker} -->' not in text:
         raise SystemExit(f'Missing auto-managed marker block: {marker}')
 
 blocks = {match.group('name'): match.group('body').strip('\n') for match in AUTO_BLOCK_RE.finditer(text)}
-if 'Historical notes' not in text:
-    raise SystemExit('dev tracker must preserve a manual historical notes section')
+if len(re.findall(re.escape(local_tasks_begin), text)) != 1 or len(re.findall(re.escape(local_tasks_end), text)) != 1:
+    raise SystemExit('local-tasks auto block must appear exactly once')
+
+render_result = subprocess.run(
+    [sys.executable, 'scripts/local-task.py', '--ledger', str(task_ledger_path), 'render'],
+    capture_output=True,
+    check=False,
+    text=True,
+)
+if render_result.returncode != 0:
+    raise SystemExit('local task render failed: ' + render_result.stderr.strip())
+local_tasks_rendered = render_result.stdout.strip() or '- No local tasks recorded.'
 
 
 def parse_checked_items(block: str) -> set[str]:
@@ -406,6 +462,7 @@ replacement_blocks = {
     'pending-device-tests': '\n'.join(pending_lines),
     'release-blockers': '\n'.join(release_blockers),
     'next-actions': '\n'.join(next_actions),
+    'local-tasks': local_tasks_rendered,
 }
 
 for marker, body in replacement_blocks.items():
@@ -434,6 +491,6 @@ if record_operational_events:
         new_block = f"\n\n{date_heading}\n" + '\n'.join(event_lines) + '\n'
         text = text[:insertion_point] + new_block + text[insertion_point:]
 
-tracker_path.write_text(text, encoding='utf-8')
+write_private_tracker(tracker_path, text)
 print(f'Updated {tracker_path}')
 PY

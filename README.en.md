@@ -119,9 +119,11 @@ Connect the hardware in this order.
 This guide works under the following conditions.
 
 - Device: **Hardkernel ODROID-M1S**
-- OS: **Ubuntu 20.04 / 22.04 / 24.04 Server**
+- OS: **Ubuntu 22.04 Server**
 
 Ubuntu must already be installed, and you must be able to log in.
+
+This guide is validated on **ODROID M1S + Ubuntu 22.04 Server + Linux 5.10.x**. **Ubuntu 20.04/24.04 Server** and **Linux 6.1+** are outside the validated range and are not guaranteed to work. The scripts will not block you, but issues there may be hard to support.
 
 If Ubuntu is not installed yet, install Ubuntu Server first, then continue with this guide.
 

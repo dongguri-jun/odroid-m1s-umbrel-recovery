@@ -1,5 +1,6 @@
 {
   "tracker_path": ".local/dev-tracker.md",
+  "task_ledger_path": ".local/task-ledger.json",
   "debounce_seconds": 45,
   "include_globs": [
     ".tracker-sync.json",
@@ -13,6 +14,8 @@
     ".local/**",
     ".git/**",
     ".sisyphus/**",
+    "**/__pycache__/**",
+    "**/*.pyc",
     "**/*.log",
     "**/*.tmp",
     "**/*.swp"

@@ -7,12 +7,15 @@
 /docs/ai-shared/
 /docs/dev/
 /docs/private/
+/docs/private/local-task-operations-design.md
 
 # Local generated tracker state
 /.local/
 
 # OS/editor noise
 .DS_Store
+__pycache__/
+*.pyc
 *.swp
 *.swo
 .gstack/

@@ -20,6 +20,13 @@ mapfile -d '' -t tracked_paths < <(
     ':!.local/**'
 )
 
+filtered_paths=()
+for tracked_path in "${tracked_paths[@]}"; do
+  [[ "$tracked_path" == 'scripts/check-public-scrub.sh' ]] && continue
+  filtered_paths+=("$tracked_path")
+done
+tracked_paths=("${filtered_paths[@]}")
+
 if [[ "${#tracked_paths[@]}" -eq 0 ]]; then
   printf '[scrub] no tracked public files to scan\n'
   exit 0
@@ -50,6 +57,25 @@ checks = [
     (
         'expanded safe.directory path',
         re.compile(r'safe\.directory="/(?:home/(?!\*)|Users/)'),
+    ),
+    (
+        'deferred Wi-Fi file path',
+        re.compile(
+            r'\b(?:scripts/m1s-networkmanager-wifi\.sh|scripts/m1s-umbrel-wifi-nmcli\.sh|'
+            r'tests/test-networkmanager-wifi\.sh|tests/test-wifi-bridge\.sh)\b',
+        ),
+    ),
+    (
+        'Settings Wi-Fi takeover claim',
+        re.compile(r'(?i)\bSettings\s*(?:→|->)\s*Wi-?Fi\b'),
+    ),
+    (
+        'NetworkManager takeover claim',
+        re.compile(r'(?i)\bNetworkManager\s+takeover\b'),
+    ),
+    (
+        'nmcli credential bridge claim',
+        re.compile(r'(?i)\bnmcli\s+credential\s+bridge\b'),
     ),
 ]
 

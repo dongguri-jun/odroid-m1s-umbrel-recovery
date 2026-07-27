@@ -27,6 +27,26 @@ assert_contains() {
   [[ "$haystack" == *"$needle"* ]] || fail "$label: missing '$needle'"
 }
 
+assert_before() {
+  local text="$1"
+  local before="$2"
+  local after="$3"
+  local label="$4"
+  local before_position after_position
+  before_position="$(python3 -c 'import sys; print(sys.stdin.read().find(sys.argv[1]))' "$before" <<<"$text")"
+  after_position="$(python3 -c 'import sys; print(sys.stdin.read().find(sys.argv[1]))' "$after" <<<"$text")"
+  [[ "$before_position" -ge 0 && "$after_position" -ge 0 && "$before_position" -lt "$after_position" ]] || fail "$label"
+}
+
+printf '[unit] Bitcoin recovery support policy ordering\n'
+recovery_common_script="$(<scripts/bitcoin-recovery-common.sh)"
+assert_contains "$recovery_common_script" 'm1s-support-policy.sh' 'Bitcoin recovery common flow must source the shared support policy'
+recovery_start="${recovery_common_script#*run_recovery_start() \{}"
+assert_before "$recovery_start" 'm1s_report_host_support' 'ensure_state_dir' 'Bitcoin recovery start must report unvalidated hosts before state writes'
+recovery_status="${recovery_common_script#*run_recovery_status_check() \{}"
+assert_before "$recovery_status" 'm1s_report_host_support' 'record_last_observed_state' 'Bitcoin recovery status must report unvalidated hosts before state writes'
+pass 'Bitcoin recovery warnings precede configuration or state mutation'
+
 printf '[unit] common recovery helpers\n'
 (
   # shellcheck source=scripts/bitcoin-recovery-common.sh

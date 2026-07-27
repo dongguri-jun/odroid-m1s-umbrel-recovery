@@ -7,6 +7,12 @@ cd "$repo_root"
 # shellcheck source=scripts/m1s-update-umbrel.sh
 source scripts/m1s-update-umbrel.sh
 
+m1s_host_os_id() { printf 'ubuntu'; }
+m1s_host_os_version() { printf '22.04'; }
+m1s_host_kernel_release() { printf '5.10.160-odroid-arm64'; }
+m1s_host_architecture() { printf 'aarch64'; }
+m1s_host_model() { printf 'Hardkernel ODROID-M1S'; }
+
 fail() {
   printf '[unit][FAIL] %s\n' "$1" >&2
   exit 1
@@ -35,6 +41,17 @@ assert_not_contains() {
   local haystack="$2"
   local label="$3"
   [[ "$haystack" != *"$needle"* ]] || fail "$label: unexpectedly found '$needle'"
+}
+
+assert_before() {
+  local text="$1"
+  local before="$2"
+  local after="$3"
+  local label="$4"
+  local before_position after_position
+  before_position="$(python3 -c 'import sys; print(sys.stdin.read().find(sys.argv[1]))' "$before" <<<"$text")"
+  after_position="$(python3 -c 'import sys; print(sys.stdin.read().find(sys.argv[1]))' "$after" <<<"$text")"
+  [[ "$before_position" -ge 0 && "$after_position" -ge 0 && "$before_position" -lt "$after_position" ]] || fail "$label"
 }
 
 read_json_value() {
@@ -83,6 +100,25 @@ path, key = sys.argv[1:3]
 with open(path) as f:
     data = json.load(f)
 sys.exit(0 if key not in data else 1)
+PY
+}
+
+assert_json_semantically_equal_excluding_updated_at() {
+  local before_file="$1"
+  local after_file="$2"
+  local label="$3"
+  python3 - "$before_file" "$after_file" <<'PY' || fail "$label"
+import json
+import sys
+
+before_path, after_path = sys.argv[1:3]
+with open(before_path) as before_file:
+    before = json.load(before_file)
+with open(after_path) as after_file:
+    after = json.load(after_file)
+before.pop("updated_at", None)
+after.pop("updated_at", None)
+sys.exit(0 if before == after else 1)
 PY
 }
 
@@ -186,6 +222,14 @@ EOF
 }
 
 printf '[unit] updater migration plan\n'
+updater_script="$(<scripts/m1s-update-umbrel.sh)"
+assert_contains 'm1s-support-policy.sh' "$updater_script" 'Updater must source the shared support policy'
+updater_main="${updater_script#*$'main() {\n'}"
+assert_before "$updater_main" 'm1s_report_host_support' 'sync_repository_to_origin_main "$@"' 'Updater must report unvalidated hosts before repository sync'
+assert_before "$updater_main" 'm1s_report_host_support' 'ensure_fullnode_mount_from_state repair' 'Updater must report unvalidated hosts before mount repair'
+[[ "$updater_main" == *'m1s_report_host_support'*'global_preflight'* ]] \
+  || fail 'Updater must report unvalidated hosts before global preflight'
+pass 'updater host-profile warning precedes every mutating preflight'
 with_test_state
 assert_plan_from_version() {
   local current="$1"
@@ -240,7 +284,147 @@ assert_plan_from_version "0.5.21" "0.5.21_to_0.5.22"
 assert_plan_from_version "0.5.22" "0.5.22_to_0.5.23"
 assert_plan_from_version "0.5.23" "0.5.23_to_0.5.24"
 assert_plan_from_version "0.5.25" "0.5.25_to_0.5.26"
-pass "build_migration_plan covers full, partial, and current installs"
+
+assert_invalid_migration_plan() {
+  local current="$1"
+  local plan_output plan_output_file plan_status
+
+  PLANNED_MIGRATIONS=(unexpected-step)
+  plan_output_file="$TEST_TMPDIR/invalid-version-plan.out"
+  set +e
+  build_migration_plan "$current" >"$plan_output_file" 2>&1
+  plan_status=$?
+  set -e
+  plan_output="$(<"$plan_output_file")"
+  [[ "$plan_status" -ne 0 ]] || fail "invalid version <$current> must reject migration planning"
+  assert_eq "" "${PLANNED_MIGRATIONS[*]}" "invalid version <$current> clears planned migrations"
+  assert_contains "Invalid installed version format" "$plan_output" "invalid version <$current> reports a generalized planning error"
+}
+
+for invalid_version in "" "unknown" "0.5.x" " " "0.5" "0.5.26.1" "-1.0.0" "0.5.-1" "0.x.0" "0.5.26; echo injected"; do
+  assert_invalid_migration_plan "$invalid_version"
+done
+
+if [[ "${M1S_TEST_CHARACTERIZE_CURRENT_VERSION_BYPASS:-0}" -eq 1 ]]; then
+  printf '[unit] current-version stopped-runtime bypass baseline characterization\n'
+  with_test_state
+  main_mutation_marker="$TEST_TMPDIR/current-version-mount-repair"
+  main_truth_marker="$TEST_TMPDIR/current-version-runtime-truth"
+  set +e
+  main_current_output="$(M1S_TEST_MUTATION_MARKER="$main_mutation_marker" M1S_TEST_TRUTH_MARKER="$main_truth_marker" bash -c '
+set -Eeuo pipefail
+source scripts/m1s-update-umbrel.sh
+m1s_host_os_id() { printf "ubuntu"; }
+m1s_host_os_version() { printf "22.04"; }
+m1s_host_kernel_release() { printf "5.10.160-odroid-arm64"; }
+m1s_host_architecture() { printf "aarch64"; }
+m1s_host_model() { printf "Hardkernel ODROID-M1S"; }
+require_root() { return 0; }
+sync_repository_to_origin_main() { return 0; }
+detect_installed_version() { printf "%s\\n" "$SCRIPT_VERSION"; }
+ensure_fullnode_mount_from_state() { : > "$M1S_TEST_MUTATION_MARKER"; }
+verify_umbrel_runtime_truth() { : > "$M1S_TEST_TRUTH_MARKER"; return 1; }
+main --skip-sync
+' 2>&1)"
+  main_current_status=$?
+  set -e
+  assert_eq "0" "$main_current_status" "current-version stopped-runtime bypass currently exits successfully"
+  [[ -e "$main_mutation_marker" ]] || fail "current-version stopped-runtime bypass currently reaches mount repair"
+  [[ ! -e "$main_truth_marker" ]] || fail "current-version stopped-runtime bypass must currently skip runtime truth"
+  assert_contains "No migrations needed" "$main_current_output" "current-version stopped-runtime bypass reports no migrations"
+  pass "current-version stopped runtime is characterized before no-migration routing coverage"
+fi
+
+if [[ "${M1S_TEST_CURRENT_VERSION_ROUTING:-0}" -eq 1 ]]; then
+  run_current_version_main_dispatch_case() {
+    local label="$1"
+    local current_version="$2"
+    local check_only="$3"
+    local expected_status="$4"
+    local expect_reconcile="$5"
+    local expect_mount="$6"
+    local expect_newer="$7"
+    local output status reconcile_marker mount_marker
+
+    with_test_state
+    reconcile_marker="$TEST_TMPDIR/$label-reconcile"
+    mount_marker="$TEST_TMPDIR/$label-mount"
+    set +e
+    output="$(M1S_TEST_CURRENT_VERSION="$current_version" M1S_TEST_CURRENT_RUNTIME_STATE=exited M1S_TEST_RECONCILE_MARKER="$reconcile_marker" M1S_TEST_MOUNT_MARKER="$mount_marker" bash -c '
+set -Eeuo pipefail
+source scripts/m1s-update-umbrel.sh
+m1s_host_os_id() { printf "ubuntu"; }
+m1s_host_os_version() { printf "22.04"; }
+m1s_host_kernel_release() { printf "5.10.160-odroid-arm64"; }
+m1s_host_architecture() { printf "aarch64"; }
+m1s_host_model() { printf "Hardkernel ODROID-M1S"; }
+require_root() { return 0; }
+sync_repository_to_origin_main() { return 0; }
+detect_installed_version() { printf "%s\\n" "$M1S_TEST_CURRENT_VERSION"; }
+ensure_fullnode_mount_from_state() { : > "$M1S_TEST_MOUNT_MARKER"; }
+reconcile_current_version_runtime() {
+  [[ "$M1S_TEST_CURRENT_RUNTIME_STATE" == "exited" ]] || return 1
+  : > "$M1S_TEST_RECONCILE_MARKER"
+}
+if [[ "${M1S_TEST_CHECK_ONLY:-0}" -eq 1 ]]; then
+  main --check --skip-sync
+else
+  main --skip-sync
+fi
+' 2>&1)"
+    status=$?
+    set -e
+    assert_eq "$check_only" "${M1S_TEST_CHECK_ONLY:-0}" "$label receives the requested check mode"
+    assert_eq "$expected_status" "$status" "$label exits with the routed result"
+    if [[ "$expect_reconcile" == "1" ]]; then
+      [[ -e "$reconcile_marker" ]] || fail "$label routes an equal current version into runtime reconciliation"
+    else
+      [[ ! -e "$reconcile_marker" ]] || fail "$label must not reconcile a newer version"
+    fi
+    if [[ "$expect_mount" == "1" ]]; then
+      [[ -e "$mount_marker" ]] || fail "$label reaches the legacy mount path"
+    else
+      [[ ! -e "$mount_marker" ]] || fail "$label must not repair mounts before its current-version decision"
+    fi
+    if [[ "$expect_newer" == "1" ]]; then
+      assert_contains "newer than this updater target" "$output" "$label reports the newer installed version"
+    fi
+  }
+
+  printf '[unit] current-version main routing failing first\n'
+  M1S_TEST_CHECK_ONLY=0 run_current_version_main_dispatch_case "equal-stopped-apply" "$SCRIPT_VERSION" 0 0 1 0 0
+  M1S_TEST_CHECK_ONLY=1 run_current_version_main_dispatch_case "equal-stopped-check" "$SCRIPT_VERSION" 1 0 1 0 0
+  M1S_TEST_CHECK_ONLY=0 run_current_version_main_dispatch_case "newer-apply" "0.5.29" 0 0 0 0 1
+  M1S_TEST_CHECK_ONLY=1 run_current_version_main_dispatch_case "newer-check" "0.5.29" 1 0 0 0 1
+  pass "current-version main routing distinguishes equal stopped drift from newer installs before mutation"
+fi
+
+printf '[unit] invalid installed version blocks main before mutation\n'
+with_test_state
+main_mutation_marker="$TEST_TMPDIR/main-mutation"
+set +e
+main_invalid_output="$(M1S_TEST_MUTATION_MARKER="$main_mutation_marker" bash -c '
+set -Eeuo pipefail
+source scripts/m1s-update-umbrel.sh
+m1s_host_os_id() { printf "ubuntu"; }
+m1s_host_os_version() { printf "22.04"; }
+m1s_host_kernel_release() { printf "5.10.160-odroid-arm64"; }
+m1s_host_architecture() { printf "aarch64"; }
+m1s_host_model() { printf "Hardkernel ODROID-M1S"; }
+require_root() { return 0; }
+sync_repository_to_origin_main() { return 0; }
+detect_installed_version() { printf "0.5.x\\n"; }
+ensure_fullnode_mount_from_state() { : > "$M1S_TEST_MUTATION_MARKER"; }
+main --skip-sync
+' 2>&1)"
+main_invalid_status=$?
+set -e
+[[ "$main_invalid_status" -ne 0 ]] || fail "main must reject an invalid installed version"
+[[ ! -e "$main_mutation_marker" ]] || fail "main must reject an invalid installed version before mount repair"
+assert_contains "Invalid installed version format" "$main_invalid_output" "main reports the generalized invalid-version error"
+pass "invalid installed versions fail closed before updater mutation"
+
+pass "build_migration_plan covers full, partial, current, and invalid installs"
 
 printf '[unit] running app capture characterization\n'
 with_test_state
@@ -264,9 +448,24 @@ assert_json_eq "$INSTALL_STATE_FILE" 'data["applied_steps"]' "0.4.4_to_0.4.5" "c
 assert_json_eq "$INSTALL_STATE_FILE" 'data["last_completed_version"]' "0.4.5" "completed records internal progress version"
 assert_json_missing "$INSTALL_STATE_FILE" "version"
 assert_json_missing "$INSTALL_STATE_FILE" "host_version"
+state_test_image_id="sha256:state-test-image-id"
+original_verified_umbrel_runtime_snapshot="$(declare -f verified_umbrel_runtime_snapshot)"
+original_verify_umbrel_runtime_truth="$(declare -f verify_umbrel_runtime_truth)"
+verified_umbrel_runtime_snapshot() {
+  VERIFIED_UMBREL_RUNTIME_IMAGE="$UMBREL_IMAGE"
+  VERIFIED_UMBREL_RUNTIME_IMAGE_ID="$state_test_image_id"
+}
+verify_umbrel_runtime_truth() {
+  VERIFIED_UMBREL_RUNTIME_IMAGE="$UMBREL_IMAGE"
+  VERIFIED_UMBREL_RUNTIME_IMAGE_ID="$state_test_image_id"
+}
 finalize_install_state "0.4.12"
+eval "$original_verified_umbrel_runtime_snapshot"
+eval "$original_verify_umbrel_runtime_truth"
 assert_json_eq "$INSTALL_STATE_FILE" 'data["version"]' "0.4.12" "finalize writes version"
 assert_json_eq "$INSTALL_STATE_FILE" 'data["host_version"]' "0.4.12" "finalize writes host_version"
+assert_json_eq "$INSTALL_STATE_FILE" 'data["image"]' "$UMBREL_IMAGE" "finalize writes the verified live image ref for every target version"
+assert_json_eq "$INSTALL_STATE_FILE" 'data["image_id"]' "$state_test_image_id" "finalize writes the resolved live image ID for every target version"
 pass "state transitions do not publish final version before finalize"
 
 printf '[unit] failed state transition\n'
@@ -344,6 +543,123 @@ run_migration_step "9.0.0_to_9.0.1"
 assert_eq "" "${EVENTS[*]}" "already applied step is skipped without rerunning handlers"
 pass "run_migration_step succeeds, records progress, and skips applied steps"
 
+printf '[unit] public 0.5.26 history baseline\n'
+with_test_state
+public_history_step_present=0
+for migration in "${MIGRATIONS[@]}"; do
+  if [[ "$migration" == "0.5.25_to_0.5.26" ]]; then
+    public_history_step_present=1
+    break
+  fi
+done
+assert_eq "1" "$public_history_step_present" "public 0.5.26 history step remains registered"
+
+HISTORY_EVENTS=()
+MUTATION_EVENTS=()
+original_info="$(declare -f info)"
+original_install_safe_shutdown="$(declare -f install_umbrel_safe_shutdown)"
+original_postcheck_safe_shutdown="$(declare -f postcheck_umbrel_safe_shutdown)"
+info() { HISTORY_EVENTS+=("$1"); }
+# shellcheck disable=SC2329 # Test stub is invoked indirectly through migration dispatch.
+install_umbrel_safe_shutdown() { MUTATION_EVENTS+=(safe-shutdown-install); }
+# shellcheck disable=SC2329 # Test stub is invoked indirectly through migration dispatch.
+postcheck_umbrel_safe_shutdown() { MUTATION_EVENTS+=(safe-shutdown-postcheck); }
+# shellcheck disable=SC2329 # Safety stub guards against unintended host mutation.
+systemctl() { MUTATION_EVENTS+=(systemctl); }
+# shellcheck disable=SC2329 # Safety stub guards against unintended host mutation.
+mount() { MUTATION_EVENTS+=(mount); }
+# shellcheck disable=SC2329 # Safety stub guards against unintended host mutation.
+nmcli() { MUTATION_EVENTS+=(nmcli); }
+
+apply_0_5_25_to_0_5_26
+assert_eq "0.5.26 restores the existing-device login guidance; no immediate host mutation required." "${HISTORY_EVENTS[*]}" "public 0.5.26 step remains a history-only release"
+assert_eq "" "${MUTATION_EVENTS[*]}" "public 0.5.26 step leaves safe shutdown and legacy networking untouched"
+
+eval "$original_info"
+eval "$original_install_safe_shutdown"
+eval "$original_postcheck_safe_shutdown"
+unset -f systemctl mount nmcli
+pass "public 0.5.26 history step remains a no-host-mutation baseline"
+
+printf '[unit] v0.5.28 reliability migration baseline\n'
+with_test_state
+assert_eq "0.5.28" "$SCRIPT_VERSION" "updater targets the v0.5.28 reliability release"
+
+build_migration_plan "0.5.26"
+assert_eq "0.5.26_to_0.5.27 0.5.27_to_0.5.28" "${PLANNED_MIGRATIONS[*]}" "0.5.26 plans the reliability transition before the host-profile reporting history step"
+build_migration_plan "0.5.27"
+assert_eq "0.5.27_to_0.5.28" "${PLANNED_MIGRATIONS[*]}" "local 0.5.27 plans only the host-profile reporting history step"
+
+SAFE_SHUTDOWN_EVENTS=()
+DEFERRED_NETWORK_EVENTS=()
+PROFILE_HISTORY_EVENTS=()
+SAFE_SHUTDOWN_INSTALL_FAIL=0
+original_precheck_common="$(declare -f precheck_common_canonical_install)"
+original_info="$(declare -f info)"
+original_install_safe_shutdown="$(declare -f install_umbrel_safe_shutdown)"
+original_postcheck_safe_shutdown="$(declare -f postcheck_umbrel_safe_shutdown)"
+precheck_common_canonical_install() { SAFE_SHUTDOWN_EVENTS+=(data-mount-precheck); }
+info() { PROFILE_HISTORY_EVENTS+=("$1"); }
+# shellcheck disable=SC2329 # Test stub is invoked indirectly through migration dispatch.
+install_umbrel_safe_shutdown() {
+  SAFE_SHUTDOWN_EVENTS+=(safe-shutdown-install)
+  [[ "$SAFE_SHUTDOWN_INSTALL_FAIL" -eq 0 ]]
+}
+# shellcheck disable=SC2329 # Test stub is invoked indirectly through migration dispatch.
+postcheck_umbrel_safe_shutdown() { SAFE_SHUTDOWN_EVENTS+=(safe-shutdown-postcheck); }
+# shellcheck disable=SC2329 # Safety stub guards against unintended deferred network mutation.
+nmcli() { DEFERRED_NETWORK_EVENTS+=(nmcli); }
+# shellcheck disable=SC2329 # Safety stub guards against unintended deferred network mutation.
+systemctl() { DEFERRED_NETWORK_EVENTS+=(systemctl); }
+# shellcheck disable=SC2329 # Safety stub guards against unintended deferred network mutation.
+mount() { DEFERRED_NETWORK_EVENTS+=(mount); }
+# shellcheck disable=SC2329 # Safety stub guards against unintended deferred network mutation.
+set_avahi_interfaces() { DEFERRED_NETWORK_EVENTS+=(avahi-interface); }
+
+apply_0_5_27_to_0_5_28
+assert_eq "0.5.28 reports the validated host profile without blocking other environments; no immediate host mutation required." "${PROFILE_HISTORY_EVENTS[*]}" "0.5.28 history message describes non-blocking profile guidance"
+PROFILE_HISTORY_EVENTS=()
+
+precheck_common_canonical_install
+assert_eq "data-mount-precheck" "${SAFE_SHUTDOWN_EVENTS[*]}" "reliability migration fixture precheck stub is exercised before migration dispatch"
+SAFE_SHUTDOWN_EVENTS=()
+
+run_migration_step "0.5.26_to_0.5.27"
+assert_eq "data-mount-precheck safe-shutdown-install safe-shutdown-postcheck" "${SAFE_SHUTDOWN_EVENTS[*]}" "reliability transition preserves the canonical data-mount precheck and safe-shutdown flow"
+assert_eq "" "${DEFERRED_NETWORK_EVENTS[*]}" "reliability transition leaves deferred network ownership untouched"
+assert_json_eq "$INSTALL_STATE_FILE" 'data["applied_steps"]' "0.5.26_to_0.5.27" "reliability transition records completion"
+
+reliability_events_before="${SAFE_SHUTDOWN_EVENTS[*]}"
+run_migration_step "0.5.26_to_0.5.27"
+assert_eq "$reliability_events_before" "${SAFE_SHUTDOWN_EVENTS[*]}" "applied reliability transition skips handlers idempotently"
+assert_eq "" "${DEFERRED_NETWORK_EVENTS[*]}" "idempotent reliability replay leaves deferred network ownership untouched"
+
+with_test_state
+SAFE_SHUTDOWN_EVENTS=()
+DEFERRED_NETWORK_EVENTS=()
+SAFE_SHUTDOWN_INSTALL_FAIL=1
+if run_migration_step "0.5.26_to_0.5.27"; then
+  fail "safe-shutdown install failure must refuse reliability step completion"
+fi
+assert_eq "data-mount-precheck safe-shutdown-install" "${SAFE_SHUTDOWN_EVENTS[*]}" "safe-shutdown install failure stops before postcheck"
+assert_json_eq "$INSTALL_STATE_FILE" 'data["failed_step"]' "0.5.26_to_0.5.27" "safe-shutdown install failure records the reliability step failure"
+assert_json_eq "$INSTALL_STATE_FILE" 'data["applied_steps"]' "" "safe-shutdown install failure does not record step completion"
+
+with_test_state
+SAFE_SHUTDOWN_EVENTS=()
+DEFERRED_NETWORK_EVENTS=()
+SAFE_SHUTDOWN_INSTALL_FAIL=0
+run_migration_step "0.5.27_to_0.5.28"
+assert_eq "data-mount-precheck" "${SAFE_SHUTDOWN_EVENTS[*]}" "host-profile reporting history step keeps the canonical data-mount precheck without host mutation"
+assert_eq "" "${DEFERRED_NETWORK_EVENTS[*]}" "host-profile reporting history step leaves deferred network ownership untouched"
+
+eval "$original_precheck_common"
+eval "$original_info"
+eval "$original_install_safe_shutdown"
+eval "$original_postcheck_safe_shutdown"
+unset -f nmcli systemctl mount set_avahi_interfaces
+pass "v0.5.28 reliability migration fails closed on safe-shutdown setup while host-profile reporting remains non-blocking"
+
 printf '[unit] run_migration_step failure paths\n'
 with_test_state
 EVENTS=()
@@ -382,21 +698,22 @@ assert_eq "1" "$DRY_RUN" "--dry-run sets DRY_RUN"
 assert_eq "0" "$AUTO_SYNC" "--skip-sync disables repository auto-sync"
 pass "parse_args handles check, dry-run, and skip-sync flags"
 
-printf '[unit] updater patches pinned 1.7.4 shutdown UI timer branch\n'
+printf '[unit] updater writes content-hashed 75s shutdown UI asset\n'
 with_test_state
 FAKE_UI_ROOT="$TEST_TMPDIR/umbreld-ui"
 FAKE_UI_ASSET_DIR="$FAKE_UI_ROOT/assets"
 mkdir -p "$FAKE_UI_ASSET_DIR"
 source_callback='he==="shutting-down"&&!v&&(ce.isError||ce.failureCount>0)&&(b(!0),setTimeout(()=>S(!0),30*Kh))'
-target_callback='he==="shutting-down"&&!v&&(b(!0),setTimeout(()=>S(!0),30*Kh))'
+public_callback='he==="shutting-down"&&!v&&(b(!0),setTimeout(()=>S(!0),30*Kh))'
+canonical_callback='he==="shutting-down"&&!v&&(b(!0),setTimeout(()=>S(!0),75*Kh))'
 # shellcheck disable=SC2016 # Literal React Compiler minified variable names.
 memo_prefix='let $e;e[56]!==v||e[57]!==he||e[58]!==ce.failureCount||e[59]!==ce.isError?($e=()=>{'
 # shellcheck disable=SC2016 # Literal React Compiler minified variable names.
 memo_suffix='},e[56]=v,e[57]=he,e[58]=ce.failureCount,e[59]=ce.isError,e[60]=$e):$e=e[60];let We;e[61]!==v||e[62]!==he||e[63]!==ce.failureCount||e[64]!==ce.isError||e[65]!==a?(We=[v,he,ce.failureCount,ce.isError,a],e[61]=v,e[62]=he,e[63]=ce.failureCount,e[64]=ce.isError,e[65]=a,e[66]=We):We=e[66],C.useEffect($e,We)'
 source_region="${memo_prefix}${source_callback}${memo_suffix}"
-target_region="${memo_prefix}${target_callback}${memo_suffix}"
-asset_path="$FAKE_UI_ASSET_DIR/index-7c0be990.js"
-printf 'before;%s;after\n' "$source_region" > "$asset_path"
+public_region="${memo_prefix}${public_callback}${memo_suffix}"
+canonical_region="${memo_prefix}${canonical_callback}${memo_suffix}"
+
 docker() {
   if [[ "$1" == "exec" ]]; then
     shift
@@ -408,35 +725,327 @@ docker() {
   fi
   return 1
 }
-if verify_umbrel_shutdown_ui >/dev/null 2>&1; then
-  fail "updater shutdown UI verify must reject the current error-gated compiled branch before patching"
-fi
+
+reset_shutdown_ui_fixture() {
+  rm -rf "$FAKE_UI_ROOT"
+  mkdir -p "$FAKE_UI_ASSET_DIR"
+}
+
+write_shutdown_index() {
+  printf '<script type="module" crossorigin src="%s"></script>\n' "$1" > "$FAKE_UI_ROOT/index.html"
+}
+
+write_vite_modulepreload_shutdown_index() {
+  cp tests/fixtures/shutdown-ui-cache/vite-modulepreload-six-js-refs.html "$FAKE_UI_ROOT/index.html"
+}
+
+write_vite_shared_entry_modulepreload_shutdown_index() {
+  cp tests/fixtures/shutdown-ui-cache/vite-modulepreload-shared-entry-six-js-refs.html "$FAKE_UI_ROOT/index.html"
+}
+
+write_vite_split_chunk_shutdown_fixture() {
+  cp -R tests/fixtures/shutdown-ui-cache/vite-split-chunk/. "$FAKE_UI_ROOT/"
+}
+
+hashed_shutdown_name_for() {
+  python3 - "$1" "$2" <<'PY'
+import hashlib
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+stem = sys.argv[2]
+digest = hashlib.sha256(path.read_bytes()).hexdigest()[:12]
+print(f"{stem}.m1s-{digest}.js")
+PY
+}
+
+assert_hashed_shutdown_patch() {
+  local label="$1"
+  local region="$2"
+  reset_shutdown_ui_fixture
+  local old_asset="$FAKE_UI_ASSET_DIR/index-7c0be990.js"
+  printf 'before;%s;after\n' "$region" > "$old_asset"
+  write_shutdown_index '/assets/index-7c0be990.js'
+  local old_asset_before old_index_before
+  old_asset_before="$(<"$old_asset")"
+  old_index_before="$(<"$FAKE_UI_ROOT/index.html")"
+  if verify_umbrel_shutdown_ui >/dev/null 2>&1; then
+    fail "$label verify must reject a non-canonical shutdown UI before patching"
+  fi
+  patch_umbrel_shutdown_ui
+  verify_umbrel_shutdown_ui
+  assert_eq "$old_asset_before" "$(<"$old_asset")" "$label old immutable asset bytes must remain unchanged"
+  [[ "$old_index_before" != "$(<"$FAKE_UI_ROOT/index.html")" ]] || fail "$label index must be rewritten to a new hashed URL"
+  local new_asset_name new_asset_path expected_name index_text patched_asset
+  new_asset_name="$(basename "$(compgen -G "$FAKE_UI_ASSET_DIR/index-7c0be990.m1s-*.js")")"
+  new_asset_path="$FAKE_UI_ASSET_DIR/$new_asset_name"
+  expected_name="$(hashed_shutdown_name_for "$new_asset_path" 'index-7c0be990')"
+  assert_eq "$expected_name" "$new_asset_name" "$label filename must contain the canonical content hash"
+  patched_asset="$(<"$new_asset_path")"
+  index_text="$(<"$FAKE_UI_ROOT/index.html")"
+  assert_contains "$canonical_region" "$patched_asset" "$label patched asset should use the 75s status-only branch"
+  assert_contains "$memo_suffix" "$patched_asset" "$label patched asset should preserve the React Compiler dependency array"
+  assert_not_contains "$source_callback" "$patched_asset" "$label patched asset should remove the upstream error gate"
+  assert_not_contains "$public_callback" "$patched_asset" "$label patched asset should remove the 30s status-only branch"
+  assert_contains "/assets/$new_asset_name" "$index_text" "$label index must reference the new hashed asset"
+  patch_umbrel_shutdown_ui
+  assert_eq "$patched_asset" "$(<"$new_asset_path")" "$label canonical rerun must leave hashed asset bytes unchanged"
+  assert_eq "$index_text" "$(<"$FAKE_UI_ROOT/index.html")" "$label canonical rerun must leave index unchanged"
+}
+
+assert_patch_fails_without_index_mutation() {
+  local label="$1"
+  local before_index=""
+  [[ -f "$FAKE_UI_ROOT/index.html" ]] && before_index="$(<"$FAKE_UI_ROOT/index.html")"
+  if patch_umbrel_shutdown_ui >/dev/null 2>&1; then
+    fail "$label should fail closed"
+  fi
+  local after_index=""
+  [[ -f "$FAKE_UI_ROOT/index.html" ]] && after_index="$(<"$FAKE_UI_ROOT/index.html")"
+  assert_eq "$before_index" "$after_index" "$label must not mutate index.html"
+}
+
+assert_hashed_shutdown_patch 'upstream error-gated 30s branch' "$source_region"
+assert_hashed_shutdown_patch 'public v0.5.26 status-only 30s branch' "$public_region"
+
+assert_vite_modulepreload_shutdown_patch() {
+  reset_shutdown_ui_fixture
+  local old_asset="$FAKE_UI_ASSET_DIR/entry-module.js"
+  printf 'before;%s;after\n' "$source_region" > "$old_asset"
+  write_vite_modulepreload_shutdown_index
+  local old_asset_before old_index_before
+  old_asset_before="$(<"$old_asset")"
+  old_index_before="$(<"$FAKE_UI_ROOT/index.html")"
+  patch_umbrel_shutdown_ui
+  verify_umbrel_shutdown_ui
+  assert_eq "$old_asset_before" "$(<"$old_asset")" "Vite modulepreload fixture must preserve the old immutable asset"
+  [[ "$old_index_before" != "$(<"$FAKE_UI_ROOT/index.html")" ]] || fail "Vite modulepreload fixture must rewrite index.html"
+  local new_asset_name new_asset_path expected_name index_text patched_asset
+  new_asset_name="$(basename "$(compgen -G "$FAKE_UI_ASSET_DIR/entry-module.m1s-*.js")")"
+  new_asset_path="$FAKE_UI_ASSET_DIR/$new_asset_name"
+  expected_name="$(hashed_shutdown_name_for "$new_asset_path" 'entry-module')"
+  assert_eq "$expected_name" "$new_asset_name" "Vite modulepreload fixture filename must contain the content hash"
+  patched_asset="$(<"$new_asset_path")"
+  index_text="$(<"$FAKE_UI_ROOT/index.html")"
+  assert_contains "$canonical_region" "$patched_asset" "Vite modulepreload fixture must patch the executable module entry"
+  assert_contains 'href="/assets/chunk-alpha.js"' "$index_text" "Vite modulepreload fixture must preserve modulepreload hints"
+  assert_contains "/assets/$new_asset_name" "$index_text" "Vite modulepreload fixture must retarget only the executable module entry"
+  assert_not_contains 'src="/assets/entry-module.js"' "$index_text" "Vite modulepreload fixture must remove the old executable module entry reference"
+  assert_contains "{\"imports\":{\"/assets/entry-module.js\":\"/assets/$new_asset_name\"}}" "$index_text" "Vite modulepreload fixture must map old dependent imports to the generated entry"
+  patch_umbrel_shutdown_ui
+  assert_eq "$patched_asset" "$(<"$new_asset_path")" "Vite modulepreload fixture rerun must leave the generated asset unchanged"
+  assert_eq "$index_text" "$(<"$FAKE_UI_ROOT/index.html")" "Vite modulepreload fixture rerun must leave index.html unchanged"
+}
+
+assert_vite_modulepreload_shutdown_patch
+
+assert_vite_shared_entry_modulepreload_shutdown_patch() {
+  reset_shutdown_ui_fixture
+  local old_asset="$FAKE_UI_ASSET_DIR/entry-module.js"
+  printf 'before;%s;after\n' "$source_region" > "$old_asset"
+  write_vite_shared_entry_modulepreload_shutdown_index
+  patch_umbrel_shutdown_ui
+  verify_umbrel_shutdown_ui
+  local new_asset_name index_text
+  new_asset_name="$(basename "$(compgen -G "$FAKE_UI_ASSET_DIR/entry-module.m1s-*.js")")"
+  index_text="$(<"$FAKE_UI_ROOT/index.html")"
+  assert_contains 'href="/assets/entry-module.js"' "$index_text" "Shared-entry modulepreload hint must remain unchanged"
+  assert_contains "src=\"/assets/$new_asset_name\"" "$index_text" "Shared-entry executable script must point to the generated asset"
+  assert_not_contains 'src="/assets/entry-module.js"' "$index_text" "Shared-entry executable script must not retain the old asset"
+}
+
+assert_vite_shared_entry_modulepreload_shutdown_patch
+
+assert_late_preloaded_map_fails_closed() {
+  reset_shutdown_ui_fixture
+  write_vite_split_chunk_shutdown_fixture
+  printf 'before;%s;after\n' "$source_region" > "$FAKE_UI_ASSET_DIR/old-entry.js"
+  patch_umbrel_shutdown_ui
+  local generated_name before_index after_index patch_exit verify_exit
+  generated_name="$(basename "$(compgen -G "$FAKE_UI_ASSET_DIR/old-entry.m1s-*.js")")"
+  printf '<link rel="modulepreload" href="/assets/dependent.js">\n<script type="importmap" data-m1s-shutdown-ui>{"imports":{"/assets/old-entry.js":"/assets/%s"}}</script>\n<script type="module" src="/assets/%s"></script>\n' "$generated_name" "$generated_name" > "$FAKE_UI_ROOT/index.html"
+  before_index="$(<"$FAKE_UI_ROOT/index.html")"
+  if patch_umbrel_shutdown_ui >/dev/null 2>&1; then patch_exit=0; else patch_exit=$?; fi
+  if verify_umbrel_shutdown_ui >/dev/null 2>&1; then verify_exit=0; else verify_exit=$?; fi
+  after_index="$(<"$FAKE_UI_ROOT/index.html")"
+  [[ "$patch_exit" -ne 0 && "$verify_exit" -ne 0 ]] || fail "late preloaded managed map must be rejected by patch and verification: patch_exit=$patch_exit verify_exit=$verify_exit"
+  assert_eq "$before_index" "$after_index" 'late preloaded managed map must not mutate index.html'
+}
+
+assert_late_preloaded_map_fails_closed
+
+assert_vite_split_chunk_import_map_patch() {
+  reset_shutdown_ui_fixture
+  write_vite_split_chunk_shutdown_fixture
+  local old_asset="$FAKE_UI_ASSET_DIR/old-entry.js"
+  printf 'before;%s;after\nimport("./settings-content.js")\n' "$source_region" > "$old_asset"
+  local old_asset_before
+  old_asset_before="$(<"$old_asset")"
+  patch_umbrel_shutdown_ui
+  local new_asset_name index_text expected_map managed_map_offset modulepreload_offset module_script_offset
+  new_asset_name="$(basename "$(compgen -G "$FAKE_UI_ASSET_DIR/old-entry.m1s-*.js")")"
+  index_text="$(<"$FAKE_UI_ROOT/index.html")"
+  expected_map="{\"imports\":{\"/assets/old-entry.js\":\"/assets/$new_asset_name\"}}"
+  assert_eq "$old_asset_before" "$(<"$old_asset")" "Split-chunk fixture must preserve the immutable original entry"
+  assert_contains "$expected_map" "$index_text" "Split-chunk fixture must map the dependent old-entry import to the generated entry"
+  assert_contains 'data-m1s-shutdown-ui' "$index_text" "Split-chunk fixture must install one managed import map"
+  [[ "$(grep -o 'data-m1s-shutdown-ui' <<<"$index_text" | wc -l)" -eq 1 ]] || fail "Split-chunk fixture must install exactly one managed import map"
+  managed_map_offset="$(python3 -c 'import sys; print(sys.stdin.read().find("data-m1s-shutdown-ui"))' <<<"$index_text")"
+  modulepreload_offset="$(python3 -c 'import sys; print(sys.stdin.read().find("rel=\"modulepreload\""))' <<<"$index_text")"
+  module_script_offset="$(python3 -c 'import sys; print(sys.stdin.read().find("<script type=\"module\""))' <<<"$index_text")"
+  [[ "$managed_map_offset" -ge 0 && "$managed_map_offset" -lt "$modulepreload_offset" && "$managed_map_offset" -lt "$module_script_offset" ]] || fail "Split-chunk fixture must insert the import map before modulepreload and module execution"
+  [[ "${index_text%%<script type=\"module\"*}" == *'data-m1s-shutdown-ui'* ]] || fail "Split-chunk fixture must insert the import map before module execution"
+  assert_contains 'import "./old-entry.js"' "$(<"$FAKE_UI_ASSET_DIR/dependent.js")" "Split-chunk fixture must retain the preloaded dependent static original import"
+  assert_contains 'import "./old-entry.js"' "$(<"$FAKE_UI_ASSET_DIR/settings-content.js")" "Split-chunk fixture must retain the dependent Vite static old-entry import"
+  verify_umbrel_shutdown_ui
+}
+
+assert_vite_split_chunk_import_map_patch
+
+reset_shutdown_ui_fixture
+canonical_asset="$FAKE_UI_ASSET_DIR/index-7c0be990.js"
+printf 'before;%s;after\n' "$canonical_region" > "$canonical_asset"
+canonical_name="$(hashed_shutdown_name_for "$canonical_asset" 'index-7c0be990')"
+cp "$canonical_asset" "$FAKE_UI_ASSET_DIR/$canonical_name"
+write_shutdown_index "/assets/$canonical_name"
+canonical_index_before="$(<"$FAKE_UI_ROOT/index.html")"
+canonical_asset_before="$(<"$FAKE_UI_ASSET_DIR/$canonical_name")"
 patch_umbrel_shutdown_ui
 verify_umbrel_shutdown_ui
-patched_asset="$(<"$asset_path")"
-assert_contains "$target_region" "$patched_asset" "patched updater asset should start the 30s timer from shutting-down state alone while preserving React memo/deps"
-assert_contains "$memo_suffix" "$patched_asset" "patched updater asset should preserve the React Compiler dependency array"
-assert_not_contains "$source_callback" "$patched_asset" "patched updater asset should remove only the query-error gate from the callback"
+[[ "$canonical_index_before" != "$(<"$FAKE_UI_ROOT/index.html")" ]] || fail "canonical hashed shutdown UI without a managed map must be repaired"
+assert_eq "$canonical_asset_before" "$(<"$FAKE_UI_ASSET_DIR/$canonical_name")" "canonical hashed shutdown UI rerun should be byte-idempotent"
+canonical_index_after_repair="$(<"$FAKE_UI_ROOT/index.html")"
+assert_contains "{\"imports\":{\"/assets/index-7c0be990.js\":\"/assets/$canonical_name\"}}" "$canonical_index_after_repair" "canonical repair must map the immutable original entry"
 patch_umbrel_shutdown_ui
-assert_eq "$patched_asset" "$(<"$asset_path")" "updater shutdown UI patch should be idempotent"
-printf 'prefix;%s;%s\n' "$source_region" "$source_region" > "$asset_path"
-if patch_umbrel_shutdown_ui >/dev/null 2>&1; then
-  fail "updater shutdown UI patch must fail closed when the compiled branch is ambiguous"
-fi
-printf 'prefix;%s;%s\n' "$source_region" "$target_region" > "$asset_path"
-if patch_umbrel_shutdown_ui >/dev/null 2>&1; then
-  fail "updater shutdown UI patch must fail closed when source and patched branches coexist"
-fi
-printf 'prefix;%s;%s\n' "$target_region" "$target_region" > "$asset_path"
-if verify_umbrel_shutdown_ui >/dev/null 2>&1; then
-  fail "updater shutdown UI verify must fail closed when the patched branch is duplicated"
-fi
-printf 'prefix;unrelated shutdown bundle\n' > "$asset_path"
-if verify_umbrel_shutdown_ui >/dev/null 2>&1; then
-  fail "updater shutdown UI verify must fail when the compiled branch is absent"
-fi
+assert_eq "$canonical_index_after_repair" "$(<"$FAKE_UI_ROOT/index.html")" "canonical managed-map rerun should be byte-idempotent"
+
+assert_bad_managed_import_map_fails_closed() {
+  local label="$1"
+  local mode="$2"
+  reset_shutdown_ui_fixture
+  printf 'before;%s;after\n' "$source_region" > "$FAKE_UI_ASSET_DIR/index-7c0be990.js"
+  write_shutdown_index '/assets/index-7c0be990.js'
+  patch_umbrel_shutdown_ui
+  local generated_name managed_map maps
+  generated_name="$(basename "$(compgen -G "$FAKE_UI_ASSET_DIR/index-7c0be990.m1s-*.js")")"
+  managed_map="<script type=\"importmap\" data-m1s-shutdown-ui>{\"imports\":{\"/assets/index-7c0be990.js\":\"/assets/$generated_name\"}}</script>"
+  case "$mode" in
+    malformed) maps='<script type="importmap" data-m1s-shutdown-ui>{not-json}</script>' ;;
+    duplicate) maps="$managed_map$managed_map" ;;
+    wrong-target) maps='<script type="importmap" data-m1s-shutdown-ui>{"imports":{"/assets/index-7c0be990.js":"/assets/wrong.m1s-000000000000.js"}}</script>' ;;
+    unsafe-target) maps='<script type="importmap" data-m1s-shutdown-ui>{"imports":{"/assets/index-7c0be990.js":"/assets/index-7c0be990.m1s-000000000000.js?unsafe"}}</script>' ;;
+    unsafe-fragment) maps='<script type="importmap" data-m1s-shutdown-ui>{"imports":{"/assets/index-7c0be990.js":"/assets/index-7c0be990.m1s-000000000000.js#unsafe"}}</script>' ;;
+    conflicting-unmanaged) maps="<script type=\"importmap\">{\"imports\":{\"/assets/index-7c0be990.js\":\"/assets/conflict.js\"}}</script>$managed_map" ;;
+    *) fail "unknown managed import map test mode: $mode" ;;
+  esac
+  printf '%s\n<script type="module" src="/assets/%s"></script>\n' "$maps" "$generated_name" > "$FAKE_UI_ROOT/index.html"
+  assert_patch_fails_without_index_mutation "$label"
+  if verify_umbrel_shutdown_ui >/dev/null 2>&1; then
+    fail "$label verification should fail closed"
+  fi
+}
+
+assert_bad_managed_import_map_fails_closed 'malformed managed import map' malformed
+assert_bad_managed_import_map_fails_closed 'duplicate managed import maps' duplicate
+assert_bad_managed_import_map_fails_closed 'wrong managed import-map target' wrong-target
+assert_bad_managed_import_map_fails_closed 'unsafe managed import-map target' unsafe-target
+assert_bad_managed_import_map_fails_closed 'fragment managed import-map target' unsafe-fragment
+assert_bad_managed_import_map_fails_closed 'conflicting unmanaged import map' conflicting-unmanaged
+
+assert_forged_managed_marker_fails_closed() {
+  reset_shutdown_ui_fixture
+  printf 'before;%s;after\n' "$source_region" > "$FAKE_UI_ASSET_DIR/index-7c0be990.js"
+  write_shutdown_index '/assets/index-7c0be990.js'
+  patch_umbrel_shutdown_ui
+  local generated_name before_index after_index patch_exit verify_exit
+  generated_name="$(basename "$(compgen -G "$FAKE_UI_ASSET_DIR/index-7c0be990.m1s-*.js")")"
+  printf '<script type="importmap" title="x data-m1s-shutdown-ui z">{"imports":{"/assets/index-7c0be990.js":"/assets/%s"}}</script>\n<script type="module" src="/assets/%s"></script>\n' "$generated_name" "$generated_name" > "$FAKE_UI_ROOT/index.html"
+  before_index="$(<"$FAKE_UI_ROOT/index.html")"
+  if patch_umbrel_shutdown_ui >/dev/null 2>&1; then patch_exit=0; else patch_exit=$?; fi
+  if verify_umbrel_shutdown_ui >/dev/null 2>&1; then verify_exit=0; else verify_exit=$?; fi
+  after_index="$(<"$FAKE_UI_ROOT/index.html")"
+  [[ "$patch_exit" -ne 0 && "$verify_exit" -ne 0 ]] || fail "forged title marker must be rejected by patch and verification: patch_exit=$patch_exit verify_exit=$verify_exit"
+  assert_eq "$before_index" "$after_index" 'forged title marker must not mutate index.html'
+}
+
+assert_forged_managed_marker_fails_closed
+
+reset_shutdown_ui_fixture
+printf 'before;%s;after\n' "$source_region" > "$FAKE_UI_ASSET_DIR/index-7c0be990.js"
+write_shutdown_index '/assets/index-7c0be990.js'
+patch_umbrel_shutdown_ui
+rm "$FAKE_UI_ASSET_DIR/index-7c0be990.js"
+assert_patch_fails_without_index_mutation 'missing original immutable asset'
+
+reset_shutdown_ui_fixture
+printf 'before;%s;after\n' "$source_region" > "$FAKE_UI_ASSET_DIR/index-7c0be990.js"
+printf '<script type="importmap" data-m1s-shutdown-ui>{"imports":{"/assets/index-7c0be990.js":"/assets/index-7c0be990.m1s-deadbeefcafe.js"}}</script><script type="module" src="/assets/index-7c0be990.m1s-deadbeefcafe.js"></script>\n' > "$FAKE_UI_ROOT/index.html"
+assert_patch_fails_without_index_mutation 'missing generated target asset'
+
+reset_shutdown_ui_fixture
+printf 'before;%s;after\n' "$source_region" > "$FAKE_UI_ASSET_DIR/index-7c0be990.js"
+write_shutdown_index '/assets/index-7c0be990.js'
+patch_umbrel_shutdown_ui
+printf 'stale;%s\n' "$canonical_region" > "$FAKE_UI_ASSET_DIR/index-7c0be990.m1s-000000000000.js"
+assert_patch_fails_without_index_mutation 'stale generated asset after canonical patch'
+
+reset_shutdown_ui_fixture
+printf 'before;%s;%s;after\n' "$source_region" "$source_region" > "$FAKE_UI_ASSET_DIR/index-7c0be990.js"
+write_shutdown_index '/assets/index-7c0be990.js'
+assert_patch_fails_without_index_mutation 'duplicate source branches'
+
+reset_shutdown_ui_fixture
+printf 'before;%s;%s;%s;after\n' "$source_region" "$public_region" "$canonical_region" > "$FAKE_UI_ASSET_DIR/index-7c0be990.js"
+write_shutdown_index '/assets/index-7c0be990.js'
+assert_patch_fails_without_index_mutation 'mixed source/30/75 branches'
+
+reset_shutdown_ui_fixture
+printf 'before;%s;after\n' "$source_region" > "$FAKE_UI_ASSET_DIR/index-7c0be990.js"
+printf '<script type="module" src="/assets/index-7c0be990.js"></script><script type="module" src="/assets/index-7c0be990.js"></script>\n' > "$FAKE_UI_ROOT/index.html"
+assert_patch_fails_without_index_mutation 'duplicate index asset references'
+
+reset_shutdown_ui_fixture
+printf 'before;%s;after\n' "$source_region" > "$FAKE_UI_ASSET_DIR/index-7c0be990.js"
+assert_patch_fails_without_index_mutation 'missing index'
+
+reset_shutdown_ui_fixture
+write_shutdown_index '/assets/index-7c0be990.js'
+assert_patch_fails_without_index_mutation 'missing referenced asset'
+
+reset_shutdown_ui_fixture
+printf 'before;%s;after\n' "$source_region" > "$FAKE_UI_ASSET_DIR/index-7c0be990.css"
+write_shutdown_index '/assets/index-7c0be990.css'
+assert_patch_fails_without_index_mutation 'non-JS index reference'
+
+reset_shutdown_ui_fixture
+printf 'before;%s;after\n' "$source_region" > "$FAKE_UI_ROOT/escape.js"
+write_shutdown_index '/assets/../escape.js'
+assert_patch_fails_without_index_mutation 'path traversal index reference'
+
+reset_shutdown_ui_fixture
+printf 'before;%s;after\n' "$source_region" > "$FAKE_UI_ASSET_DIR/index-7c0be990.js"
+write_shutdown_index '/assets/index-7c0be990.js?unsafe'
+assert_patch_fails_without_index_mutation 'query-bearing index reference'
+
+reset_shutdown_ui_fixture
+printf 'before;%s;after\n' "$source_region" > "$FAKE_UI_ASSET_DIR/index-7c0be990.js"
+write_shutdown_index '/assets/index-7c0be990.js#unsafe'
+assert_patch_fails_without_index_mutation 'fragment-bearing index reference'
+
+reset_shutdown_ui_fixture
+printf 'before;%s;after\n' "$canonical_region" > "$FAKE_UI_ASSET_DIR/index-7c0be990.m1s-deadbeefcafe.js"
+write_shutdown_index '/assets/index-7c0be990.m1s-deadbeefcafe.js'
+assert_patch_fails_without_index_mutation 'mismatched filename hash'
+
+reset_shutdown_ui_fixture
+printf 'before;%s;after\n' "$source_region" > "$FAKE_UI_ASSET_DIR/index-7c0be990.js"
+printf 'stale;%s\n' "$canonical_region" > "$FAKE_UI_ASSET_DIR/index-7c0be990.m1s-000000000000.js"
+write_shutdown_index '/assets/index-7c0be990.js'
+assert_patch_fails_without_index_mutation 'stale generated hashed asset'
+
 unset -f docker
-pass "Updater replaces only the pinned 1.7.4 shutdown UI timer condition and fails closed"
+pass "Updater writes a deterministic 75s hashed shutdown UI asset and fails closed"
 
 printf '[unit] updater repository auto-sync\n'
 cleanup_test_state
@@ -536,17 +1145,26 @@ fake_candidate_docker_reset() {
   FAKE_APP_STOP_STATUS=0
   FAKE_CANDIDATE_RUN_FAIL=0
   FAKE_ROLLBACK_RUN_FAIL=0
+  FAKE_ROLLBACK_RECORDS_IMAGE_ARGUMENT=0
   FAKE_CANDIDATE_IMAGE_ID="sha256:candidate-image-id"
   FAKE_CANDIDATE_RUNTIME_IMAGE_ID="$FAKE_CANDIDATE_IMAGE_ID"
+  FAKE_DIFFERENT_IMAGE_ID="sha256:different-image-id"
   FAKE_CANDIDATE_AUTH_PRESENT=1
   FAKE_CANDIDATE_TOR_PRESENT=1
   FAKE_CANDIDATE_TOR_IMAGE="ghcr.io/getumbrel/tor:0.4.9.11"
+  FAKE_UMBREL_CONTAINER_PRESENT=1
   FAKE_UMBREL_IMAGE_ID="sha256:old-image-id"
   FAKE_UMBREL_IMAGE_REF="dockurr/umbrel:1.7.3@sha256:old-image"
   FAKE_OLD_IMAGE_ID="$FAKE_UMBREL_IMAGE_ID"
   FAKE_OLD_IMAGE_REF="$FAKE_UMBREL_IMAGE_REF"
   FAKE_UMBREL_STATE="running"
   FAKE_UMBREL_DATA_SOURCE="$DATA_DIR"
+  FAKE_UMBREL_DOCKER_SOCKET_SOURCE="/var/run/docker.sock"
+  FAKE_UMBREL_RESTART_POLICY="always"
+  FAKE_RUNTIME_DATA_IDENTITY_READY=1
+  FAKE_REPAIR_CONVERGES_SAFE_SHUTDOWN=0
+  FAKE_REPAIR_CONVERGES_HTTP=0
+  FAKE_HOST_DATA_ALIAS_READY=0
   FAKE_RUN_DATA_SOURCE="$DATA_DIR"
   FAKE_AUTH_ID="old-auth-id"
   FAKE_AUTH_STATE="running"
@@ -606,6 +1224,18 @@ fake_docker_container_id() {
   esac
 }
 
+fake_docker_container_present() {
+  case "$1" in
+    umbrel) [[ "$FAKE_UMBREL_CONTAINER_PRESENT" -eq 1 ]] ;;
+    auth) [[ -n "$FAKE_AUTH_ID" ]] ;;
+    tor_proxy) [[ -n "$FAKE_TOR_PROXY_ID" ]] ;;
+    umbrel_auth) [[ -n "$FAKE_UMBREL_AUTH_ID" ]] ;;
+    umbrel_tor_proxy) [[ -n "$FAKE_UMBREL_TOR_PROXY_ID" ]] ;;
+    bitcoin) [[ -n "$FAKE_BITCOIN_ID" ]] ;;
+    *) return 1 ;;
+  esac
+}
+
 fake_docker_container_state() {
   case "$1" in
     umbrel) printf '%s\n' "$FAKE_UMBREL_STATE" ;;
@@ -643,7 +1273,7 @@ fake_docker_inspect() {
   done
 
   [[ -n "$container" ]] || return 1
-  [[ -n "$(fake_docker_container_id "$container" 2>/dev/null || true)" ]] || return 1
+  fake_docker_container_present "$container" || return 1
 
   case "$format" in
     *'.State.Status'*) fake_docker_container_state "$container" ;;
@@ -656,12 +1286,12 @@ fake_docker_inspect() {
         umbrel_auth) printf '%s\n' "ghcr.io/getumbrel/auth:current" ;;
       esac
       ;;
-    *'.HostConfig.RestartPolicy.Name'*) printf 'always\n' ;;
+    *'.HostConfig.RestartPolicy.Name'*) printf '%s\n' "$FAKE_UMBREL_RESTART_POLICY" ;;
     *'.Mounts'*)
       if [[ "$format" == *'/data'* ]]; then
         printf '%s\n' "$FAKE_UMBREL_DATA_SOURCE"
       elif [[ "$format" == *'/var/run/docker.sock'* ]]; then
-        printf '/var/run/docker.sock\n'
+        printf '%s\n' "$FAKE_UMBREL_DOCKER_SOCKET_SOURCE"
       fi
       ;;
     *'.Image'*) fake_docker_container_id "$container" ;;
@@ -675,7 +1305,7 @@ docker() {
   fake_docker_log "$@"
   case "$1" in
     ps)
-      [[ "$FAKE_UMBREL_STATE" == "running" ]] && printf 'umbrel\n'
+      [[ "$FAKE_UMBREL_CONTAINER_PRESENT" -eq 1 && "$FAKE_UMBREL_STATE" == "running" ]] && printf 'umbrel\n'
       [[ "$FAKE_AUTH_STATE" == "running" && -n "$FAKE_AUTH_ID" ]] && printf 'auth\n'
       [[ "$FAKE_TOR_PROXY_STATE" == "running" && -n "$FAKE_TOR_PROXY_ID" ]] && printf 'tor_proxy\n'
       [[ "$FAKE_UMBREL_AUTH_STATE" == "running" && -n "$FAKE_UMBREL_AUTH_ID" ]] && printf 'umbrel_auth\n'
@@ -686,8 +1316,12 @@ docker() {
       [[ "$FAKE_PULL_FAIL" -eq 0 ]]
       ;;
     image)
-      [[ "$2" == "inspect" && "$3" == "$UMBREL_IMAGE" ]] || return 1
-      printf '%s\n' "$FAKE_CANDIDATE_IMAGE_ID"
+      [[ "$2" == "inspect" ]] || return 1
+      case "$3" in
+        "$UMBREL_IMAGE"|"$FAKE_CANDIDATE_IMAGE_ID") printf '%s\n' "$FAKE_CANDIDATE_IMAGE_ID" ;;
+        "$FAKE_DIFFERENT_IMAGE_ID") printf '%s\n' "$FAKE_DIFFERENT_IMAGE_ID" ;;
+        *) return 1 ;;
+      esac
       ;;
     inspect)
       fake_docker_inspect "${@:2}"
@@ -717,7 +1351,10 @@ docker() {
       for argument in "${@:2}"; do
         case "$argument" in
           -f) ;;
-          umbrel) FAKE_UMBREL_IMAGE_ID="" ;;
+          umbrel)
+            FAKE_UMBREL_CONTAINER_PRESENT=0
+            FAKE_UMBREL_IMAGE_ID=""
+            ;;
           auth) FAKE_AUTH_ID="" ;;
           tor_proxy) FAKE_TOR_PROXY_ID="" ;;
           umbrel_auth) FAKE_UMBREL_AUTH_ID="" ;;
@@ -730,10 +1367,12 @@ docker() {
       local image_ref="${!#}"
       if [[ "$image_ref" == "$UMBREL_IMAGE" ]]; then
         [[ "$FAKE_CANDIDATE_RUN_FAIL" -eq 0 ]] || return 1
+        FAKE_UMBREL_CONTAINER_PRESENT=1
         FAKE_UMBREL_IMAGE_ID="$FAKE_CANDIDATE_RUNTIME_IMAGE_ID"
         FAKE_UMBREL_IMAGE_REF="$UMBREL_IMAGE"
         FAKE_UMBREL_STATE="running"
         FAKE_UMBREL_DATA_SOURCE="$FAKE_RUN_DATA_SOURCE"
+        FAKE_UMBREL_RESTART_POLICY="always"
         if [[ "$FAKE_CANDIDATE_AUTH_PRESENT" -eq 1 ]]; then
           FAKE_UMBREL_AUTH_ID="new-umbrel-auth-id"
           FAKE_UMBREL_AUTH_STATE="running"
@@ -746,8 +1385,13 @@ docker() {
         printf 'new-umbrel-id\n'
       else
         [[ "$FAKE_ROLLBACK_RUN_FAIL" -eq 0 ]] || return 1
+        FAKE_UMBREL_CONTAINER_PRESENT=1
         FAKE_UMBREL_IMAGE_ID="$image_ref"
-        FAKE_UMBREL_IMAGE_REF="$FAKE_OLD_IMAGE_REF"
+        if [[ "$FAKE_ROLLBACK_RECORDS_IMAGE_ARGUMENT" -eq 1 ]]; then
+          FAKE_UMBREL_IMAGE_REF="$image_ref"
+        else
+          FAKE_UMBREL_IMAGE_REF="$FAKE_OLD_IMAGE_REF"
+        fi
         FAKE_UMBREL_STATE="running"
         FAKE_UMBREL_DATA_SOURCE="$DATA_DIR"
         FAKE_AUTH_ID="rollback-auth-id"
@@ -908,8 +1552,18 @@ CANDIDATE_READINESS_ATTEMPTS=30
 pass "candidate lifecycle separates apps, pulls before mutation, and converges system containers"
 
 fake_transaction_hooks() {
-  assert_fullnode_data_mount_safe() { [[ "$FAKE_POSTCHECK_MOUNT_FAILURE" -eq 0 ]]; }
-  host_data_alias_ready() { return 1; }
+  assert_fullnode_data_mount_safe() {
+    [[ "$FAKE_POSTCHECK_MOUNT_FAILURE" -eq 0 ]] \
+      && [[ "$FAKE_RUNTIME_DATA_IDENTITY_READY" -eq 1 ]] \
+      && [[ "$FAKE_UMBREL_DOCKER_SOCKET_SOURCE" == "/var/run/docker.sock" ]] \
+      || return 1
+    case "$FAKE_UMBREL_DATA_SOURCE" in
+      "$DATA_DIR") return 0 ;;
+      "$HOST_DATA_ALIAS") [[ "$FAKE_HOST_DATA_ALIAS_READY" -eq 1 ]] ;;
+      *) return 1 ;;
+    esac
+  }
+  host_data_alias_ready() { [[ "$FAKE_HOST_DATA_ALIAS_READY" -eq 1 ]]; }
   candidate_system_containers_ready() {
     if [[ "$FAKE_POST_SAFE_SHUTDOWN_SYSTEM_ACTIVE" -eq 1 ]]; then
       ((FAKE_POST_SAFE_SHUTDOWN_SYSTEM_READINESS_CALLS += 1))
@@ -932,6 +1586,12 @@ fake_transaction_hooks() {
   sleep() { ((FAKE_SLEEP_CALLS += 1)); }
   install_umbrel_safe_shutdown() {
     [[ "$FAKE_SAFE_SHUTDOWN_APPLY_FAIL" -eq 0 ]] || return 1
+    if [[ "$FAKE_REPAIR_CONVERGES_SAFE_SHUTDOWN" -eq 1 ]]; then
+      FAKE_SAFE_SHUTDOWN_COMPONENT="canonical"
+    fi
+    if [[ "$FAKE_REPAIR_CONVERGES_HTTP" -eq 1 ]]; then
+      FAKE_HTTP_READY=1
+    fi
     case "$FAKE_POSTCHECK_MUTATION" in
       wrong_top_image) FAKE_UMBREL_IMAGE_ID="sha256:wrong-image-id" ;;
       missing_auth) FAKE_UMBREL_AUTH_ID="" ;;
@@ -961,7 +1621,9 @@ fake_transaction_hooks() {
       *) return 1 ;;
     esac
   }
-  postcheck_umbrel_safe_shutdown() { [[ "$FAKE_SAFE_SHUTDOWN_POSTCHECK_FAIL" -eq 0 ]]; }
+  postcheck_umbrel_safe_shutdown() {
+    [[ "$FAKE_SAFE_SHUTDOWN_POSTCHECK_FAIL" -eq 0 && "$FAKE_SAFE_SHUTDOWN_COMPONENT" == "canonical" ]]
+  }
   wait_for_umbrel_http() { [[ "$FAKE_HTTP_READY" -eq 1 ]]; }
 }
 
@@ -974,6 +1636,7 @@ JSON
   fake_candidate_docker_reset
   FAKE_SAFE_SHUTDOWN_APPLY_FAIL=0
   FAKE_SAFE_SHUTDOWN_POSTCHECK_FAIL=0
+  FAKE_SAFE_SHUTDOWN_COMPONENT="canonical"
   FAKE_HTTP_READY=1
   FAKE_POSTCHECK_MUTATION=""
   FAKE_POSTCHECK_MOUNT_FAILURE=0
@@ -982,6 +1645,7 @@ JSON
   FAKE_POST_SAFE_SHUTDOWN_SYSTEM_DELAY=0
   FAKE_POST_SAFE_SHUTDOWN_SYSTEM_READINESS_CALLS=0
   FAKE_SLEEP_CALLS=0
+  FINALIZATION_PUBLICATION_CALLS=0
   CANDIDATE_READINESS_ATTEMPTS=1
 }
 
@@ -1004,7 +1668,448 @@ assert_transaction_rolled_back() {
 
 printf '[unit] 0.5.25 transaction and runtime-truth state\n'
 fake_transaction_hooks
-assert_eq "0.5.24_to_0.5.25" "${MIGRATIONS[$((${#MIGRATIONS[@]} - 2))]}" "0.5.25 transaction remains immediately before the documentation correction"
+assert_eq "0.5.24_to_0.5.25" "${MIGRATIONS[$((${#MIGRATIONS[@]} - 4))]}" "0.5.25 transaction remains before the 0.5.26 history, reliability, and host-profile reporting steps"
+
+printf '[unit] 0.5.25 finalization baseline characterization\n'
+prepare_transaction_case
+run_migration_step "0.5.24_to_0.5.25"
+finalize_install_state "0.5.25"
+assert_json_eq "$INSTALL_STATE_FILE" 'data["version"]' "0.5.25" "direct 0.5.25 finalization publishes the target version only after runtime verification"
+assert_json_eq "$INSTALL_STATE_FILE" 'data["host_version"]' "0.5.25" "direct 0.5.25 finalization publishes the target host version only after runtime verification"
+assert_json_eq "$INSTALL_STATE_FILE" 'data["image"]' "$UMBREL_IMAGE" "direct 0.5.25 finalization writes the live pinned image ref"
+assert_json_eq "$INSTALL_STATE_FILE" 'data["image_id"]' "$FAKE_CANDIDATE_IMAGE_ID" "direct 0.5.25 finalization writes the resolved live image ID"
+
+prepare_transaction_case
+FAKE_SAFE_SHUTDOWN_APPLY_FAIL=1
+if run_migration_step "0.5.24_to_0.5.25"; then
+  fail "baseline failed transaction must not complete"
+fi
+assert_json_eq "$INSTALL_STATE_FILE" 'data["version"]' "0.5.24" "failed transaction does not publish the target version"
+assert_json_eq "$INSTALL_STATE_FILE" 'data["host_version"]' "0.5.24" "failed transaction does not publish the target host version"
+assert_json_eq "$INSTALL_STATE_FILE" 'data["image"]' "$FAKE_OLD_IMAGE_REF" "failed transaction records the actual rollback image ref"
+assert_json_eq "$INSTALL_STATE_FILE" 'data["image_id"]' "$FAKE_OLD_IMAGE_ID" "failed transaction records the actual rollback image ID"
+assert_json_eq "$INSTALL_STATE_FILE" 'data["last_attempted_image"]' "$UMBREL_IMAGE" "failed transaction records the attempted target image"
+assert_json_missing "$INSTALL_STATE_FILE" "target_image"
+pass "0.5.25 baseline finalization and rollback metadata are characterized"
+
+if [[ "${M1S_TEST_CHARACTERIZE_IMAGE_ONLY:-0}" -eq 1 ]]; then
+  printf '[unit] image-only finalization false-success baseline characterization\n'
+  prepare_transaction_case
+  FAKE_UMBREL_IMAGE_REF="$UMBREL_IMAGE"
+  FAKE_UMBREL_IMAGE_ID="$FAKE_CANDIDATE_IMAGE_ID"
+  FAKE_UMBREL_STATE="exited"
+  finalize_install_state "0.5.28"
+  assert_json_eq "$INSTALL_STATE_FILE" 'data["version"]' "0.5.28" "image-only finalization currently publishes an image-correct stopped runtime"
+  assert_json_eq "$INSTALL_STATE_FILE" 'data["image"]' "$UMBREL_IMAGE" "image-only finalization currently records the image-correct stopped runtime"
+  pass "image-only finalization false-success path is characterized before runtime-truth coverage"
+fi
+
+assert_finalization_failure_preserves_state() {
+  local label="$1"
+  local expected_refusal="$2"
+  local expected_predicate="$3"
+  local before_state="$TEST_TMPDIR/$label-before.json"
+  local finalization_output="$TEST_TMPDIR/$label-finalization.out"
+
+  cp "$INSTALL_STATE_FILE" "$before_state"
+  if finalize_install_state "0.5.28" >"$finalization_output" 2>&1; then
+    fail "$label must reject finalization"
+  fi
+  cmp -s "$before_state" "$INSTALL_STATE_FILE" || fail "$label must leave install state byte-for-byte unchanged"
+  assert_json_eq "$INSTALL_STATE_FILE" 'data["version"]' "0.5.24" "$label does not publish the target version"
+  assert_json_eq "$INSTALL_STATE_FILE" 'data["host_version"]' "0.5.24" "$label does not publish the target host version"
+  assert_not_contains "0.5.28" "$(<"$finalization_output")" "$label reports a generalized finalization error"
+  assert_contains "$expected_refusal" "$(<"$finalization_output")" "$label preserves the legacy safe refusal"
+  assert_contains "predicate=$expected_predicate observed-state=not-canonical" "$(<"$finalization_output")" "$label reports generalized runtime truth"
+}
+
+install_finalization_publication_probe() {
+  local original_update_install_state
+  original_update_install_state="$(declare -f update_install_state)"
+  original_update_install_state="${original_update_install_state/update_install_state /test_original_update_install_state }"
+  eval "$original_update_install_state"
+  update_install_state() {
+    if [[ "$1" == "finalized" ]]; then
+      ((FINALIZATION_PUBLICATION_CALLS += 1))
+    fi
+    test_original_update_install_state "$@"
+  }
+}
+
+prepare_canonical_runtime_truth_case() {
+  prepare_transaction_case
+  FAKE_UMBREL_IMAGE_REF="$UMBREL_IMAGE"
+  FAKE_UMBREL_IMAGE_ID="$FAKE_CANDIDATE_IMAGE_ID"
+  FAKE_UMBREL_STATE="running"
+  FAKE_UMBREL_DATA_SOURCE="$DATA_DIR"
+  FAKE_UMBREL_DOCKER_SOCKET_SOURCE="/var/run/docker.sock"
+  FAKE_UMBREL_RESTART_POLICY="always"
+  FAKE_RUNTIME_DATA_IDENTITY_READY=1
+  FAKE_AUTH_ID=""
+  FAKE_AUTH_STATE="missing"
+  FAKE_TOR_PROXY_ID=""
+  FAKE_TOR_PROXY_STATE="missing"
+  FAKE_UMBREL_AUTH_ID="canonical-umbrel-auth-id"
+  FAKE_UMBREL_AUTH_STATE="running"
+  FAKE_UMBREL_TOR_PROXY_ID="canonical-umbrel-tor-proxy-id"
+  FAKE_UMBREL_TOR_PROXY_STATE="running"
+  FAKE_UMBREL_TOR_PROXY_IMAGE="$TOR_PROXY_IMAGE"
+  FAKE_SAFE_SHUTDOWN_COMPONENT="canonical"
+  FAKE_HTTP_READY=1
+}
+
+assert_runtime_truth_reporter_read_only() {
+  local label="$1"
+  local runtime_log
+  runtime_log="$(fake_docker_log_text)"
+  for mutation in 'pull ' 'stop ' 'rm ' 'run ' 'start ' 'restart ' 'update '; do
+    assert_not_contains "$mutation" "$runtime_log" "$label runtime-truth reporter must not mutate Docker"
+  done
+}
+
+assert_runtime_truth_failure_preserves_state() {
+  local label="$1"
+  local expected_predicate="$2"
+  local expected_state="$3"
+  local before_state="$TEST_TMPDIR/$label-before.json"
+  local finalization_output="$TEST_TMPDIR/$label-finalization.out"
+  local publications_before="$FINALIZATION_PUBLICATION_CALLS"
+
+  cp "$INSTALL_STATE_FILE" "$before_state"
+  if finalize_install_state "0.5.28" >"$finalization_output" 2>&1; then
+    fail "$label must reject image-correct runtime drift"
+  fi
+  cmp -s "$before_state" "$INSTALL_STATE_FILE" || fail "$label must leave install state byte-for-byte unchanged"
+  assert_eq "$publications_before" "$FINALIZATION_PUBLICATION_CALLS" "$label must prevent final state publication"
+  assert_runtime_truth_reporter_read_only "$label"
+  assert_contains "predicate=$expected_predicate observed-state=$expected_state" "$(<"$finalization_output")" "$label reports its generalized runtime-truth diagnostic"
+  assert_not_contains "$TEST_TMPDIR" "$(<"$finalization_output")" "$label diagnostic must not expose private local paths"
+}
+
+printf '[unit] full runtime-truth finalization contract failing first\n'
+install_finalization_publication_probe
+for runtime_truth_case in \
+  'stopped-top-level:top-level-running-state:not-running' \
+  'unsafe-data-identity:data-identity-binding:not-proven' \
+  'missing-data-binding:data-identity-binding:not-proven' \
+  'unsafe-data-alias:data-identity-binding:not-proven' \
+  'wrong-docker-socket:docker-socket-mount:not-canonical' \
+  'wrong-restart-policy:restart-policy:not-always' \
+  'missing-canonical-system:system-container-contract:not-canonical' \
+  'stopped-canonical-system:system-container-contract:not-canonical' \
+  'invalid-tor-image:system-container-contract:not-canonical' \
+  'missing-shutdown-source:safe-shutdown-contract:not-verified' \
+  'missing-shutdown-ui:safe-shutdown-contract:not-verified' \
+  'missing-shutdown-service:safe-shutdown-contract:not-verified' \
+  'http-not-ready:http-readiness:not-responsive'; do
+  IFS=':' read -r runtime_truth_failure expected_predicate expected_state <<<"$runtime_truth_case"
+  prepare_canonical_runtime_truth_case
+  case "$runtime_truth_failure" in
+    stopped-top-level) FAKE_UMBREL_STATE="exited" ;;
+    unsafe-data-identity) FAKE_RUNTIME_DATA_IDENTITY_READY=0 ;;
+    missing-data-binding) FAKE_UMBREL_DATA_SOURCE="" ;;
+    unsafe-data-alias) FAKE_UMBREL_DATA_SOURCE="$HOST_DATA_ALIAS" ;;
+    wrong-docker-socket) FAKE_UMBREL_DOCKER_SOCKET_SOURCE="not-canonical" ;;
+    wrong-restart-policy) FAKE_UMBREL_RESTART_POLICY="unless-stopped" ;;
+    missing-canonical-system) FAKE_UMBREL_AUTH_ID="" ;;
+    stopped-canonical-system) FAKE_UMBREL_TOR_PROXY_STATE="exited" ;;
+    invalid-tor-image) FAKE_UMBREL_TOR_PROXY_IMAGE="ghcr.io/getumbrel/tor:invalid" ;;
+    missing-shutdown-source) FAKE_SAFE_SHUTDOWN_COMPONENT="source-missing" ;;
+    missing-shutdown-ui) FAKE_SAFE_SHUTDOWN_COMPONENT="ui-missing" ;;
+    missing-shutdown-service) FAKE_SAFE_SHUTDOWN_COMPONENT="service-missing" ;;
+    http-not-ready) FAKE_HTTP_READY=0 ;;
+    *) fail "unknown runtime-truth drift fixture: $runtime_truth_failure" ;;
+  esac
+  assert_runtime_truth_failure_preserves_state "$runtime_truth_failure" "$expected_predicate" "$expected_state"
+done
+
+prepare_canonical_runtime_truth_case
+finalize_install_state "0.5.28"
+assert_eq "1" "$FINALIZATION_PUBLICATION_CALLS" "canonical runtime truth publishes exactly once"
+assert_runtime_truth_reporter_read_only "canonical runtime truth"
+assert_json_eq "$INSTALL_STATE_FILE" 'data["version"]' "0.5.28" "canonical runtime truth finalization writes the target version"
+assert_json_eq "$INSTALL_STATE_FILE" 'data["image"]' "$UMBREL_IMAGE" "canonical runtime truth finalization records the verified image ref"
+assert_json_eq "$INSTALL_STATE_FILE" 'data["image_id"]' "$FAKE_CANDIDATE_IMAGE_ID" "canonical runtime truth finalization records the verified image ID"
+pass "full runtime-truth finalization rejects every image-correct drift class before publication"
+
+write_current_version_metadata() {
+  cat > "$INSTALL_STATE_FILE" <<JSON
+{"host_version":"$SCRIPT_VERSION","version":"$SCRIPT_VERSION","image":"$UMBREL_IMAGE","image_id":"$FAKE_CANDIDATE_IMAGE_ID","applied_steps":[]}
+JSON
+}
+
+printf '[unit] rollback image-ID configured-reference regression failing first\n'
+prepare_canonical_runtime_truth_case
+write_current_version_metadata
+FAKE_OLD_IMAGE_ID="$FAKE_CANDIDATE_IMAGE_ID"
+FAKE_ROLLBACK_RECORDS_IMAGE_ARGUMENT=1
+rollback_umbrel_container "$FAKE_OLD_IMAGE_ID"
+assert_eq "$FAKE_OLD_IMAGE_ID" "$FAKE_UMBREL_IMAGE_REF" "rollback records the actual image-ID docker run argument as Config.Image"
+assert_eq "$FAKE_CANDIDATE_IMAGE_ID" "$FAKE_UMBREL_IMAGE_ID" "rollback live Image remains the expected candidate ID"
+FAKE_AUTH_ID=""
+FAKE_AUTH_STATE="missing"
+FAKE_TOR_PROXY_ID=""
+FAKE_TOR_PROXY_STATE="missing"
+FAKE_UMBREL_AUTH_ID="canonical-umbrel-auth-id"
+FAKE_UMBREL_AUTH_STATE="running"
+FAKE_UMBREL_TOR_PROXY_ID="canonical-umbrel-tor-proxy-id"
+FAKE_UMBREL_TOR_PROXY_STATE="running"
+FAKE_UMBREL_TOR_PROXY_IMAGE="$TOR_PROXY_IMAGE"
+rollback_snapshot_output="$TEST_TMPDIR/rollback-image-id-finalization.out"
+set +e
+finalize_install_state "$SCRIPT_VERSION" >"$rollback_snapshot_output" 2>&1
+rollback_snapshot_status=$?
+set -e
+if [[ "$rollback_snapshot_status" -ne 0 ]]; then
+  cat "$rollback_snapshot_output" >&2
+  fail "rollback image-ID Config.Image resolving to the expected ID must satisfy snapshot and candidate readiness"
+fi
+assert_eq "1" "$FINALIZATION_PUBLICATION_CALLS" "rollback image-ID runtime finalization publishes exactly once"
+assert_json_eq "$INSTALL_STATE_FILE" 'data["image"]' "$UMBREL_IMAGE" "rollback image-ID runtime publishes canonical Umbrel image metadata"
+assert_json_eq "$INSTALL_STATE_FILE" 'data["image_id"]' "$FAKE_CANDIDATE_IMAGE_ID" "rollback image-ID runtime publishes the verified image ID"
+pass "rollback image-ID configured reference resolves to the expected candidate and publishes canonical metadata"
+
+printf '[unit] current-version runtime reconcile contract\n'
+prepare_canonical_runtime_truth_case
+write_current_version_metadata
+current_before_sha="$(sha256sum "$INSTALL_STATE_FILE" | cut -d' ' -f1)"
+current_publications_before="$FINALIZATION_PUBLICATION_CALLS"
+reconcile_current_version_runtime "$SCRIPT_VERSION"
+assert_eq "$current_before_sha" "$(sha256sum "$INSTALL_STATE_FILE" | cut -d' ' -f1)" "canonical current-version reconcile preserves state bytes"
+assert_eq "$current_publications_before" "$FINALIZATION_PUBLICATION_CALLS" "canonical current-version reconcile does not publish state"
+assert_runtime_truth_reporter_read_only "canonical current-version reconcile"
+
+prepare_canonical_runtime_truth_case
+cat > "$INSTALL_STATE_FILE" <<JSON
+{"host_version":"$SCRIPT_VERSION","version":"$SCRIPT_VERSION","image":"dockurr/umbrel:stale","image_id":"sha256:stale-image-id","applied_steps":[]}
+JSON
+current_publications_before="$FINALIZATION_PUBLICATION_CALLS"
+reconcile_current_version_runtime "$SCRIPT_VERSION"
+assert_eq "$((current_publications_before + 1))" "$FINALIZATION_PUBLICATION_CALLS" "stale current-version metadata publishes exactly once after verification"
+assert_json_eq "$INSTALL_STATE_FILE" 'data["version"]' "$SCRIPT_VERSION" "stale current-version metadata writes the target version"
+assert_json_eq "$INSTALL_STATE_FILE" 'data["host_version"]' "$SCRIPT_VERSION" "stale current-version metadata writes the target host version"
+assert_json_eq "$INSTALL_STATE_FILE" 'data["image"]' "$UMBREL_IMAGE" "stale current-version metadata writes the verified image"
+assert_json_eq "$INSTALL_STATE_FILE" 'data["image_id"]' "$FAKE_CANDIDATE_IMAGE_ID" "stale current-version metadata writes the verified image ID"
+assert_runtime_truth_reporter_read_only "stale current-version metadata reconcile"
+
+for current_version_drift in top-image system restart shutdown http; do
+  prepare_canonical_runtime_truth_case
+  write_current_version_metadata
+  case "$current_version_drift" in
+    top-image) FAKE_UMBREL_IMAGE_REF="dockurr/umbrel:wrong" ;;
+    system) FAKE_UMBREL_AUTH_ID="" ;;
+    restart) FAKE_UMBREL_RESTART_POLICY="unless-stopped" ;;
+    shutdown)
+      FAKE_SAFE_SHUTDOWN_COMPONENT="source-missing"
+      FAKE_REPAIR_CONVERGES_SAFE_SHUTDOWN=1
+      ;;
+    http)
+      FAKE_HTTP_READY=0
+      FAKE_REPAIR_CONVERGES_HTTP=1
+      ;;
+    *) fail "unknown current-version drift fixture: $current_version_drift" ;;
+  esac
+  current_publications_before="$FINALIZATION_PUBLICATION_CALLS"
+  reconcile_current_version_runtime "$SCRIPT_VERSION"
+  assert_eq "$((current_publications_before + 1))" "$FINALIZATION_PUBLICATION_CALLS" "$current_version_drift current-version repair publishes after convergence"
+  assert_json_eq "$INSTALL_STATE_FILE" 'data["image"]' "$UMBREL_IMAGE" "$current_version_drift current-version repair records the verified image"
+  assert_json_eq "$INSTALL_STATE_FILE" 'data["image_id"]' "$FAKE_CANDIDATE_IMAGE_ID" "$current_version_drift current-version repair records the verified image ID"
+  assert_eq "1" "$(grep -cF "pull $UMBREL_IMAGE" <<<"$(fake_docker_log_text)" || true)" "$current_version_drift current-version repair runs one bounded candidate transaction"
+done
+
+printf '[unit] current-version repair waits for post-safe-shutdown system convergence\n'
+prepare_canonical_runtime_truth_case
+write_current_version_metadata
+FAKE_UMBREL_RESTART_POLICY="unless-stopped"
+FAKE_POSTCHECK_MUTATION="delayed_system_readiness"
+FAKE_POST_SAFE_SHUTDOWN_SYSTEM_MODE="delayed"
+FAKE_POST_SAFE_SHUTDOWN_SYSTEM_DELAY=2
+CANDIDATE_READINESS_ATTEMPTS=3
+current_repair_publications_before="$FINALIZATION_PUBLICATION_CALLS"
+current_repair_output_file="$TEST_TMPDIR/current-version-delayed-system-readiness.out"
+if ! reconcile_current_version_runtime "$SCRIPT_VERSION" >"$current_repair_output_file" 2>&1; then
+  cat "$current_repair_output_file" >&2
+  fail "current-version repair must wait for delayed canonical system containers after safe-shutdown installation"
+fi
+current_repair_log="$(fake_docker_log_text)"
+assert_eq "3" "$FAKE_POST_SAFE_SHUTDOWN_SYSTEM_READINESS_CALLS" "current-version repair polls delayed system readiness until the third bounded attempt"
+assert_eq "2" "$FAKE_SLEEP_CALLS" "current-version repair sleeps only between bounded system-readiness attempts"
+assert_eq "0" "$UMBREL_TRANSACTION_ACTIVE" "current-version repair completes its single transaction after full runtime truth"
+assert_eq "$((current_repair_publications_before + 1))" "$FINALIZATION_PUBLICATION_CALLS" "current-version repair publishes once only after full runtime truth"
+assert_eq "1" "$(grep -cF "pull $UMBREL_IMAGE" <<<"$current_repair_log" || true)" "current-version repair pulls one candidate image"
+assert_eq "0" "$(grep -cF "run -d --name umbrel --restart always -p 80:80 -v $DATA_DIR:/data -v /var/run/docker.sock:/var/run/docker.sock --stop-timeout 60 --pid=host --privileged $FAKE_CANDIDATE_IMAGE_ID" <<<"$current_repair_log" || true)" "current-version repair does not roll back after delayed system convergence"
+assert_eq "running" "$FAKE_BITCOIN_STATE" "current-version repair restores the unrelated ordinary app"
+assert_json_eq "$INSTALL_STATE_FILE" 'data["version"]' "$SCRIPT_VERSION" "current-version delayed repair publishes canonical version metadata"
+assert_json_eq "$INSTALL_STATE_FILE" 'data["host_version"]' "$SCRIPT_VERSION" "current-version delayed repair publishes canonical host metadata"
+assert_json_eq "$INSTALL_STATE_FILE" 'data["image"]' "$UMBREL_IMAGE" "current-version delayed repair publishes canonical image metadata"
+assert_json_eq "$INSTALL_STATE_FILE" 'data["image_id"]' "$FAKE_CANDIDATE_IMAGE_ID" "current-version delayed repair publishes canonical image-ID metadata"
+
+prepare_canonical_runtime_truth_case
+write_current_version_metadata
+FAKE_UMBREL_RESTART_POLICY="unless-stopped"
+FAKE_POSTCHECK_MUTATION="permanent_missing_system_readiness"
+CANDIDATE_READINESS_ATTEMPTS=3
+current_timeout_state_before="$TEST_TMPDIR/current-version-system-timeout-before.json"
+cp "$INSTALL_STATE_FILE" "$current_timeout_state_before"
+current_timeout_publications_before="$FINALIZATION_PUBLICATION_CALLS"
+current_timeout_output_file="$TEST_TMPDIR/current-version-system-timeout.out"
+set +e
+reconcile_current_version_runtime "$SCRIPT_VERSION" >"$current_timeout_output_file" 2>&1
+current_timeout_status=$?
+set -e
+current_timeout_output="$(<"$current_timeout_output_file")"
+[[ "$current_timeout_status" -ne 0 ]] || fail "permanent current-version system-container non-convergence must fail"
+assert_eq "3" "$FAKE_POST_SAFE_SHUTDOWN_SYSTEM_READINESS_CALLS" "current-version timeout uses every bounded system-readiness attempt"
+assert_eq "2" "$FAKE_SLEEP_CALLS" "current-version timeout sleeps only between bounded system-readiness attempts"
+assert_eq "1" "$(grep -cF "pull $UMBREL_IMAGE" <<<"$(fake_docker_log_text)" || true)" "current-version timeout still runs one candidate transaction"
+assert_eq "1" "$(grep -cF "run -d --name umbrel --restart always -p 80:80 -v $DATA_DIR:/data -v /var/run/docker.sock:/var/run/docker.sock --stop-timeout 60 --pid=host --privileged $FAKE_CANDIDATE_IMAGE_ID" <<<"$(fake_docker_log_text)" || true)" "current-version timeout rolls back once"
+assert_eq "$current_timeout_publications_before" "$FINALIZATION_PUBLICATION_CALLS" "current-version timeout does not publish final metadata"
+cmp -s "$current_timeout_state_before" "$INSTALL_STATE_FILE" || fail "current-version timeout preserves pre-repair install-state bytes"
+assert_contains "Current-version system-container convergence did not complete within bounded readiness attempts." "$current_timeout_output" "current-version timeout reports generalized system-container convergence"
+assert_not_contains "$TEST_TMPDIR" "$current_timeout_output" "current-version timeout diagnostic must not expose temporary paths"
+pass "current-version repair waits once for post-safe-shutdown system convergence and rolls back on timeout"
+
+for current_version_unsafe in identity missing-data-binding wrong-docker-socket unsafe-data-alias missing-top-level; do
+  prepare_canonical_runtime_truth_case
+  write_current_version_metadata
+  case "$current_version_unsafe" in
+    identity) FAKE_RUNTIME_DATA_IDENTITY_READY=0 ;;
+    missing-data-binding) FAKE_UMBREL_DATA_SOURCE="" ;;
+    wrong-docker-socket) FAKE_UMBREL_DOCKER_SOCKET_SOURCE="not-canonical" ;;
+    unsafe-data-alias) FAKE_UMBREL_DATA_SOURCE="$HOST_DATA_ALIAS" ;;
+    missing-top-level) FAKE_UMBREL_CONTAINER_PRESENT=0 ;;
+    *) fail "unknown unsafe current-version fixture: $current_version_unsafe" ;;
+  esac
+  current_before_sha="$(sha256sum "$INSTALL_STATE_FILE" | cut -d' ' -f1)"
+  current_publications_before="$FINALIZATION_PUBLICATION_CALLS"
+  if reconcile_current_version_runtime "$SCRIPT_VERSION" >/dev/null 2>&1; then
+    fail "$current_version_unsafe current-version reconcile must fail closed"
+  fi
+  assert_eq "$current_before_sha" "$(sha256sum "$INSTALL_STATE_FILE" | cut -d' ' -f1)" "$current_version_unsafe current-version reconcile preserves state bytes"
+  assert_eq "$current_publications_before" "$FINALIZATION_PUBLICATION_CALLS" "$current_version_unsafe current-version reconcile does not publish"
+  assert_runtime_truth_reporter_read_only "$current_version_unsafe current-version reconcile"
+done
+
+for current_version_check in canonical stopped; do
+  prepare_canonical_runtime_truth_case
+  write_current_version_metadata
+  if [[ "$current_version_check" == "stopped" ]]; then
+    FAKE_UMBREL_STATE="exited"
+  fi
+  current_before_sha="$(sha256sum "$INSTALL_STATE_FILE" | cut -d' ' -f1)"
+  current_publications_before="$FINALIZATION_PUBLICATION_CALLS"
+  CHECK_ONLY=1
+  current_check_output="$TEST_TMPDIR/$current_version_check-current-check.out"
+  set +e
+  reconcile_current_version_runtime "$SCRIPT_VERSION" >"$current_check_output" 2>&1
+  current_check_status=$?
+  set -e
+  CHECK_ONLY=0
+  if [[ "$current_version_check" == "canonical" ]]; then
+    assert_eq "0" "$current_check_status" "canonical current-version check succeeds"
+    assert_contains "predicate=all observed-state=canonical" "$(<"$current_check_output")" "canonical current-version check reports canonical truth"
+  else
+    [[ "$current_check_status" -ne 0 ]] || fail "stopped current-version check must fail"
+    assert_contains "predicate=top-level-running-state observed-state=not-running" "$(<"$current_check_output")" "stopped current-version check reports the drift predicate"
+  fi
+  assert_eq "$current_before_sha" "$(sha256sum "$INSTALL_STATE_FILE" | cut -d' ' -f1)" "$current_version_check current-version check preserves state bytes"
+  assert_eq "$current_publications_before" "$FINALIZATION_PUBLICATION_CALLS" "$current_version_check current-version check does not publish"
+  assert_runtime_truth_reporter_read_only "$current_version_check current-version check"
+done
+pass "current-version reconcile reports check truth, repairs once after identity proof, and preserves canonical state"
+
+printf '[unit] all-target runtime metadata finalization contract\n'
+prepare_canonical_runtime_truth_case
+cat > "$INSTALL_STATE_FILE" <<'JSON'
+{"host_version":"0.5.26","version":"0.5.26","image":"dockurr/umbrel:1.7.3@sha256:old-image","applied_steps":[]}
+JSON
+FAKE_UMBREL_IMAGE_REF="$UMBREL_IMAGE"
+FAKE_UMBREL_IMAGE_ID="$FAKE_CANDIDATE_IMAGE_ID"
+finalize_install_state "0.5.28"
+assert_json_eq "$INSTALL_STATE_FILE" 'data["version"]' "0.5.28" "stale public 0.5.26 state repairs the final version"
+assert_json_eq "$INSTALL_STATE_FILE" 'data["host_version"]' "0.5.28" "stale public 0.5.26 state repairs the host version"
+assert_json_eq "$INSTALL_STATE_FILE" 'data["image"]' "$UMBREL_IMAGE" "stale public 0.5.26 state repairs the live pinned image ref"
+assert_json_eq "$INSTALL_STATE_FILE" 'data["image_id"]' "$FAKE_CANDIDATE_IMAGE_ID" "stale public 0.5.26 state repairs the missing live image ID"
+
+prepare_transaction_case
+FAKE_UMBREL_IMAGE_REF="dockurr/umbrel:wrong"
+FAKE_UMBREL_IMAGE_ID="$FAKE_CANDIDATE_IMAGE_ID"
+assert_finalization_failure_preserves_state "wrong-live-ref" "Refusing to finalize because the live Umbrel runtime image reference could not be verified." "top-level-image-reference"
+
+prepare_transaction_case
+FAKE_UMBREL_IMAGE_REF="$FAKE_DIFFERENT_IMAGE_ID"
+FAKE_UMBREL_IMAGE_ID="$FAKE_CANDIDATE_IMAGE_ID"
+assert_finalization_failure_preserves_state "different-id-image-id-live-ref" "Refusing to finalize because the live Umbrel runtime image reference could not be verified." "top-level-image-reference"
+
+prepare_transaction_case
+FAKE_UMBREL_IMAGE_REF="$UMBREL_IMAGE"
+FAKE_UMBREL_IMAGE_ID="sha256:wrong-live-image-id"
+assert_finalization_failure_preserves_state "wrong-live-id" "Refusing to finalize because the live Umbrel runtime image ID could not be verified." "top-level-image-id"
+
+prepare_transaction_case
+FAKE_UMBREL_CONTAINER_PRESENT=0
+assert_finalization_failure_preserves_state "missing-container" "Refusing to finalize because the live Umbrel runtime image reference could not be verified." "top-level-image-reference"
+
+prepare_transaction_case
+FAKE_UMBREL_IMAGE_REF=""
+FAKE_UMBREL_IMAGE_ID="$FAKE_CANDIDATE_IMAGE_ID"
+assert_finalization_failure_preserves_state "empty-config-image" "Refusing to finalize because the live Umbrel runtime image reference could not be verified." "top-level-image-reference"
+
+prepare_transaction_case
+FAKE_UMBREL_IMAGE_REF="$UMBREL_IMAGE"
+FAKE_UMBREL_IMAGE_ID=""
+assert_finalization_failure_preserves_state "empty-image-id" "Refusing to finalize because the live Umbrel runtime image ID could not be verified." "top-level-image-id"
+
+prepare_transaction_case
+FAKE_UMBREL_IMAGE_REF="$UMBREL_IMAGE"
+FAKE_UMBREL_IMAGE_ID="sha256:live-image-id"
+FAKE_CANDIDATE_IMAGE_ID=""
+assert_finalization_failure_preserves_state "unresolved-pinned-image-id" "Refusing to finalize because the live Umbrel runtime image ID could not be verified." "top-level-image-id"
+
+prepare_canonical_runtime_truth_case
+rm -f "$INSTALL_STATE_FILE"
+[[ ! -e "$INSTALL_STATE_FILE" ]] || fail "no-state finalization fixture must start without install state"
+finalize_install_state "0.5.28"
+assert_json_eq "$INSTALL_STATE_FILE" 'data["version"]' "0.5.28" "no-state finalization creates the target version"
+assert_json_eq "$INSTALL_STATE_FILE" 'data["host_version"]' "0.5.28" "no-state finalization creates the target host version"
+assert_json_eq "$INSTALL_STATE_FILE" 'data["image"]' "$UMBREL_IMAGE" "no-state finalization creates the live pinned image ref"
+assert_json_eq "$INSTALL_STATE_FILE" 'data["image_id"]' "$FAKE_CANDIDATE_IMAGE_ID" "no-state finalization creates the live image ID"
+
+prepare_transaction_case
+original_precheck_common_canonical_install="$(declare -f precheck_common_canonical_install)"
+CHAIN_PRECHECK_CALLS=0
+precheck_common_canonical_install() { ((CHAIN_PRECHECK_CALLS += 1)); }
+precheck_common_canonical_install
+assert_eq "1" "$CHAIN_PRECHECK_CALLS" "chained migration fixture precheck stub is exercised before migration dispatch"
+for chained_step in 0.5.24_to_0.5.25 0.5.25_to_0.5.26 0.5.26_to_0.5.27 0.5.27_to_0.5.28; do
+  run_migration_step "$chained_step" || fail "chained migration $chained_step must complete before finalization"
+done
+assert_eq "4" "$CHAIN_PRECHECK_CALLS" "chained migration dispatch exercises the common precheck for every applicable later migration"
+finalize_install_state "0.5.28"
+eval "$original_precheck_common_canonical_install"
+assert_json_eq "$INSTALL_STATE_FILE" 'data["version"]' "0.5.28" "0.5.24 to 0.5.28 chain publishes the final version only after runtime verification"
+assert_json_eq "$INSTALL_STATE_FILE" 'data["host_version"]' "0.5.28" "0.5.24 to 0.5.28 chain publishes the final host version"
+assert_json_eq "$INSTALL_STATE_FILE" 'data["image"]' "$UMBREL_IMAGE" "0.5.24 to 0.5.28 chain records the live pinned image ref"
+assert_json_eq "$INSTALL_STATE_FILE" 'data["image_id"]' "$FAKE_CANDIDATE_IMAGE_ID" "0.5.24 to 0.5.28 chain records the resolved live image ID"
+
+before_rerun_state="$TEST_TMPDIR/finalized-before-rerun.json"
+cp "$INSTALL_STATE_FILE" "$before_rerun_state"
+finalize_install_state "0.5.28"
+assert_json_semantically_equal_excluding_updated_at "$before_rerun_state" "$INSTALL_STATE_FILE" "second successful finalization is semantically idempotent except timestamps"
+
+prepare_transaction_case
+FAKE_UMBREL_IMAGE_REF="$UMBREL_IMAGE"
+FAKE_UMBREL_IMAGE_ID="$FAKE_CANDIDATE_IMAGE_ID"
+dry_run_state="$TEST_TMPDIR/dry-run-before.json"
+cp "$INSTALL_STATE_FILE" "$dry_run_state"
+dry_run_docker_log="$(fake_docker_log_text)"
+DRY_RUN=1
+dry_run_output="$(finalize_install_state "0.5.28")"
+DRY_RUN=0
+assert_contains "skips live Umbrel runtime verification and final state publication" "$dry_run_output" "dry-run finalization must not claim runtime verification"
+cmp -s "$dry_run_state" "$INSTALL_STATE_FILE" || fail "dry-run finalization must not write install state"
+assert_eq "$dry_run_docker_log" "$(fake_docker_log_text)" "dry-run finalization must not inspect live Docker runtime"
+pass "all-target finalization repairs live metadata, rejects bad runtime evidence, and remains idempotent"
 
 for postcheck_diagnostic_case in \
   'mount_safety:mount-safety:not-safe' \
@@ -1134,6 +2239,126 @@ candidate_log_before="$(fake_docker_log_text)"
 run_migration_step "0.5.24_to_0.5.25"
 assert_eq "$candidate_log_before" "$(fake_docker_log_text)" "already-completed transaction does not replace containers again"
 pass "0.5.25 transaction rolls back all failure boundaries and finalizes runtime truth"
+
+if [[ "${M1S_TEST_RUNTIME_TRUTH_QA:-0}" -eq 1 ]]; then
+  printf '[qa] runtime-truth finalization sourced-shell seam\n'
+  prepare_canonical_runtime_truth_case
+  set +e
+  finalize_install_state "0.5.28"
+  canonical_status=$?
+  set -e
+  assert_eq "0" "$canonical_status" "canonical sourced-shell finalization must succeed"
+  assert_eq "1" "$FINALIZATION_PUBLICATION_CALLS" "canonical sourced-shell finalization publishes once"
+  assert_json_eq "$INSTALL_STATE_FILE" 'data["image"]' "$UMBREL_IMAGE" "canonical sourced-shell finalization records image metadata"
+  printf '[qa] canonical-finalize-status=%s publications=%s image-metadata=verified\n' "$canonical_status" "$FINALIZATION_PUBLICATION_CALLS"
+
+  prepare_canonical_runtime_truth_case
+  FAKE_UMBREL_STATE="exited"
+  noncanonical_before_sha="$(sha256sum "$INSTALL_STATE_FILE" | cut -d' ' -f1)"
+  noncanonical_output="$TEST_TMPDIR/qa-noncanonical-finalization.out"
+  set +e
+  finalize_install_state "0.5.28" >"$noncanonical_output" 2>&1
+  noncanonical_status=$?
+  set -e
+  noncanonical_after_sha="$(sha256sum "$INSTALL_STATE_FILE" | cut -d' ' -f1)"
+  [[ "$noncanonical_status" -ne 0 ]] || fail "image-correct noncanonical sourced-shell finalization must fail"
+  assert_eq "0" "$FINALIZATION_PUBLICATION_CALLS" "image-correct noncanonical sourced-shell finalization must not publish"
+  assert_eq "$noncanonical_before_sha" "$noncanonical_after_sha" "image-correct noncanonical sourced-shell finalization must preserve state bytes"
+  assert_contains 'predicate=top-level-running-state observed-state=not-running' "$(<"$noncanonical_output")" "image-correct noncanonical sourced-shell finalization reports runtime state"
+  assert_not_contains "$TEST_TMPDIR" "$(<"$noncanonical_output")" "image-correct noncanonical sourced-shell finalization keeps diagnostics generalized"
+  printf '[qa] noncanonical-finalize-status=%s publications=%s state-sha-unchanged=1 diagnostic=top-level-running-state:not-running\n' "$noncanonical_status" "$FINALIZATION_PUBLICATION_CALLS"
+fi
+
+if [[ "${M1S_TEST_CURRENT_VERSION_MAIN_QA:-0}" -eq 1 ]]; then
+  printf '[qa] current-version main sourced-shell seam\n'
+  original_require_root="$(declare -f require_root)"
+  original_sync_repository_to_origin_main="$(declare -f sync_repository_to_origin_main)"
+  original_detect_installed_version="$(declare -f detect_installed_version)"
+  original_ensure_fullnode_mount_from_state="$(declare -f ensure_fullnode_mount_from_state)"
+  require_root() { return 0; }
+  sync_repository_to_origin_main() { return 0; }
+  ensure_fullnode_mount_from_state() { : > "$TEST_TMPDIR/current-version-main-mount"; }
+
+  prepare_canonical_runtime_truth_case
+  write_current_version_metadata
+  detect_installed_version() { printf '%s\n' "$SCRIPT_VERSION"; }
+  canonical_main_before_sha="$(sha256sum "$INSTALL_STATE_FILE" | cut -d' ' -f1)"
+  canonical_main_publications="$FINALIZATION_PUBLICATION_CALLS"
+  set +e
+  CHECK_ONLY=0 main --skip-sync > "$TEST_TMPDIR/current-version-main-canonical.out" 2>&1
+  canonical_main_status=$?
+  set -e
+  assert_eq "0" "$canonical_main_status" "canonical current-version main succeeds"
+  assert_eq "$canonical_main_before_sha" "$(sha256sum "$INSTALL_STATE_FILE" | cut -d' ' -f1)" "canonical current-version main preserves state bytes"
+  assert_eq "$canonical_main_publications" "$FINALIZATION_PUBLICATION_CALLS" "canonical current-version main does not publish"
+  [[ ! -e "$TEST_TMPDIR/current-version-main-mount" ]] || fail "canonical current-version main does not repair mounts"
+  assert_runtime_truth_reporter_read_only "canonical current-version main"
+
+  prepare_canonical_runtime_truth_case
+  write_current_version_metadata
+  detect_installed_version() { printf '%s\n' "$SCRIPT_VERSION"; }
+  FAKE_UMBREL_STATE="exited"
+  repair_main_publications="$FINALIZATION_PUBLICATION_CALLS"
+  set +e
+  CHECK_ONLY=0 main --skip-sync > "$TEST_TMPDIR/current-version-main-repair.out" 2>&1
+  repair_main_status=$?
+  set -e
+  assert_eq "0" "$repair_main_status" "repairable current-version main succeeds"
+  assert_eq "$((repair_main_publications + 1))" "$FINALIZATION_PUBLICATION_CALLS" "repairable current-version main publishes after verification"
+  assert_eq "1" "$(grep -cF "pull $UMBREL_IMAGE" <<<"$(fake_docker_log_text)" || true)" "repairable current-version main runs one bounded repair"
+
+  prepare_canonical_runtime_truth_case
+  write_current_version_metadata
+  detect_installed_version() { printf '%s\n' "$SCRIPT_VERSION"; }
+  FAKE_RUNTIME_DATA_IDENTITY_READY=0
+  unsafe_main_before_sha="$(sha256sum "$INSTALL_STATE_FILE" | cut -d' ' -f1)"
+  unsafe_main_publications="$FINALIZATION_PUBLICATION_CALLS"
+  set +e
+  CHECK_ONLY=0 main --skip-sync > "$TEST_TMPDIR/current-version-main-unsafe.out" 2>&1
+  unsafe_main_status=$?
+  set -e
+  [[ "$unsafe_main_status" -ne 0 ]] || fail "unsafe current-version main must fail closed"
+  assert_eq "$unsafe_main_before_sha" "$(sha256sum "$INSTALL_STATE_FILE" | cut -d' ' -f1)" "unsafe current-version main preserves state bytes"
+  assert_eq "$unsafe_main_publications" "$FINALIZATION_PUBLICATION_CALLS" "unsafe current-version main does not publish"
+  assert_runtime_truth_reporter_read_only "unsafe current-version main"
+
+  prepare_canonical_runtime_truth_case
+  write_current_version_metadata
+  detect_installed_version() { printf '%s\n' "$SCRIPT_VERSION"; }
+  FAKE_UMBREL_STATE="exited"
+  check_main_before_sha="$(sha256sum "$INSTALL_STATE_FILE" | cut -d' ' -f1)"
+  check_main_publications="$FINALIZATION_PUBLICATION_CALLS"
+  set +e
+  CHECK_ONLY=0 main --check --skip-sync > "$TEST_TMPDIR/current-version-main-check.out" 2>&1
+  check_main_status=$?
+  set -e
+  [[ "$check_main_status" -ne 0 ]] || fail "stopped current-version main check must fail"
+  assert_eq "$check_main_before_sha" "$(sha256sum "$INSTALL_STATE_FILE" | cut -d' ' -f1)" "current-version main check preserves state bytes"
+  assert_eq "$check_main_publications" "$FINALIZATION_PUBLICATION_CALLS" "current-version main check does not publish"
+  [[ ! -e "$TEST_TMPDIR/current-version-main-mount" ]] || fail "current-version main check does not repair mounts"
+  assert_runtime_truth_reporter_read_only "current-version main check"
+
+  prepare_canonical_runtime_truth_case
+  write_current_version_metadata
+  detect_installed_version() { printf '0.5.29\n'; }
+  newer_main_before_sha="$(sha256sum "$INSTALL_STATE_FILE" | cut -d' ' -f1)"
+  newer_main_publications="$FINALIZATION_PUBLICATION_CALLS"
+  set +e
+  CHECK_ONLY=0 main --skip-sync > "$TEST_TMPDIR/current-version-main-newer.out" 2>&1
+  newer_main_status=$?
+  set -e
+  assert_eq "0" "$newer_main_status" "newer current-version main exits successfully"
+  assert_eq "$newer_main_before_sha" "$(sha256sum "$INSTALL_STATE_FILE" | cut -d' ' -f1)" "newer current-version main preserves state bytes"
+  assert_eq "$newer_main_publications" "$FINALIZATION_PUBLICATION_CALLS" "newer current-version main does not publish"
+  [[ ! -e "$TEST_TMPDIR/current-version-main-mount" ]] || fail "newer current-version main does not repair mounts"
+  assert_runtime_truth_reporter_read_only "newer current-version main"
+
+  eval "$original_require_root"
+  eval "$original_sync_repository_to_origin_main"
+  eval "$original_detect_installed_version"
+  eval "$original_ensure_fullnode_mount_from_state"
+  printf '[qa] canonical-status=%s repair-status=%s unsafe-status=%s check-status=%s newer-status=%s repair-count=1\n' "$canonical_main_status" "$repair_main_status" "$unsafe_main_status" "$check_main_status" "$newer_main_status"
+fi
 
 unset -f docker
 

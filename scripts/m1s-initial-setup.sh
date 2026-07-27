@@ -9,10 +9,13 @@ set -Eeuo pipefail
 #   sudo bash m1s-initial-setup.sh --dry-run
 #   sudo bash m1s-initial-setup.sh --version
 
-SCRIPT_VERSION="0.5.26"
+SCRIPT_VERSION="0.5.28"
 DRY_RUN=0
 FIXED_HOSTNAME="umbrel"
 HOSTS_FILE="${HOSTS_FILE:-/etc/hosts}"
+
+# shellcheck source=scripts/m1s-support-policy.sh
+source "$(dirname "${BASH_SOURCE[0]}")/m1s-support-policy.sh"
 
 log() {
   printf '[%s] %s\n' "$1" "$2"
@@ -97,6 +100,8 @@ main() {
     esac
     shift
   done
+
+  m1s_report_host_support
 
   if [[ "${EUID}" -ne 0 ]]; then
     err "Run this script with sudo or as root."

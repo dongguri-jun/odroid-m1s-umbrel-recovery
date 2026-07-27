@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SCRIPT_VERSION="0.5.26"
-INSTALL_STATE_VERSION="0.5.26"
+SCRIPT_VERSION="0.5.28"
+INSTALL_STATE_VERSION="0.5.28"
 INSTALL_STATE_DIR="/etc/umbrel-recovery"
 INSTALL_STATE_FILE="$INSTALL_STATE_DIR/installed.json"
 PREINSTALL_RESUME_STATE_FILE="$INSTALL_STATE_DIR/preinstall-resume.json"
@@ -57,6 +57,9 @@ APT_AUTOMATION_RESTORE_UNITS=()
 APT_AUTOMATION_PAUSED=0
 ORIGINAL_ARGS=("$@")
 SCRIPT_PATH_ABS=""
+
+# shellcheck source=scripts/m1s-support-policy.sh
+source "$(dirname "${BASH_SOURCE[0]}")/m1s-support-policy.sh"
 
 log() {
   printf '[%s] %s\n' "$1" "$2"
@@ -1286,53 +1289,461 @@ verify_umbrel_shutdown_source() {
 
 patch_umbrel_shutdown_ui() {
   docker exec -i umbrel python3 - <<'PY_INNER'
+import hashlib
+import json
 import os
+import re
 import sys
 from pathlib import Path
-root = Path(os.environ.get('M1S_TEST_UMBREL_UI_ROOT', '/opt/umbreld/ui'))
-source = 'he==="shutting-down"&&!v&&(ce.isError||ce.failureCount>0)&&(b(!0),setTimeout(()=>S(!0),30*Kh))'
-target = 'he==="shutting-down"&&!v&&(b(!0),setTimeout(()=>S(!0),30*Kh))'
-matches = []
-patched_matches = []
-for path in sorted((root / 'assets').glob('*.js')):
-    text = path.read_text(errors='ignore')
-    count = text.count(source)
-    patched_count = text.count(target)
-    if count:
-        matches.append((path, count, text))
-    if patched_count:
-        patched_matches.append((path, patched_count))
-source_count = sum(count for _, count, _ in matches)
-target_count = sum(count for _, count in patched_matches)
-if source_count == 1 and target_count == 0:
-    path, _, text = matches[0]
-    path.write_text(text.replace(source, target, 1))
-elif source_count == 0 and target_count == 1:
-    pass
-else:
-    print(f'Umbrel shutdown UI patch expected exactly one source or one patched branch, found source={source_count} patched={target_count}', file=sys.stderr)
+
+ROOT = Path(os.environ.get('M1S_TEST_UMBREL_UI_ROOT', '/opt/umbreld/ui')).resolve()
+INDEX = ROOT / 'index.html'
+SOURCE_ERROR_30 = 'he==="shutting-down"&&!v&&(ce.isError||ce.failureCount>0)&&(b(!0),setTimeout(()=>S(!0),30*Kh))'
+PUBLIC_STATUS_30 = 'he==="shutting-down"&&!v&&(b(!0),setTimeout(()=>S(!0),30*Kh))'
+CANONICAL_STATUS_75 = 'he==="shutting-down"&&!v&&(b(!0),setTimeout(()=>S(!0),75*Kh))'
+SCRIPT_TAG_RE = re.compile(r'<script\b(?P<attrs>[^>]*)>', re.IGNORECASE)
+LINK_TAG_RE = re.compile(r'<link\b(?P<attrs>[^>]*)>', re.IGNORECASE)
+IMPORT_MAP_TAG_RE = re.compile(r'<script\b(?P<attrs>[^>]*)>(?P<body>.*?)</script\s*>', re.IGNORECASE | re.DOTALL)
+ATTRIBUTE_RE = re.compile(
+    r'''(?:^|\s+)(?P<name>[\w:-]+)(?:\s*=\s*(?:"(?P<double>[^"]*)"|'(?P<single>[^']*)'))?''',
+    re.IGNORECASE,
+)
+EXECUTABLE_SCRIPT_TYPES = {'', 'module', 'text/javascript', 'application/javascript'}
+ASSET_REF_RE = re.compile(r'^/assets/[^"\']+\.js$')
+HASHED_NAME_RE = re.compile(r'^(?P<stem>.+)\.m1s-(?P<digest>[0-9a-f]{12})\.js$')
+
+
+def fail(message):
+    print(f'Umbrel shutdown UI patch failed: {message}', file=sys.stderr)
     raise SystemExit(1)
+
+
+def contained(path):
+    return path == ROOT or ROOT in path.parents
+
+
+def parse_attributes(raw_attributes):
+    attributes = {}
+    attribute_spans = {}
+    for attribute in ATTRIBUTE_RE.finditer(raw_attributes):
+        name = attribute.group('name').lower()
+        if name in attributes:
+            fail('script tag has duplicate attributes')
+        if attribute.group('double') is not None:
+            attributes[name] = attribute.group('double')
+            attribute_spans[name] = (attribute.start('double'), attribute.end('double'))
+        elif attribute.group('single') is not None:
+            attributes[name] = attribute.group('single')
+            attribute_spans[name] = (attribute.start('single'), attribute.end('single'))
+        else:
+            attributes[name] = ''
+    return attributes, attribute_spans
+
+
+def has_managed_import_map_attribute(attributes):
+    return 'data-m1s-shutdown-ui' in attributes
+
+
+def has_modulepreload_rel(attributes):
+    return 'modulepreload' in attributes.get('rel', '').lower().split()
+
+
+def executable_script_candidates(index_text):
+    candidates = []
+    for script_tag in SCRIPT_TAG_RE.finditer(index_text):
+        attributes, attribute_spans = parse_attributes(script_tag.group('attrs'))
+        script_type = attributes.get('type', '').strip().lower()
+        ref = attributes.get('src')
+        if ref is not None and script_type in EXECUTABLE_SCRIPT_TYPES:
+            candidates.append((
+                ref,
+                (
+                    script_tag.start('attrs') + attribute_spans['src'][0],
+                    script_tag.start('attrs') + attribute_spans['src'][1],
+                ),
+                script_tag.start(),
+            ))
+    return candidates
+
+
+def module_graph_trigger_starts(index_text, executable_candidates):
+    starts = {candidate[2] for candidate in executable_candidates}
+    for script_tag in SCRIPT_TAG_RE.finditer(index_text):
+        attributes, _ = parse_attributes(script_tag.group('attrs'))
+        if attributes.get('type', '').strip().lower() == 'module':
+            starts.add(script_tag.start())
+    for link_tag in LINK_TAG_RE.finditer(index_text):
+        attributes, _ = parse_attributes(link_tag.group('attrs'))
+        if has_modulepreload_rel(attributes):
+            starts.add(link_tag.start())
+    return sorted(starts)
+
+
+def import_map_candidates(index_text):
+    import_map_open_count = 0
+    managed_open_count = 0
+    for script_tag in SCRIPT_TAG_RE.finditer(index_text):
+        attributes, _ = parse_attributes(script_tag.group('attrs'))
+        if has_managed_import_map_attribute(attributes):
+            managed_open_count += 1
+        if attributes.get('type', '').strip().lower() == 'importmap':
+            import_map_open_count += 1
+            if 'src' in attributes:
+                fail('import map must be inline')
+
+    candidates = []
+    for import_map_tag in IMPORT_MAP_TAG_RE.finditer(index_text):
+        attributes, _ = parse_attributes(import_map_tag.group('attrs'))
+        if attributes.get('type', '').strip().lower() != 'importmap':
+            continue
+        try:
+            data = json.loads(import_map_tag.group('body'))
+        except json.JSONDecodeError:
+            fail('import map JSON is malformed')
+        if not isinstance(data, dict) or not isinstance(data.get('imports', {}), dict):
+            fail('import map must contain an object imports field')
+        scopes = data.get('scopes', {})
+        if not isinstance(scopes, dict):
+            fail('import map scopes field must be an object')
+        if any(not isinstance(value, str) for value in data.get('imports', {}).values()):
+            fail('import map imports must map to strings')
+        if any(not isinstance(scope, dict) for scope in scopes.values()):
+            fail('import map scopes must map to objects')
+        candidates.append({
+            'data': data,
+            'managed': has_managed_import_map_attribute(attributes),
+            'start': import_map_tag.start(),
+        })
+    if import_map_open_count != len(candidates) or managed_open_count != sum(item['managed'] for item in candidates):
+        fail('import map tag is malformed')
+    return candidates
+
+
+def import_map_references(import_map, original_ref):
+    if original_ref in import_map['data'].get('imports', {}):
+        return True
+    return any(original_ref in scope for scope in import_map['data'].get('scopes', {}).values())
+
+
+def validate_unmanaged_import_maps(import_maps, original_ref):
+    if any(not item['managed'] and import_map_references(item, original_ref) for item in import_maps):
+        fail('unmanaged import map conflicts with the original shutdown UI entry')
+
+
+def canonical_import_map_present(import_maps, original_ref, target_ref, trigger_starts):
+    validate_unmanaged_import_maps(import_maps, original_ref)
+    managed_maps = [item for item in import_maps if item['managed']]
+    if len(managed_maps) > 1:
+        fail('expected exactly one managed import map')
+    if not managed_maps:
+        return False
+    managed_map = managed_maps[0]
+    if any(managed_map['start'] >= trigger_start for trigger_start in trigger_starts):
+        fail('managed import map must precede every module graph trigger')
+    if managed_map['data'] != {'imports': {original_ref: target_ref}}:
+        fail('managed import map does not exactly map the original entry to the generated entry')
+    return True
+
+
+def managed_import_map_tag(original_ref, target_ref):
+    payload = json.dumps({'imports': {original_ref: target_ref}}, separators=(',', ':'))
+    return f'<script type="importmap" data-m1s-shutdown-ui>{payload}</script>\n'
+
+
+def fsync_parent(path):
+    try:
+        fd = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    except OSError:
+        pass
+
+
+def atomic_write(path, data):
+    tmp = path.with_name(f'.{path.name}.tmp-{os.getpid()}')
+    try:
+        with tmp.open('wb') as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+        fsync_parent(path)
+    finally:
+        try:
+            tmp.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def resolve_index_asset():
+    if not INDEX.is_file():
+        fail('index.html is missing')
+    index_text = INDEX.read_text(encoding='utf-8')
+    candidates = executable_script_candidates(index_text)
+    if len(candidates) != 1:
+        fail(f'expected exactly one executable index script reference, found {len(candidates)}')
+    ref, ref_span, executable_start = candidates[0]
+    trigger_starts = module_graph_trigger_starts(index_text, candidates)
+    if ASSET_REF_RE.fullmatch(ref) is None or '..' in Path(ref).parts or '?' in ref or '#' in ref:
+        fail('index executable script reference is not a safe path')
+    asset_path = (ROOT / ref.lstrip('/')).resolve()
+    if not contained(asset_path) or asset_path.parent != (ROOT / 'assets').resolve():
+        fail('index executable script reference escapes the UI asset directory')
+    if not asset_path.is_file():
+        fail('referenced executable JavaScript asset is missing')
+    return index_text, ref, ref_span, trigger_starts, asset_path
+
+
+def base_stem_for(asset_path):
+    hashed_match = HASHED_NAME_RE.fullmatch(asset_path.name)
+    if hashed_match:
+        return hashed_match.group('stem')
+    return asset_path.stem
+
+
+def validate_no_stale_generated(asset_path, base_stem, canonical_indexed):
+    generated = sorted(asset_path.parent.glob(f'{base_stem}.m1s-*.js'))
+    allowed = [asset_path] if canonical_indexed else []
+    if [path.resolve() for path in generated] != [path.resolve() for path in allowed]:
+        fail('stale or ambiguous generated shutdown UI asset is present')
+
+
+def validate_canonical_filename(asset_path, asset_bytes):
+    hashed_match = HASHED_NAME_RE.fullmatch(asset_path.name)
+    if not hashed_match:
+        fail('canonical shutdown UI asset is not content-hashed')
+    digest = hashlib.sha256(asset_bytes).hexdigest()[:12]
+    if hashed_match.group('digest') != digest:
+        fail('shutdown UI asset filename hash does not match its content')
+
+
+index_text, ref, ref_span, trigger_starts, asset_path = resolve_index_asset()
+asset_bytes = asset_path.read_bytes()
+asset_text = asset_bytes.decode('utf-8')
+counts = {
+    'upstream-error-30': asset_text.count(SOURCE_ERROR_30),
+    'public-status-30': asset_text.count(PUBLIC_STATUS_30),
+    'canonical-status-75': asset_text.count(CANONICAL_STATUS_75),
+}
+if sum(counts.values()) != 1:
+    fail(f'expected exactly one known shutdown UI branch, found {counts}')
+base_stem = base_stem_for(asset_path)
+if counts['canonical-status-75'] == 1:
+    validate_no_stale_generated(asset_path, base_stem, True)
+    validate_canonical_filename(asset_path, asset_bytes)
+    original_ref = f'/assets/{base_stem}.js'
+    original_path = asset_path.with_name(f'{base_stem}.js')
+    if not original_path.is_file():
+        fail('original immutable shutdown UI asset is missing')
+    if canonical_import_map_present(import_map_candidates(index_text), original_ref, ref, trigger_starts):
+        raise SystemExit(0)
+    insertion_start = min(trigger_starts)
+    atomic_write(INDEX, (index_text[:insertion_start] + managed_import_map_tag(original_ref, ref) + index_text[insertion_start:]).encode('utf-8'))
+    raise SystemExit(0)
+
+validate_no_stale_generated(asset_path, base_stem, False)
+import_maps = import_map_candidates(index_text)
+if any(item['managed'] for item in import_maps):
+    fail('source shutdown UI entry cannot already have a managed import map')
+validate_unmanaged_import_maps(import_maps, ref)
+patched_text = asset_text
+for source in (SOURCE_ERROR_30, PUBLIC_STATUS_30):
+    patched_text = patched_text.replace(source, CANONICAL_STATUS_75, 1)
+patched_bytes = patched_text.encode('utf-8')
+digest = hashlib.sha256(patched_bytes).hexdigest()[:12]
+new_name = f'{base_stem}.m1s-{digest}.js'
+new_ref = f'/assets/{new_name}'
+new_path = asset_path.with_name(new_name)
+ref_start, ref_end = ref_span
+if index_text[ref_start:ref_end] != ref:
+    fail('selected executable script reference does not match its index span')
+rewritten_index_text = index_text[:ref_start] + new_ref + index_text[ref_end:]
+insertion_start = min(trigger_starts)
+new_index_text = rewritten_index_text[:insertion_start] + managed_import_map_tag(ref, new_ref) + rewritten_index_text[insertion_start:]
+atomic_write(new_path, patched_bytes)
+try:
+    atomic_write(INDEX, new_index_text.encode('utf-8'))
+except BaseException:
+    try:
+        new_path.unlink()
+        fsync_parent(new_path)
+    except OSError:
+        pass
+    raise
 PY_INNER
 }
 
 verify_umbrel_shutdown_ui() {
   docker exec -i umbrel python3 - <<'PY_INNER'
+import hashlib
+import json
 import os
+import re
 import sys
 from pathlib import Path
-root = Path(os.environ.get('M1S_TEST_UMBREL_UI_ROOT', '/opt/umbreld/ui'))
-source = 'he==="shutting-down"&&!v&&(ce.isError||ce.failureCount>0)&&(b(!0),setTimeout(()=>S(!0),30*Kh))'
-target = 'he==="shutting-down"&&!v&&(b(!0),setTimeout(()=>S(!0),30*Kh))'
-source_count = 0
-target_count = 0
-for path in sorted((root / 'assets').glob('*.js')):
-    text = path.read_text(errors='ignore')
-    source_count += text.count(source)
-    target_count += text.count(target)
-if source_count == 0 and target_count == 1:
-    raise SystemExit(0)
-print(f'Umbrel shutdown UI patch verification failed: source={source_count} patched={target_count}', file=sys.stderr)
-raise SystemExit(1)
+
+ROOT = Path(os.environ.get('M1S_TEST_UMBREL_UI_ROOT', '/opt/umbreld/ui')).resolve()
+INDEX = ROOT / 'index.html'
+SOURCE_ERROR_30 = 'he==="shutting-down"&&!v&&(ce.isError||ce.failureCount>0)&&(b(!0),setTimeout(()=>S(!0),30*Kh))'
+PUBLIC_STATUS_30 = 'he==="shutting-down"&&!v&&(b(!0),setTimeout(()=>S(!0),30*Kh))'
+CANONICAL_STATUS_75 = 'he==="shutting-down"&&!v&&(b(!0),setTimeout(()=>S(!0),75*Kh))'
+SCRIPT_TAG_RE = re.compile(r'<script\b(?P<attrs>[^>]*)>', re.IGNORECASE)
+LINK_TAG_RE = re.compile(r'<link\b(?P<attrs>[^>]*)>', re.IGNORECASE)
+IMPORT_MAP_TAG_RE = re.compile(r'<script\b(?P<attrs>[^>]*)>(?P<body>.*?)</script\s*>', re.IGNORECASE | re.DOTALL)
+ATTRIBUTE_RE = re.compile(
+    r'''(?:^|\s+)(?P<name>[\w:-]+)(?:\s*=\s*(?:"(?P<double>[^"]*)"|'(?P<single>[^']*)'))?''',
+    re.IGNORECASE,
+)
+EXECUTABLE_SCRIPT_TYPES = {'', 'module', 'text/javascript', 'application/javascript'}
+ASSET_REF_RE = re.compile(r'^/assets/[^"\']+\.js$')
+HASHED_NAME_RE = re.compile(r'^(?P<stem>.+)\.m1s-(?P<digest>[0-9a-f]{12})\.js$')
+
+
+def fail(message):
+    print(f'Umbrel shutdown UI verification failed: {message}', file=sys.stderr)
+    raise SystemExit(1)
+
+
+def contained(path):
+    return path == ROOT or ROOT in path.parents
+
+
+def parse_attributes(raw_attributes):
+    attributes = {}
+    for attribute in ATTRIBUTE_RE.finditer(raw_attributes):
+        name = attribute.group('name').lower()
+        if name in attributes:
+            fail('script tag has duplicate attributes')
+        if attribute.group('double') is not None:
+            attributes[name] = attribute.group('double')
+        elif attribute.group('single') is not None:
+            attributes[name] = attribute.group('single')
+        else:
+            attributes[name] = ''
+    return attributes
+
+
+def has_managed_import_map_attribute(attributes):
+    return 'data-m1s-shutdown-ui' in attributes
+
+
+def has_modulepreload_rel(attributes):
+    return 'modulepreload' in attributes.get('rel', '').lower().split()
+
+
+def executable_script_candidates(index_text):
+    candidates = []
+    for script_tag in SCRIPT_TAG_RE.finditer(index_text):
+        attributes = parse_attributes(script_tag.group('attrs'))
+        script_type = attributes.get('type', '').strip().lower()
+        ref = attributes.get('src')
+        if ref is not None and script_type in EXECUTABLE_SCRIPT_TYPES:
+            candidates.append((ref, script_tag.start()))
+    return candidates
+
+
+def module_graph_trigger_starts(index_text, executable_candidates):
+    starts = {candidate[1] for candidate in executable_candidates}
+    for script_tag in SCRIPT_TAG_RE.finditer(index_text):
+        attributes = parse_attributes(script_tag.group('attrs'))
+        if attributes.get('type', '').strip().lower() == 'module':
+            starts.add(script_tag.start())
+    for link_tag in LINK_TAG_RE.finditer(index_text):
+        attributes = parse_attributes(link_tag.group('attrs'))
+        if has_modulepreload_rel(attributes):
+            starts.add(link_tag.start())
+    return sorted(starts)
+
+
+def import_map_candidates(index_text):
+    import_map_open_count = 0
+    managed_open_count = 0
+    for script_tag in SCRIPT_TAG_RE.finditer(index_text):
+        attributes = parse_attributes(script_tag.group('attrs'))
+        if has_managed_import_map_attribute(attributes):
+            managed_open_count += 1
+        if attributes.get('type', '').strip().lower() == 'importmap':
+            import_map_open_count += 1
+            if 'src' in attributes:
+                fail('import map must be inline')
+    candidates = []
+    for import_map_tag in IMPORT_MAP_TAG_RE.finditer(index_text):
+        attributes = parse_attributes(import_map_tag.group('attrs'))
+        if attributes.get('type', '').strip().lower() != 'importmap':
+            continue
+        try:
+            data = json.loads(import_map_tag.group('body'))
+        except json.JSONDecodeError:
+            fail('import map JSON is malformed')
+        if not isinstance(data, dict) or not isinstance(data.get('imports', {}), dict):
+            fail('import map must contain an object imports field')
+        scopes = data.get('scopes', {})
+        if not isinstance(scopes, dict) or any(not isinstance(scope, dict) for scope in scopes.values()):
+            fail('import map scopes field must map to objects')
+        if any(not isinstance(value, str) for value in data.get('imports', {}).values()):
+            fail('import map imports must map to strings')
+        candidates.append({
+            'data': data,
+            'managed': has_managed_import_map_attribute(attributes),
+            'start': import_map_tag.start(),
+        })
+    if import_map_open_count != len(candidates) or managed_open_count != sum(item['managed'] for item in candidates):
+        fail('import map tag is malformed')
+    return candidates
+
+
+def import_map_references(import_map, original_ref):
+    if original_ref in import_map['data'].get('imports', {}):
+        return True
+    return any(original_ref in scope for scope in import_map['data'].get('scopes', {}).values())
+
+
+if not INDEX.is_file():
+    fail('index.html is missing')
+index_text = INDEX.read_text(encoding='utf-8')
+candidates = executable_script_candidates(index_text)
+if len(candidates) != 1:
+    fail(f'expected exactly one executable index script reference, found {len(candidates)}')
+ref, executable_start = candidates[0]
+trigger_starts = module_graph_trigger_starts(index_text, candidates)
+if ASSET_REF_RE.fullmatch(ref) is None or '..' in Path(ref).parts or '?' in ref or '#' in ref:
+    fail('index executable script reference is not a safe path')
+asset_path = (ROOT / ref.lstrip('/')).resolve()
+if not contained(asset_path) or asset_path.parent != (ROOT / 'assets').resolve():
+    fail('index executable script reference escapes the UI asset directory')
+if not asset_path.is_file():
+    fail('referenced executable JavaScript asset is missing')
+asset_bytes = asset_path.read_bytes()
+asset_text = asset_bytes.decode('utf-8')
+source_count = asset_text.count(SOURCE_ERROR_30) + asset_text.count(PUBLIC_STATUS_30)
+canonical_count = asset_text.count(CANONICAL_STATUS_75)
+if source_count != 0 or canonical_count != 1:
+    fail(f'expected one canonical 75s branch and no source/30s branches, found source={source_count} canonical={canonical_count}')
+hashed_match = HASHED_NAME_RE.fullmatch(asset_path.name)
+if not hashed_match:
+    fail('canonical shutdown UI asset is not content-hashed')
+digest = hashlib.sha256(asset_bytes).hexdigest()[:12]
+if hashed_match.group('digest') != digest:
+    fail('shutdown UI asset filename hash does not match its content')
+generated = sorted(asset_path.parent.glob(f"{hashed_match.group('stem')}.m1s-*.js"))
+if [path.resolve() for path in generated] != [asset_path]:
+    fail('stale or ambiguous generated shutdown UI asset is present')
+original_ref = f"/assets/{hashed_match.group('stem')}.js"
+original_path = (ROOT / original_ref.lstrip('/')).resolve()
+if not contained(original_path) or original_path.parent != (ROOT / 'assets').resolve() or not original_path.is_file():
+    fail('original immutable shutdown UI asset is missing')
+import_maps = import_map_candidates(index_text)
+if any(not item['managed'] and import_map_references(item, original_ref) for item in import_maps):
+    fail('unmanaged import map conflicts with the original shutdown UI entry')
+managed_maps = [item for item in import_maps if item['managed']]
+if len(managed_maps) != 1:
+    fail('expected exactly one managed import map')
+if any(managed_maps[0]['start'] >= trigger_start for trigger_start in trigger_starts):
+    fail('managed import map must precede every module graph trigger')
+if managed_maps[0]['data'] != {'imports': {original_ref: ref}}:
+    fail('managed import map does not exactly map the original entry to the generated entry')
 PY_INNER
 }
 
@@ -1723,6 +2134,8 @@ fi
 
 trap cleanup_on_exit EXIT
 
+m1s_report_host_support
+
 if [[ "${EUID}" -ne 0 ]]; then
   err "Run this script with sudo or as root."
   exit 1
@@ -1730,25 +2143,7 @@ fi
 
 # shellcheck disable=SC1091
 source /etc/os-release
-if [[ "${ID:-}" != "ubuntu" ]]; then
-  err "This script supports Ubuntu only. Detected: ${ID:-unknown}"
-  exit 1
-fi
-
-case "${VERSION_ID:-}" in
-  20.04|22.04|24.04)
-    ;;
-  *)
-    err "Unsupported Ubuntu version: ${VERSION_ID:-unknown}. Supported: 20.04, 22.04, 24.04"
-    exit 1
-    ;;
-esac
-
 ARCH="$(uname -m)"
-if [[ "$ARCH" != "aarch64" && "$ARCH" != "arm64" ]]; then
-  err "This script is intended for ARM64 only. Detected: $ARCH"
-  exit 1
-fi
 
 for required_cmd in python3 curl blkid mkfs.ext4 lsblk findmnt; do
   if ! command -v "$required_cmd" >/dev/null 2>&1; then
@@ -1765,11 +2160,6 @@ if [[ -r /proc/device-tree/model ]]; then
 elif [[ -r /sys/firmware/devicetree/base/model ]]; then
   MODEL="$(tr -d '\0' </sys/firmware/devicetree/base/model)"
 fi
-if [[ "$MODEL" != "unknown" && "$MODEL" != *"ODROID-M1S"* ]]; then
-  err "This script is intended for ODROID-M1S only. Detected model: $MODEL"
-  exit 1
-fi
-
 ROOT_SOURCE="$(findmnt -n -o SOURCE / || true)"
 ROOT_DISK="$(detect_root_disk "$ROOT_SOURCE")"
 TARGET_DISK=""

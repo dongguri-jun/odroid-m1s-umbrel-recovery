@@ -4,6 +4,7 @@ set -Eeuo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 original_path="$PATH"
 test_tmpdir="$(mktemp -d)"
+release_version="$(tr -d '[:space:]' < "$repo_root/VERSION")"
 
 fail() {
   printf '[unit][FAIL] %s\n' "$1" >&2
@@ -48,8 +49,27 @@ new_release_fixture() {
   mkdir -p "$fixture_root/bin" "$fixture_root/scripts"
   cp "$repo_root/scripts/release.sh" "$fixture_root/scripts/release.sh"
   chmod +x "$fixture_root/scripts/release.sh"
-  printf '0.5.26\n' > "$fixture_root/VERSION"
-  printf '## 0.5.26\n\n%s\n' "$changelog_body" > "$fixture_root/CHANGELOG.md"
+  for required_path in \
+    README.md \
+    README.en.md \
+    scripts/m1s-support-policy.sh \
+    tests/test-support-policy.sh \
+    tests/fixtures/shutdown-ui-cache/server.py
+  do
+    mkdir -p "$fixture_root/$(dirname "$required_path")"
+    cp "$repo_root/$required_path" "$fixture_root/$required_path"
+  done
+  printf '%s\n' "$release_version" > "$fixture_root/VERSION"
+  cat > "$fixture_root/CHANGELOG.md" <<EOF
+## $release_version
+
+$changelog_body
+
+## 0.5.27 (unreleased)
+
+- Reconcile shutdown completion delivery with live runtime state so the completion screen and the underlying container state agree while the node is stopping.
+- Keep the unreleased shutdown path changes scoped to runtime-state reconciliation only.
+EOF
 
   cat > "$fixture_root/scripts/check-public-scrub.sh" <<'EOF'
 #!/usr/bin/env bash
@@ -139,6 +159,43 @@ run_release() {
       RELEASE_NOTES_CAPTURE="$fixture_root/release-notes.md" \
       bash scripts/release.sh "$@"
   )
+}
+
+assert_release_prerequisite_missing_fails() {
+  local fixture_root="$1"
+  local missing_path="$2"
+  local label="$3"
+  local output status
+
+  rm -f "$fixture_root/$missing_path"
+  set +e
+  output="$(run_release "$fixture_root" --dry-run 2>&1)"
+  status=$?
+  set -e
+
+  assert_eq '1' "$status" "$label should fail the release prerequisite gate"
+  assert_contains "$output" 'Release prerequisite missing:' "$label should report the missing release prerequisite"
+  assert_contains "$output" "$missing_path" "$label should name the missing file"
+}
+
+assert_release_doc_audit() {
+  local guide_name="$1"
+  local guide_text
+
+  guide_text="$(<"$guide_name")"
+  assert_contains "$guide_text" 'ODROID M1S + Ubuntu 22.04 Server + Linux 5.10.x' "$guide_name should pin the supported baseline"
+  assert_not_contains "$guide_text" 'Ubuntu 20.04 / 22.04 / 24.04 Server' "$guide_name should reject the broad Ubuntu baseline"
+
+  case "$guide_name" in
+    README.md)
+      assert_contains "$guide_text" 'Ubuntu 20.04/24.04 Server' "$guide_name should reject Ubuntu 20.04/24.04"
+      assert_contains "$guide_text" 'Linux 6.1 이상' "$guide_name should reject Linux 6.1+"
+      ;;
+    README.en.md)
+      assert_contains "$guide_text" 'Ubuntu 20.04/24.04 Server' "$guide_name should reject Ubuntu 20.04/24.04"
+      assert_contains "$guide_text" 'Linux 6.1+' "$guide_name should reject Linux 6.1+"
+      ;;
+  esac
 }
 
 extract_update_command_block() {
@@ -249,12 +306,12 @@ safe_dry_run_status=$?
 set -e
 assert_eq '0' "$safe_dry_run_status" 'exact public updater block should pass release dry-run'
 assert_contains "$safe_dry_run_output" '[release] release notes scrub passed' 'safe dry-run should pass the release-note scrub'
-assert_contains "$safe_dry_run_output" '[release] dry-run passed. Would create tag and release v0.5.26.' 'safe dry-run should complete'
+assert_contains "$safe_dry_run_output" "[release] dry-run passed. Would create tag and release v$release_version." 'safe dry-run should complete'
 assert_not_contains "$(<"$safe_fixture/git.log")" 'tag -a' 'safe dry-run should not create a tag'
 assert_not_contains "$(<"$safe_fixture/gh.log")" 'release create' 'safe dry-run should not create a release'
 
 safe_release_output="$(run_release "$safe_fixture" --real-device-validation)"
-assert_contains "$safe_release_output" '[release] created v0.5.26' 'fixture release should capture generated notes after all gates pass'
+assert_contains "$safe_release_output" "[release] created v$release_version" 'fixture release should capture generated notes after all gates pass'
 expected_update_block=$'bash\ncd /home/*/odroid-m1s-umbrel-recovery\nsudo git -c safe.directory="$(pwd)" fetch https://github.com/dongguri-jun/odroid-m1s-umbrel-recovery.git main\nsudo git -c safe.directory="$(pwd)" reset --hard FETCH_HEAD\nsudo bash scripts/m1s-update-umbrel.sh --check\nsudo bash scripts/m1s-update-umbrel.sh'
 assert_eq "$expected_update_block" "$(extract_update_command_block "$safe_fixture/release-notes.md")" 'release notes should preserve the exact five-line public updater command block'
 pass 'exact public updater block passes dry-run without tag or release mutation'
@@ -352,5 +409,30 @@ assert_public_scrub_structure_rejects \
   $'### 4-1. Existing device\n\nlogin: fixture-user\n\n### 4-2. New device\n' \
   'README 4-1 credential-shaped entry'
 pass 'public guide scrub rejects malformed structure and unrelated English credential-shaped entries'
+
+printf '[unit] release prerequisites and doc guidance are enforced\n'
+support_fixture="$(new_release_fixture 'support-files' '- Public release-note fixture.')"
+assert_release_prerequisite_missing_fails "$support_fixture" 'scripts/m1s-support-policy.sh' 'missing support-policy script'
+
+support_fixture_2="$(new_release_fixture 'support-tests' '- Public release-note fixture.')"
+assert_release_prerequisite_missing_fails "$support_fixture_2" 'tests/test-support-policy.sh' 'missing support-policy test'
+
+support_fixture_3="$(new_release_fixture 'support-shutdown-fixture' '- Public release-note fixture.')"
+assert_release_prerequisite_missing_fails "$support_fixture_3" 'tests/fixtures/shutdown-ui-cache/server.py' 'missing shutdown UI cache fixture'
+
+assert_release_doc_audit 'README.md'
+assert_release_doc_audit 'README.en.md'
+
+python3 - <<'PY'
+from pathlib import Path
+import re
+
+text = Path('CHANGELOG.md').read_text(encoding='utf-8')
+if not re.search(r'^##\s+0\.5\.27\b', text, flags=re.M):
+    raise SystemExit('CHANGELOG.md is missing section: ## 0.5.27')
+if not re.search(r'^##\s+0\.5\.28\b', text, flags=re.M):
+    raise SystemExit('CHANGELOG.md is missing section: ## 0.5.28')
+print('[unit][PASS] changelog includes both the unreleased 0.5.27 transition and the 0.5.28 release section')
+PY
 
 printf '[unit] release script tests complete\n'

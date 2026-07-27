@@ -6,6 +6,9 @@ set -Eeuo pipefail
 : "${RECOVERY_STATE_FILE:=$STATE_DIR/bitcoin-recovery.json}"
 : "${DRY_RUN:=0}"
 
+# shellcheck source=scripts/m1s-support-policy.sh
+source "$(dirname "${BASH_SOURCE[0]}")/m1s-support-policy.sh"
+
 MANAGED_BEGIN="# m1s-bitcoin-recovery: begin"
 MANAGED_END="# m1s-bitcoin-recovery: end"
 
@@ -762,6 +765,7 @@ print_start_status() {
 run_recovery_start() {
   local mode="$1"
   local source_script="$2"
+  m1s_report_host_support
   require_root
   require_single_bitcoin_config_dir
 
@@ -1179,6 +1183,7 @@ print_missing_bitcoin_config_status() {
 }
 
 run_recovery_status_check() {
+  m1s_report_host_support
   require_root
 
   local config_matches config_count

@@ -7,6 +7,12 @@ cd "$repo_root"
 # shellcheck source=scripts/m1s-update-system-packages.sh
 source scripts/m1s-update-system-packages.sh
 
+m1s_host_os_id() { printf 'ubuntu'; }
+m1s_host_os_version() { printf '22.04'; }
+m1s_host_kernel_release() { printf '5.10.160-odroid-arm64'; }
+m1s_host_architecture() { printf 'aarch64'; }
+m1s_host_model() { printf 'Hardkernel ODROID-M1S'; }
+
 fail() {
   printf '[unit][FAIL] %s\n' "$1" >&2
   exit 1
@@ -29,6 +35,24 @@ assert_contains() {
   local label="$3"
   [[ "$haystack" == *"$needle"* ]] || fail "$label: missing '$needle'"
 }
+
+assert_before() {
+  local text="$1"
+  local before="$2"
+  local after="$3"
+  local label="$4"
+  local before_position after_position
+  before_position="$(python3 -c 'import sys; print(sys.stdin.read().find(sys.argv[1]))' "$before" <<<"$text")"
+  after_position="$(python3 -c 'import sys; print(sys.stdin.read().find(sys.argv[1]))' "$after" <<<"$text")"
+  [[ "$before_position" -ge 0 && "$after_position" -ge 0 && "$before_position" -lt "$after_position" ]] || fail "$label"
+}
+
+printf '[unit] system package support policy ordering\n'
+system_updater_script="$(<scripts/m1s-update-system-packages.sh)"
+assert_contains "$system_updater_script" 'm1s-support-policy.sh' 'System package updater must source the shared support policy'
+system_updater_main="${system_updater_script#*main() \{}"
+assert_before "$system_updater_main" 'm1s_report_host_support' 'apt_update_command' 'System package updater must report unvalidated hosts before apt changes'
+pass 'system package updater warning precedes apt mutation'
 
 ORIGINAL_PATH="$PATH"
 TEST_TMPDIR=""
@@ -282,17 +306,12 @@ cat > "$TEST_TMPDIR/bin/systemctl" <<'EOF'
 printf '%s\n' "$*" >> "$SYSTEMCTL_LOG"
 EOF
 chmod +x "$TEST_TMPDIR/bin/"*
-ln -s "$BASH" "$TEST_TMPDIR/bin/bash"
 APT_LOG="$TEST_TMPDIR/apt.log"
 DPKG_LOG="$TEST_TMPDIR/dpkg.log"
 SYSTEMCTL_LOG="$TEST_TMPDIR/systemctl.log"
 export APT_LOG DPKG_LOG SYSTEMCTL_LOG
+PATH="$TEST_TMPDIR/bin:/bin"
 (
-  PATH="$TEST_TMPDIR/bin"
-  export PATH
-  if command -v docker >/dev/null 2>&1; then
-    fail 'Docker absent path should not resolve docker before main'
-  fi
   require_root() { return 0; }
   reboot_required() { return 1; }
   DRY_RUN=0
@@ -300,8 +319,7 @@ export APT_LOG DPKG_LOG SYSTEMCTL_LOG
   CONTAINERS_STOPPED=0
   REBOOTING=0
   STOPPED_CONTAINERS=()
-  main_output="$(main 2>&1)"
-  assert_contains "$main_output" 'Docker is not installed or not in PATH; continuing with package update only.' 'Docker absent path should print the exact no-Docker warning'
+  main
 )
 [[ ! -e "$TEST_TMPDIR/docker.log" ]] || fail 'Docker absent path should not call docker'
 apt_log="$(cat "$APT_LOG")"

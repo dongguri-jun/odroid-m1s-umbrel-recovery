@@ -119,9 +119,11 @@ Bitcoin 노드 용도라면 **2TB 이상 SSD**를 권장합니다.
 이 가이드는 아래 조건에서 동작합니다.
 
 - 기기: **Hardkernel ODROID-M1S**
-- OS: **Ubuntu 20.04 / 22.04 / 24.04 Server**
+- OS: **Ubuntu 22.04 Server**
 
 이미 Ubuntu가 설치되어 있고 로그인 가능한 상태여야 합니다.
+
+이 가이드는 **ODROID M1S + Ubuntu 22.04 Server + Linux 5.10.x** 에서 검증했습니다. **Ubuntu 20.04/24.04 Server** 나 **Linux 6.1 이상**은 검증 범위 밖이며 동작을 보장하지 않습니다. 스크립트가 실행을 막지는 않지만, 문제가 생겨도 대응이 어려울 수 있습니다.
 
 만약 Ubuntu가 아직 설치되지 않았다면, 먼저 Ubuntu Server를 설치한 뒤 이 가이드를 진행하세요.
 
