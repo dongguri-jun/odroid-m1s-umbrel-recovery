@@ -560,15 +560,15 @@ original_info="$(declare -f info)"
 original_install_safe_shutdown="$(declare -f install_umbrel_safe_shutdown)"
 original_postcheck_safe_shutdown="$(declare -f postcheck_umbrel_safe_shutdown)"
 info() { HISTORY_EVENTS+=("$1"); }
-# shellcheck disable=SC2329 # Test stub is invoked indirectly through migration dispatch.
+# shellcheck disable=SC2317,SC2329 # Test stub is invoked indirectly through migration dispatch.
 install_umbrel_safe_shutdown() { MUTATION_EVENTS+=(safe-shutdown-install); }
-# shellcheck disable=SC2329 # Test stub is invoked indirectly through migration dispatch.
+# shellcheck disable=SC2317,SC2329 # Test stub is invoked indirectly through migration dispatch.
 postcheck_umbrel_safe_shutdown() { MUTATION_EVENTS+=(safe-shutdown-postcheck); }
-# shellcheck disable=SC2329 # Safety stub guards against unintended host mutation.
+# shellcheck disable=SC2317,SC2329 # Safety stub guards against unintended host mutation.
 systemctl() { MUTATION_EVENTS+=(systemctl); }
-# shellcheck disable=SC2329 # Safety stub guards against unintended host mutation.
+# shellcheck disable=SC2317,SC2329 # Safety stub guards against unintended host mutation.
 mount() { MUTATION_EVENTS+=(mount); }
-# shellcheck disable=SC2329 # Safety stub guards against unintended host mutation.
+# shellcheck disable=SC2317,SC2329 # Safety stub guards against unintended host mutation.
 nmcli() { MUTATION_EVENTS+=(nmcli); }
 
 apply_0_5_25_to_0_5_26
@@ -600,27 +600,27 @@ original_install_safe_shutdown="$(declare -f install_umbrel_safe_shutdown)"
 original_postcheck_safe_shutdown="$(declare -f postcheck_umbrel_safe_shutdown)"
 precheck_common_canonical_install() { SAFE_SHUTDOWN_EVENTS+=(data-mount-precheck); }
 info() { PROFILE_HISTORY_EVENTS+=("$1"); }
-# shellcheck disable=SC2329 # Test stub is invoked indirectly through migration dispatch.
+# shellcheck disable=SC2317,SC2329 # Test stub is invoked indirectly through migration dispatch.
 install_umbrel_safe_shutdown() {
   SAFE_SHUTDOWN_EVENTS+=(safe-shutdown-install)
   [[ "$SAFE_SHUTDOWN_INSTALL_FAIL" -eq 0 ]]
 }
-# shellcheck disable=SC2329 # Test stub is invoked indirectly through migration dispatch.
+# shellcheck disable=SC2317,SC2329 # Test stub is invoked indirectly through migration dispatch.
 postcheck_umbrel_safe_shutdown() { SAFE_SHUTDOWN_EVENTS+=(safe-shutdown-postcheck); }
-# shellcheck disable=SC2329 # Safety stub guards against unintended deferred network mutation.
+# shellcheck disable=SC2317,SC2329 # Safety stub guards against unintended deferred network mutation.
 nmcli() { DEFERRED_NETWORK_EVENTS+=(nmcli); }
-# shellcheck disable=SC2329 # Safety stub guards against unintended deferred network mutation.
+# shellcheck disable=SC2317,SC2329 # Safety stub guards against unintended deferred network mutation.
 systemctl() { DEFERRED_NETWORK_EVENTS+=(systemctl); }
-# shellcheck disable=SC2329 # Safety stub guards against unintended deferred network mutation.
+# shellcheck disable=SC2317,SC2329 # Safety stub guards against unintended deferred network mutation.
 mount() { DEFERRED_NETWORK_EVENTS+=(mount); }
-# shellcheck disable=SC2329 # Safety stub guards against unintended deferred network mutation.
+# shellcheck disable=SC2317,SC2329 # Safety stub guards against unintended deferred network mutation.
 set_avahi_interfaces() { DEFERRED_NETWORK_EVENTS+=(avahi-interface); }
 
 apply_0_5_27_to_0_5_28
 assert_eq "0.5.28 reports the validated host profile without blocking other environments; no immediate host mutation required." "${PROFILE_HISTORY_EVENTS[*]}" "0.5.28 history message describes non-blocking profile guidance"
 PROFILE_HISTORY_EVENTS=()
 
-precheck_common_canonical_install
+precheck_0_5_26_to_0_5_27
 assert_eq "data-mount-precheck" "${SAFE_SHUTDOWN_EVENTS[*]}" "reliability migration fixture precheck stub is exercised before migration dispatch"
 SAFE_SHUTDOWN_EVENTS=()
 
