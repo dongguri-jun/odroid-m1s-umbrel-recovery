@@ -15,7 +15,15 @@ jobs:
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
 
       - name: Install ShellCheck
-        run: sudo apt-get update && sudo apt-get install -y shellcheck
+        shell: bash
+        run: |
+          shellcheck_version="$(<.shellcheck-version)"
+          archive="shellcheck-v${shellcheck_version}.linux.x86_64.tar.xz"
+          curl -fsSLo "/tmp/${archive}" \
+            "https://github.com/koalaman/shellcheck/releases/download/v${shellcheck_version}/${archive}"
+          tar -xJf "/tmp/${archive}" -C /tmp
+          sudo install -m 0755 "/tmp/shellcheck-v${shellcheck_version}/shellcheck" /usr/local/bin/shellcheck
+          shellcheck --version
 
       - name: Run strict script verification
         run: bash scripts/verify-scripts.sh

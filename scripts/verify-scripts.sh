@@ -26,6 +26,34 @@ done
 
 printf '[verify] shellcheck\n'
 if command -v shellcheck >/dev/null 2>&1; then
+  shellcheck_version_file=".shellcheck-version"
+  if [[ ! -r "$shellcheck_version_file" ]]; then
+    printf '  error ShellCheck version pin is missing: %s\n' "$shellcheck_version_file" >&2
+    exit 1
+  fi
+
+  pinned_shellcheck_version="$(<"$shellcheck_version_file")"
+  if [[ ! "$pinned_shellcheck_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    printf '  error Invalid ShellCheck version pin in %s: %s\n' "$shellcheck_version_file" "$pinned_shellcheck_version" >&2
+    exit 1
+  fi
+
+  shellcheck_version_output="$(shellcheck --version)"
+  shellcheck_found_version=""
+  while IFS= read -r line; do
+    if [[ "$line" == "version: "* ]]; then
+      shellcheck_found_version="${line#version: }"
+      break
+    fi
+  done <<< "$shellcheck_version_output"
+
+  if [[ "$shellcheck_found_version" != "$pinned_shellcheck_version" ]]; then
+    shellcheck_download_url="https://github.com/koalaman/shellcheck/releases/download/v${pinned_shellcheck_version}/shellcheck-v${pinned_shellcheck_version}.linux.x86_64.tar.xz"
+    printf '  error ShellCheck version mismatch: pinned %s, found %s.\n' "$pinned_shellcheck_version" "${shellcheck_found_version:-unknown}" >&2
+    printf '  Install ShellCheck %s from %s and ensure that binary is first on PATH.\n' "$pinned_shellcheck_version" "$shellcheck_download_url" >&2
+    exit 1
+  fi
+
   shellcheck -x "${scripts[@]}" "${test_scripts[@]}" "${git_hooks[@]}"
   printf '  ok shellcheck %s %s %s\n' "${scripts[*]}" "${test_scripts[*]}" "${git_hooks[*]}"
 else
@@ -1738,6 +1766,15 @@ done
 printf '[verify] workflow presence\n'
 python3 - <<'PY'
 from pathlib import Path
+import re
+
+pin_file = Path('.shellcheck-version')
+if not pin_file.exists():
+    raise SystemExit('.shellcheck-version is missing')
+pin = pin_file.read_text(encoding='utf-8').strip()
+if not re.fullmatch(r'\d+\.\d+\.\d+', pin):
+    raise SystemExit(f'.shellcheck-version must be plain semver, got {pin!r}')
+
 workflow = Path('.github/workflows/verify.yml')
 if not workflow.exists():
     raise SystemExit('.github/workflows/verify.yml is missing')
@@ -1745,6 +1782,9 @@ text = workflow.read_text(encoding='utf-8')
 required = [
     'actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd',
     'shellcheck',
+    'shellcheck_version="$(<.shellcheck-version)"',
+    'releases/download/v${shellcheck_version}',
+    'shellcheck-v${shellcheck_version}.linux.x86_64.tar.xz',
     'bash scripts/verify-scripts.sh',
     'pull_request:',
     'push:',
@@ -1755,7 +1795,7 @@ if missing:
     for needle in missing:
         print(f'  {needle}')
     raise SystemExit(1)
-print('  ok GitHub workflow runs the verifier with shellcheck available')
+print(f'  ok GitHub workflow installs ShellCheck {pin} from the shared pin and runs the verifier')
 PY
 
 printf '[verify] release gate\n'
