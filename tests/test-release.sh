@@ -430,9 +430,9 @@ import re
 text = Path('CHANGELOG.md').read_text(encoding='utf-8')
 if not re.search(r'^##\s+0\.5\.27\b', text, flags=re.M):
     raise SystemExit('CHANGELOG.md is missing section: ## 0.5.27')
-if not re.search(r'^##\s+0\.5\.30\b', text, flags=re.M):
-    raise SystemExit('CHANGELOG.md is missing section: ## 0.5.30')
-print('[unit][PASS] changelog includes both the unreleased 0.5.27 transition and the 0.5.30 release section')
+if not re.search(r'^##\s+0\.5\.31\b', text, flags=re.M):
+    raise SystemExit('CHANGELOG.md is missing section: ## 0.5.31')
+print('[unit][PASS] changelog includes both the unreleased 0.5.27 transition and the 0.5.31 release section')
 PY
 
 printf '[unit] release script tests complete\n'

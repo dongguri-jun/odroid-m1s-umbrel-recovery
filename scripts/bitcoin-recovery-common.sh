@@ -465,7 +465,7 @@ locate_bitcoin_container() {
   while IFS= read -r container_name; do
     [[ -n "$container_name" ]] || continue
     local result
-    result="$(docker inspect "$container_name" 2>/dev/null | python3 -c 'import json, sys
+    result="$(docker inspect "$container_name" 2>/dev/null | python3 -c 'import json, os, sys
 app_data_dir = sys.argv[1]
 config_dir = sys.argv[2]
 try:
@@ -480,9 +480,14 @@ for mount in container.get("Mounts", []):
     dst = mount.get("Destination") or ""
     if not src or not dst:
         continue
-    if src != app_data_dir:
+    try:
+        if not os.path.samefile(src, app_data_dir):
+            continue
+    except OSError:
         continue
-    rel = config_dir[len(src):].lstrip("/")
+    rel = os.path.relpath(config_dir, app_data_dir)
+    if rel == os.pardir or rel.startswith(os.pardir + os.sep):
+        continue
     inside = dst.rstrip("/")
     if rel:
         inside = f"{inside}/{rel}"
@@ -592,7 +597,7 @@ request_epoch = int(sys.argv[2])
 blocks_dir = Path(sys.argv[3])
 
 timestamp_re = re.compile(r'^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})Z')
-reindex_re = re.compile(r'Reindexing block file (blk(\d{5})\.dat)\.\.\.')
+reindex_re = re.compile(r'Reindexing block file (?P<name>blk(?P<index>\d{5})\.dat)(?: \((?P<percent>\d+(?:\.\d+)?)% complete\))?\.\.\.')
 loaded_re = re.compile(r'Loaded (\d+) blocks from external file')
 
 def parse_ts(line: str):
@@ -613,6 +618,7 @@ latest_file_name = ''
 latest_file_index = ''
 latest_file_epoch = ''
 latest_loaded_blocks = ''
+latest_reported_percent = ''
 
 for line in text.splitlines():
     ts = parse_ts(line)
@@ -620,8 +626,9 @@ for line in text.splitlines():
         continue
     reindex_match = reindex_re.search(line)
     if reindex_match:
-        latest_file_name = reindex_match.group(1)
-        latest_file_index = reindex_match.group(2)
+        latest_file_name = reindex_match.group('name')
+        latest_file_index = reindex_match.group('index')
+        latest_reported_percent = reindex_match.group('percent') or ''
         latest_loaded_blocks = ''
         if ts is not None:
             latest_file_epoch = str(int(ts.timestamp()))
@@ -641,7 +648,9 @@ if blocks_dir.is_dir():
         max_file_index = max_file.name[3:8]
 
 progress_ratio = ''
-if latest_file_index and max_file_index:
+if latest_reported_percent:
+    progress_ratio = f'{float(latest_reported_percent) / 100.0:.6f}'
+elif latest_file_index and max_file_index:
     current = int(latest_file_index)
     maximum = int(max_file_index)
     if maximum >= 0:

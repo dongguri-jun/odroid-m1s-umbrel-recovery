@@ -126,6 +126,61 @@ EOF
 )
 pass 'common recovery helpers handle flags and state tracking'
 
+printf '[unit] recovery container discovery follows equivalent host mounts\n'
+(
+  # shellcheck source=scripts/bitcoin-recovery-common.sh
+  source scripts/bitcoin-recovery-common.sh
+
+  TEST_TMPDIR="$(mktemp -d)"
+  trap 'rm -rf "$TEST_TMPDIR"' EXIT
+
+  canonical_root="$TEST_TMPDIR/canonical"
+  alias_root="$TEST_TMPDIR/data-alias"
+  stub_dir="$TEST_TMPDIR/docker-stub"
+  BITCOIN_TEST_CANONICAL_APP_DATA_DIR="$canonical_root/app-data/bitcoin/data"
+  export BITCOIN_TEST_CANONICAL_APP_DATA_DIR
+
+  mkdir -p "$BITCOIN_TEST_CANONICAL_APP_DATA_DIR/bitcoin" "$stub_dir"
+  ln -s "$canonical_root" "$alias_root"
+  cat > "$alias_root/app-data/bitcoin/data/bitcoin/bitcoin.conf" <<'EOF'
+includeconf=umbrel-bitcoin.conf
+EOF
+  cat > "$alias_root/app-data/bitcoin/data/bitcoin/umbrel-bitcoin.conf" <<'EOF'
+server=1
+EOF
+  cat > "$stub_dir/docker" <<'EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+case "$1" in
+  ps)
+    printf 'bitcoin_app_1\n'
+    ;;
+  inspect)
+    [[ "$2" == 'bitcoin_app_1' ]]
+    printf '[{"Name":"/bitcoin_app_1","Mounts":[{"Source":"%s","Destination":"/data"}]}]\n' "$BITCOIN_TEST_CANONICAL_APP_DATA_DIR"
+    ;;
+  exec)
+    [[ "$2" == 'bitcoin_app_1' && "$3" == 'bitcoin-cli' && "$4" == '-datadir=/data/bitcoin' && "$5" == 'getblockchaininfo' ]]
+    printf '{"blocks":1}\n'
+    ;;
+  *)
+    exit 1
+    ;;
+esac
+EOF
+  chmod +x "$stub_dir/docker"
+  PATH="$stub_dir:$PATH"
+
+  DATA_DIR="$alias_root"
+  require_single_bitcoin_config_dir
+  assert_eq "$stub_dir/docker" "$(command -v docker)" 'container discovery must use the hermetic Docker stub'
+  located="$(locate_bitcoin_container || true)"
+  assert_eq $'bitcoin_app_1\n/data/bitcoin' "$located" 'container discovery should map an equivalent host mount into the container'
+  assert_eq '{"blocks":1}' "$(run_bitcoin_cli_rpc getblockchaininfo)" 'RPC should use the container-derived Bitcoin datadir'
+)
+pass 'recovery container discovery derives the live container datadir'
+
 printf '[unit] chainstate guard rejects prune mode\n'
 (
   # shellcheck source=scripts/bitcoin-recovery-common.sh
@@ -202,9 +257,9 @@ printf '[unit] reindex log progress summary\n'
 
   cat > "$DEBUG_LOG" <<'EOF'
 2026-05-11T09:08:35Z Pre-request noise
-2026-05-11T09:08:36Z Reindexing block file blk00000.dat...
+2026-05-11T09:08:36Z Reindexing block file blk00000.dat (30% complete)...
 2026-05-11T09:09:01Z Loaded 120 blocks from external file in 1234ms
-2026-05-11T09:10:00Z Reindexing block file blk00001.dat...
+2026-05-11T09:10:00Z Reindexing block file blk00001.dat (31% complete)...
 2026-05-11T09:10:45Z Loaded 250 blocks from external file in 5321ms
 EOF
 
@@ -212,8 +267,17 @@ EOF
   assert_eq 'blk00001.dat' "$(json_field "$summary_json" 'data.get("latest_file_name", "")')" 'reindex summary should report latest block file'
   assert_eq 'blk00002.dat' "$(json_field "$summary_json" 'data.get("max_file_name", "")')" 'reindex summary should report highest on-disk block file'
   assert_eq '250' "$(json_field "$summary_json" 'data.get("latest_loaded_blocks", "")')" 'reindex summary should report most recent loaded block count'
-  assert_eq '0.666667' "$(json_field "$summary_json" 'data.get("progress_ratio", "")')" 'reindex summary should derive file progress ratio'
+  assert_eq '0.310000' "$(json_field "$summary_json" 'data.get("progress_ratio", "")')" 'reindex summary should prefer Bitcoin Core reported progress'
+
+  legacy_debug_log="$TEST_TMPDIR/legacy-debug.log"
+  cat > "$legacy_debug_log" <<'EOF'
+2026-05-11T09:11:00Z Reindexing block file blk00002.dat...
+EOF
+  DEBUG_LOG="$legacy_debug_log"
+  summary_json="$(summarize_reindex_log_progress 1746954516)"
+  assert_eq 'blk00002.dat' "$(json_field "$summary_json" 'data.get("latest_file_name", "")')" 'reindex summary should retain legacy no-percent log support'
+  assert_eq '1.000000' "$(json_field "$summary_json" 'data.get("progress_ratio", "")')" 'legacy no-percent log should retain file-count estimate'
 )
-pass 'reindex progress summary uses log and block file evidence'
+pass 'reindex progress summary uses Core and legacy log evidence'
 
 printf '[unit] bitcoin recovery script tests complete\n'

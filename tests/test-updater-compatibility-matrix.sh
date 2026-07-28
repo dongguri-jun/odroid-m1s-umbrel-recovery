@@ -180,6 +180,7 @@ EXPECTED_MIGRATIONS=(
   "0.5.27_to_0.5.28"
   "0.5.28_to_0.5.29"
   "0.5.29_to_0.5.30"
+  "0.5.30_to_0.5.31"
 )
 
 matrix_expected_plan_from() {
@@ -220,12 +221,12 @@ PLAN_0_5_24="$(matrix_expected_plan_from "0.5.24")"
 PLAN_0_5_26="$(matrix_expected_plan_from "0.5.26")"
 
 FIXTURE_ROWS=(
-  "0.1.0|heuristic:docker-inspect|umbrel=running;data=mounted;docker_socket=/var/run/docker.sock|0.1.0_to_0.2.0|0.5.29_to_0.5.30|$PLAN_0_1_0|missing-umbrel-container-refuses-before-migration"
-  "0.2.0|heuristic:mount-guard|umbrel=running;data=mounted;docker_socket=/var/run/docker.sock|0.2.0_to_0.3.0|0.5.29_to_0.5.30|$PLAN_0_2_0|missing-data-identity-refuses-before-migration"
-  "0.5.15|installed.json:applied-steps-inference|umbrel=running;data=mounted;docker_socket=/var/run/docker.sock|0.5.15_to_0.5.16|0.5.29_to_0.5.30|$PLAN_0_5_15|malformed-install-state-refuses-before-migration"
-  "0.5.17|installed.json:host_version|umbrel=running;data=mounted;data_alias=canonical;docker_socket=/var/run/docker.sock|0.5.17_to_0.5.18|0.5.29_to_0.5.30|$PLAN_0_5_17|unsafe-data-alias-refuses-before-migration"
-  "0.5.24|installed.json:version|umbrel=running;data=mounted;system_containers=ready;docker_socket=/var/run/docker.sock|0.5.24_to_0.5.25|0.5.29_to_0.5.30|$PLAN_0_5_24|candidate-postcheck-failure-refuses-final-publication"
-  "0.5.26|installed.json:host_version|umbrel=running;data=mounted;safe_shutdown=canonical;docker_socket=/var/run/docker.sock|0.5.26_to_0.5.27|0.5.29_to_0.5.30|$PLAN_0_5_26|safe-shutdown-install-failure-refuses-step-completion"
+  "0.1.0|heuristic:docker-inspect|umbrel=running;data=mounted;docker_socket=/var/run/docker.sock|0.1.0_to_0.2.0|0.5.30_to_0.5.31|$PLAN_0_1_0|missing-umbrel-container-refuses-before-migration"
+  "0.2.0|heuristic:mount-guard|umbrel=running;data=mounted;docker_socket=/var/run/docker.sock|0.2.0_to_0.3.0|0.5.30_to_0.5.31|$PLAN_0_2_0|missing-data-identity-refuses-before-migration"
+  "0.5.15|installed.json:applied-steps-inference|umbrel=running;data=mounted;docker_socket=/var/run/docker.sock|0.5.15_to_0.5.16|0.5.30_to_0.5.31|$PLAN_0_5_15|malformed-install-state-refuses-before-migration"
+  "0.5.17|installed.json:host_version|umbrel=running;data=mounted;data_alias=canonical;docker_socket=/var/run/docker.sock|0.5.17_to_0.5.18|0.5.30_to_0.5.31|$PLAN_0_5_17|unsafe-data-alias-refuses-before-migration"
+  "0.5.24|installed.json:version|umbrel=running;data=mounted;system_containers=ready;docker_socket=/var/run/docker.sock|0.5.24_to_0.5.25|0.5.30_to_0.5.31|$PLAN_0_5_24|candidate-postcheck-failure-refuses-final-publication"
+  "0.5.26|installed.json:host_version|umbrel=running;data=mounted;safe_shutdown=canonical;docker_socket=/var/run/docker.sock|0.5.26_to_0.5.27|0.5.30_to_0.5.31|$PLAN_0_5_26|safe-shutdown-install-failure-refuses-step-completion"
 )
 
 matrix_write_fixture_state() {
@@ -664,7 +665,7 @@ matrix_validate_fixture() {
     || matrix_fail "fixture row is incomplete: $row"
   matrix_assert_eq "$expected_first" "$(matrix_plan_first "$expected_full")" "$fixture_name expected first migration"
   matrix_assert_eq "$expected_last" "$(matrix_plan_last "$expected_full")" "$fixture_name expected last migration"
-  matrix_assert_eq "0.5.29_to_0.5.30" "$expected_last" "$fixture_name targets the current final migration"
+  matrix_assert_eq "0.5.30_to_0.5.31" "$expected_last" "$fixture_name targets the current final migration"
   matrix_assert_contains "umbrel=running" "$runtime_facts" "$fixture_name canonical runtime facts"
   matrix_assert_contains "docker_socket=/var/run/docker.sock" "$runtime_facts" "$fixture_name canonical runtime facts"
 

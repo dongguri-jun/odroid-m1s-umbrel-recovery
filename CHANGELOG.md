@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.31
+
+- Fix the Bitcoin recovery status check reporting `Bitcoin container: unavailable`, zero RPC checks, and unavailable sync progress even while the Bitcoin app was running. The check now finds the running app and reports its live progress. This affected published versions 0.5.18 through 0.5.30.
+- Fix reindex progress fields remaining `unknown` or empty during an active reindex. They now show Bitcoin Core's reported block-file and percentage progress while keeping compatibility with earlier log formats. This affected published versions 0.5.4 through 0.5.30.
+
 ## 0.5.30
 
 - Repair existing 0.5.28 and 0.5.29 installations where the Umbrel page opened but showed a generic error instead of onboarding or the home screen. The updater now restores the required authorization for the managed shutdown-screen import map and restarts Umbrel so the repaired web UI is loaded.
