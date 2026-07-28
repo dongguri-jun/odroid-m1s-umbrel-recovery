@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.30
+
+- Repair existing 0.5.28 and 0.5.29 installations where the Umbrel page opened but showed a generic error instead of onboarding or the home screen. The updater now restores the required authorization for the managed shutdown-screen import map and restarts Umbrel so the repaired web UI is loaded.
+- Fix the system package updater reporting success even when Umbrel recreated its own system containers after the update. It now waits for those containers to return before reporting completion.
+- Keep verification tests from reaching the host Docker service, and keep their temporary command-output files inside each test's own temporary directory.
+
 ## 0.5.29
 
 - Fix raw-disk installs failing with `This disk is currently in use` at `sfdisk`, even though every preceding cleanup check reported the disk as released. systemd was silently remounting the target between the last check and the partition write.

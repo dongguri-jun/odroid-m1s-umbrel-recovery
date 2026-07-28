@@ -777,6 +777,7 @@ printf '[unit] installer writes content-hashed 75s shutdown UI asset\n'
 (
 FAKE_UI_ROOT="$TEST_TMPDIR/umbreld-ui"
 FAKE_UI_ASSET_DIR="$FAKE_UI_ROOT/assets"
+FAKE_SERVER_SOURCE="$TEST_TMPDIR/umbreld-server.ts"
 mkdir -p "$FAKE_UI_ASSET_DIR"
 source_callback='he==="shutting-down"&&!v&&(ce.isError||ce.failureCount>0)&&(b(!0),setTimeout(()=>S(!0),30*Kh))'
 public_callback='he==="shutting-down"&&!v&&(b(!0),setTimeout(()=>S(!0),30*Kh))'
@@ -795,7 +796,7 @@ docker() {
     [[ "${1:-}" == "-i" ]] && shift
     [[ "${1:-}" == "umbrel" ]] || return 1
     shift
-    M1S_TEST_UMBREL_UI_ROOT="$FAKE_UI_ROOT" "$@"
+    M1S_TEST_UMBREL_UI_ROOT="$FAKE_UI_ROOT" M1S_TEST_UMBREL_SERVER_SOURCE="$FAKE_SERVER_SOURCE" "$@"
     return $?
   fi
   return 1
@@ -804,6 +805,12 @@ docker() {
 reset_shutdown_ui_fixture() {
   rm -rf "$FAKE_UI_ROOT"
   mkdir -p "$FAKE_UI_ASSET_DIR"
+  printf '%s\n' \
+    'helmet.contentSecurityPolicy({' \
+    '  directives: {' \
+    "    scriptSrc: this.umbreld.developmentMode ? [\"'self'\", \"'unsafe-inline'\"] : null," \
+    '  },' \
+    '})' > "$FAKE_SERVER_SOURCE"
 }
 
 write_shutdown_index() {
@@ -835,6 +842,28 @@ print(f"{stem}.m1s-{digest}.js")
 PY
 }
 
+shutdown_import_map_csp_hash_for() {
+  python3 - "$1" "$2" <<'PY'
+import base64
+import hashlib
+import json
+import sys
+
+payload = json.dumps({'imports': {sys.argv[1]: sys.argv[2]}}, separators=(',', ':')).encode()
+print(base64.b64encode(hashlib.sha256(payload).digest()).decode())
+PY
+}
+
+assert_shutdown_import_map_csp_hash() {
+  local original_ref="$1"
+  local generated_ref="$2"
+  local label="$3"
+  local expected_hash
+
+  expected_hash="$(shutdown_import_map_csp_hash_for "$original_ref" "$generated_ref")"
+  assert_contains "$(<"$FAKE_SERVER_SOURCE")" "scriptSrc: this.umbreld.developmentMode ? [\"'self'\", \"'unsafe-inline'\"] : [\"'self'\", \"'sha256-$expected_hash'\"]," "$label must authorize exactly the managed import-map payload"
+}
+
 assert_hashed_shutdown_patch() {
   local label="$1"
   local region="$2"
@@ -864,6 +893,7 @@ assert_hashed_shutdown_patch() {
   assert_not_contains "$patched_asset" "$source_callback" "$label patched asset should remove the upstream error gate"
   assert_not_contains "$patched_asset" "$public_callback" "$label patched asset should remove the 30s status-only branch"
   assert_contains "$index_text" "/assets/$new_asset_name" "$label index must reference the new hashed asset"
+  assert_shutdown_import_map_csp_hash "/assets/index-7c0be990.js" "/assets/$new_asset_name" "$label"
   patch_umbrel_shutdown_ui
   assert_eq "$patched_asset" "$(<"$new_asset_path")" "$label canonical rerun must leave hashed asset bytes unchanged"
   assert_eq "$index_text" "$(<"$FAKE_UI_ROOT/index.html")" "$label canonical rerun must leave index unchanged"
@@ -882,7 +912,7 @@ assert_patch_fails_without_index_mutation() {
 }
 
 assert_hashed_shutdown_patch 'upstream error-gated 30s branch' "$source_region"
-assert_hashed_shutdown_patch 'public v0.5.29 status-only 30s branch' "$public_region"
+assert_hashed_shutdown_patch 'public v0.5.30 status-only 30s branch' "$public_region"
 
 assert_vite_modulepreload_shutdown_patch() {
   reset_shutdown_ui_fixture
@@ -1123,7 +1153,7 @@ pass "Installer writes a deterministic 75s hashed shutdown UI asset and fails cl
 
 record_install_state
 state_text="$(<"$INSTALL_STATE_FILE")"
-assert_contains "$state_text" '"version": "0.5.29"' "Success state must declare the managed 0.5.29 version"
+assert_contains "$state_text" '"version": "0.5.30"' "Success state must declare the managed 0.5.30 version"
 assert_contains "$state_text" "\"image\": \"$EXPECTED_UMBREL_IMAGE\"" "Success state must use the live exact image ref"
 assert_contains "$state_text" "\"image_id\": \"$DEFAULT_RESOLVED_UMBREL_IMAGE_ID\"" "Success state must use Docker's resolved local image ID"
 

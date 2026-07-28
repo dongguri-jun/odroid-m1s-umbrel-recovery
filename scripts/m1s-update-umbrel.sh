@@ -17,7 +17,7 @@ set -Eeuo pipefail
 #   --version      Print script version and exit.
 #   -h, --help     Show this help.
 
-SCRIPT_VERSION="0.5.29"
+SCRIPT_VERSION="0.5.30"
 INSTALL_STATE_DIR="/etc/umbrel-recovery"
 INSTALL_STATE_FILE="$INSTALL_STATE_DIR/installed.json"
 DATA_DIR="/mnt/fullnode"
@@ -42,6 +42,8 @@ ALL_KNOWN_SYSTEM_CONTAINERS=("${LEGACY_SYSTEM_CONTAINERS[@]}" "${CANDIDATE_SYSTE
 
 # shellcheck source=scripts/m1s-support-policy.sh
 source "$(dirname "${BASH_SOURCE[0]}")/m1s-support-policy.sh"
+# shellcheck source=scripts/m1s-docker-lifecycle.sh
+source "$(dirname "${BASH_SOURCE[0]}")/m1s-docker-lifecycle.sh"
 # shellcheck source=scripts/m1s-backup-retention.sh
 source "$(dirname "${BASH_SOURCE[0]}")/m1s-backup-retention.sh"
 # shellcheck source=scripts/m1s-avahi-mdns.sh
@@ -110,6 +112,7 @@ MIGRATIONS=(
   "0.5.26_to_0.5.27"
   "0.5.27_to_0.5.28"
   "0.5.28_to_0.5.29"
+  "0.5.29_to_0.5.30"
 )
 
 log() {
@@ -1307,15 +1310,13 @@ assert_fullnode_data_mount_safe() {
 }
 
 load_running_app_containers() {
-  local container
-  STOPPED_APP_CONTAINERS=()
+  m1s_docker_lifecycle_load_running STOPPED_APP_CONTAINERS is_restartable_app_container
   APP_CONTAINERS_STOPPED=0
-  command -v docker >/dev/null 2>&1 || return 0
-  while IFS= read -r container; do
-    [[ -z "$container" || "$container" == "umbrel" ]] && continue
-    is_system_container "$container" && continue
-    STOPPED_APP_CONTAINERS+=("$container")
-  done < <(docker ps --format '{{.Names}}' 2>/dev/null || true)
+}
+
+is_restartable_app_container() {
+  local container="$1"
+  [[ "$container" != "umbrel" ]] && ! is_system_container "$container"
 }
 
 is_system_container() {
@@ -1353,7 +1354,7 @@ stop_running_app_containers() {
 
   info "Stopping running Umbrel app containers before the system container refresh (${#STOPPED_APP_CONTAINERS[@]} container(s), timeout ${APP_STOP_TIMEOUT_SECONDS}s)..."
   APP_CONTAINERS_STOPPED=1
-  if run_cmd docker stop --timeout "$APP_STOP_TIMEOUT_SECONDS" "${STOPPED_APP_CONTAINERS[@]}"; then
+  if m1s_docker_lifecycle_stop STOPPED_APP_CONTAINERS "$APP_STOP_TIMEOUT_SECONDS"; then
     return 0
   else
     local status=$?
@@ -1375,21 +1376,8 @@ start_stopped_app_containers() {
     return 0
   fi
 
-  local failed=0
-  local container index
-  for ((index=${#STOPPED_APP_CONTAINERS[@]} - 1; index >= 0; index--)); do
-    container="${STOPPED_APP_CONTAINERS[$index]}"
-    if ! docker container inspect "$container" >/dev/null 2>&1; then
-      warn "Container $container no longer exists after the Umbrel refresh; skipping direct restart. Umbrel may have recreated it under a new ID."
-      continue
-    fi
-    if ! docker start "$container" >/dev/null; then
-      warn "Failed to restart container: $container"
-      failed=1
-    fi
-  done
+  m1s_docker_lifecycle_start_existing_reverse STOPPED_APP_CONTAINERS || return 1
   APP_CONTAINERS_STOPPED=0
-  return "$failed"
 }
 
 umbrel_image_id() {
@@ -1773,6 +1761,7 @@ verify_umbrel_shutdown_source() {
 
 patch_umbrel_shutdown_ui() {
   docker exec -i umbrel python3 - <<'PY_INNER'
+import base64
 import hashlib
 import json
 import os
@@ -1782,6 +1771,7 @@ from pathlib import Path
 
 ROOT = Path(os.environ.get('M1S_TEST_UMBREL_UI_ROOT', '/opt/umbreld/ui')).resolve()
 INDEX = ROOT / 'index.html'
+SERVER_SOURCE = Path(os.environ.get('M1S_TEST_UMBREL_SERVER_SOURCE', '/opt/umbreld/source/modules/server/index.ts')).resolve()
 SOURCE_ERROR_30 = 'he==="shutting-down"&&!v&&(ce.isError||ce.failureCount>0)&&(b(!0),setTimeout(()=>S(!0),30*Kh))'
 PUBLIC_STATUS_30 = 'he==="shutting-down"&&!v&&(b(!0),setTimeout(()=>S(!0),30*Kh))'
 CANONICAL_STATUS_75 = 'he==="shutting-down"&&!v&&(b(!0),setTimeout(()=>S(!0),75*Kh))'
@@ -1961,6 +1951,23 @@ def atomic_write(path, data):
             pass
 
 
+def configure_import_map_csp(original_ref, target_ref):
+    if not SERVER_SOURCE.is_file():
+        fail('Umbrel server CSP source is missing')
+    payload = json.dumps({'imports': {original_ref: target_ref}}, separators=(',', ':')).encode()
+    digest = base64.b64encode(hashlib.sha256(payload).digest()).decode()
+    prefix = "scriptSrc: this.umbreld.developmentMode ? [\"'self'\", \"'unsafe-inline'\"] : "
+    replacement = f"{prefix}[\"'self'\", \"'sha256-{digest}'\"], // m1s-shutdown-ui-csp"
+    lines = SERVER_SOURCE.read_text(encoding='utf-8').splitlines(keepends=True)
+    matches = [index for index, line in enumerate(lines) if line.strip().startswith(prefix)]
+    if len(matches) != 1:
+        fail('expected exactly one Umbrel production scriptSrc CSP directive')
+    newline = '\n' if lines[matches[0]].endswith('\n') else ''
+    indent = lines[matches[0]][:len(lines[matches[0]]) - len(lines[matches[0]].lstrip())]
+    lines[matches[0]] = f'{indent}{replacement}{newline}'
+    atomic_write(SERVER_SOURCE, ''.join(lines).encode())
+
+
 def resolve_index_asset():
     if not INDEX.is_file():
         fail('index.html is missing')
@@ -2022,9 +2029,11 @@ if counts['canonical-status-75'] == 1:
     if not original_path.is_file():
         fail('original immutable shutdown UI asset is missing')
     if canonical_import_map_present(import_map_candidates(index_text), original_ref, ref, trigger_starts):
+        configure_import_map_csp(original_ref, ref)
         raise SystemExit(0)
     insertion_start = min(trigger_starts)
     atomic_write(INDEX, (index_text[:insertion_start] + managed_import_map_tag(original_ref, ref) + index_text[insertion_start:]).encode('utf-8'))
+    configure_import_map_csp(original_ref, ref)
     raise SystemExit(0)
 
 validate_no_stale_generated(asset_path, base_stem, False)
@@ -2049,6 +2058,7 @@ new_index_text = rewritten_index_text[:insertion_start] + managed_import_map_tag
 atomic_write(new_path, patched_bytes)
 try:
     atomic_write(INDEX, new_index_text.encode('utf-8'))
+    configure_import_map_csp(ref, new_ref)
 except BaseException:
     try:
         new_path.unlink()
@@ -2061,6 +2071,7 @@ PY_INNER
 
 verify_umbrel_shutdown_ui() {
   docker exec -i umbrel python3 - <<'PY_INNER'
+import base64
 import hashlib
 import json
 import os
@@ -2070,6 +2081,7 @@ from pathlib import Path
 
 ROOT = Path(os.environ.get('M1S_TEST_UMBREL_UI_ROOT', '/opt/umbreld/ui')).resolve()
 INDEX = ROOT / 'index.html'
+SERVER_SOURCE = Path(os.environ.get('M1S_TEST_UMBREL_SERVER_SOURCE', '/opt/umbreld/source/modules/server/index.ts')).resolve()
 SOURCE_ERROR_30 = 'he==="shutting-down"&&!v&&(ce.isError||ce.failureCount>0)&&(b(!0),setTimeout(()=>S(!0),30*Kh))'
 PUBLIC_STATUS_30 = 'he==="shutting-down"&&!v&&(b(!0),setTimeout(()=>S(!0),30*Kh))'
 CANONICAL_STATUS_75 = 'he==="shutting-down"&&!v&&(b(!0),setTimeout(()=>S(!0),75*Kh))'
@@ -2228,6 +2240,13 @@ if any(managed_maps[0]['start'] >= trigger_start for trigger_start in trigger_st
     fail('managed import map must precede every module graph trigger')
 if managed_maps[0]['data'] != {'imports': {original_ref: ref}}:
     fail('managed import map does not exactly map the original entry to the generated entry')
+if not SERVER_SOURCE.is_file():
+    fail('Umbrel server CSP source is missing')
+payload = json.dumps({'imports': {original_ref: ref}}, separators=(',', ':')).encode()
+digest = base64.b64encode(hashlib.sha256(payload).digest()).decode()
+expected_csp = f"scriptSrc: this.umbreld.developmentMode ? [\"'self'\", \"'unsafe-inline'\"] : [\"'self'\", \"'sha256-{digest}'\"], // m1s-shutdown-ui-csp"
+if expected_csp not in SERVER_SOURCE.read_text(encoding='utf-8'):
+    fail('Umbrel CSP does not authorize the managed import map')
 PY_INNER
 }
 
@@ -2630,7 +2649,7 @@ build_migration_plan() {
 
 run_migration_step() {
   local step="$1"
-  local from_version to_version handler precheck_fn apply_fn postcheck_fn
+  local from_version to_version handler precheck_fn apply_fn postcheck_fn recorded_version
   from_version="$(step_from_version "$step")"
   to_version="$(step_to_version "$step")"
   handler="$(step_handler_name "$step")"
@@ -2639,8 +2658,16 @@ run_migration_step() {
   postcheck_fn="postcheck_$handler"
 
   if is_step_applied "$step"; then
-    info "[$step] Already recorded; skipping"
-    return 0
+    recorded_version="$(read_install_state_value version || true)"
+    if [[ -n "$recorded_version" ]] && ! version_lt "$recorded_version" "$to_version"; then
+      info "[$step] Already recorded; skipping"
+      return 0
+    fi
+    if [[ "$to_version" != "${TARGET_VERSION:-}" ]]; then
+      info "[$step] Already recorded; skipping"
+      return 0
+    fi
+    info "[$step] Recorded before final version publication; replaying recovery step"
   fi
 
   require_function "$precheck_fn"
@@ -3219,6 +3246,17 @@ postcheck_0_5_28_to_0_5_29() {
   m1s_avahi_internal_health_check || return 1
   systemctl is-enabled avahi-alias-umbrel.service >/dev/null 2>&1 || { err "avahi-alias-umbrel.service is not enabled after mDNS repair"; return 1; }
 }
+
+precheck_0_5_29_to_0_5_30() { precheck_common_canonical_install; }
+apply_0_5_29_to_0_5_30() {
+  info "0.5.30 repairs the managed import-map CSP authorization and restarts Umbrel so the web UI loads it."
+  install_umbrel_safe_shutdown
+  if system_containers_need_replacement; then
+    info "0.5.30 converges stale Umbrel system containers before publishing the repaired runtime."
+    repair_current_umbrel_runtime
+  fi
+}
+postcheck_0_5_29_to_0_5_30() { postcheck_umbrel_safe_shutdown; }
 
 # ---------------------------------------------------------------------------
 # Main flow

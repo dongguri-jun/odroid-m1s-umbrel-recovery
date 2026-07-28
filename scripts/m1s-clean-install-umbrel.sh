@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SCRIPT_VERSION="0.5.29"
-INSTALL_STATE_VERSION="0.5.29"
+SCRIPT_VERSION="0.5.30"
+INSTALL_STATE_VERSION="0.5.30"
 INSTALL_STATE_DIR="/etc/umbrel-recovery"
 INSTALL_STATE_FILE="$INSTALL_STATE_DIR/installed.json"
 PREINSTALL_RESUME_STATE_FILE="$INSTALL_STATE_DIR/preinstall-resume.json"
@@ -1435,6 +1435,7 @@ verify_umbrel_shutdown_source() {
 
 patch_umbrel_shutdown_ui() {
   docker exec -i umbrel python3 - <<'PY_INNER'
+import base64
 import hashlib
 import json
 import os
@@ -1444,6 +1445,7 @@ from pathlib import Path
 
 ROOT = Path(os.environ.get('M1S_TEST_UMBREL_UI_ROOT', '/opt/umbreld/ui')).resolve()
 INDEX = ROOT / 'index.html'
+SERVER_SOURCE = Path(os.environ.get('M1S_TEST_UMBREL_SERVER_SOURCE', '/opt/umbreld/source/modules/server/index.ts')).resolve()
 SOURCE_ERROR_30 = 'he==="shutting-down"&&!v&&(ce.isError||ce.failureCount>0)&&(b(!0),setTimeout(()=>S(!0),30*Kh))'
 PUBLIC_STATUS_30 = 'he==="shutting-down"&&!v&&(b(!0),setTimeout(()=>S(!0),30*Kh))'
 CANONICAL_STATUS_75 = 'he==="shutting-down"&&!v&&(b(!0),setTimeout(()=>S(!0),75*Kh))'
@@ -1623,6 +1625,23 @@ def atomic_write(path, data):
             pass
 
 
+def configure_import_map_csp(original_ref, target_ref):
+    if not SERVER_SOURCE.is_file():
+        fail('Umbrel server CSP source is missing')
+    payload = json.dumps({'imports': {original_ref: target_ref}}, separators=(',', ':')).encode()
+    digest = base64.b64encode(hashlib.sha256(payload).digest()).decode()
+    prefix = "scriptSrc: this.umbreld.developmentMode ? [\"'self'\", \"'unsafe-inline'\"] : "
+    replacement = f"{prefix}[\"'self'\", \"'sha256-{digest}'\"], // m1s-shutdown-ui-csp"
+    lines = SERVER_SOURCE.read_text(encoding='utf-8').splitlines(keepends=True)
+    matches = [index for index, line in enumerate(lines) if line.strip().startswith(prefix)]
+    if len(matches) != 1:
+        fail('expected exactly one Umbrel production scriptSrc CSP directive')
+    newline = '\n' if lines[matches[0]].endswith('\n') else ''
+    indent = lines[matches[0]][:len(lines[matches[0]]) - len(lines[matches[0]].lstrip())]
+    lines[matches[0]] = f'{indent}{replacement}{newline}'
+    atomic_write(SERVER_SOURCE, ''.join(lines).encode())
+
+
 def resolve_index_asset():
     if not INDEX.is_file():
         fail('index.html is missing')
@@ -1684,9 +1703,11 @@ if counts['canonical-status-75'] == 1:
     if not original_path.is_file():
         fail('original immutable shutdown UI asset is missing')
     if canonical_import_map_present(import_map_candidates(index_text), original_ref, ref, trigger_starts):
+        configure_import_map_csp(original_ref, ref)
         raise SystemExit(0)
     insertion_start = min(trigger_starts)
     atomic_write(INDEX, (index_text[:insertion_start] + managed_import_map_tag(original_ref, ref) + index_text[insertion_start:]).encode('utf-8'))
+    configure_import_map_csp(original_ref, ref)
     raise SystemExit(0)
 
 validate_no_stale_generated(asset_path, base_stem, False)
@@ -1711,6 +1732,7 @@ new_index_text = rewritten_index_text[:insertion_start] + managed_import_map_tag
 atomic_write(new_path, patched_bytes)
 try:
     atomic_write(INDEX, new_index_text.encode('utf-8'))
+    configure_import_map_csp(ref, new_ref)
 except BaseException:
     try:
         new_path.unlink()
@@ -1723,6 +1745,7 @@ PY_INNER
 
 verify_umbrel_shutdown_ui() {
   docker exec -i umbrel python3 - <<'PY_INNER'
+import base64
 import hashlib
 import json
 import os
@@ -1732,6 +1755,7 @@ from pathlib import Path
 
 ROOT = Path(os.environ.get('M1S_TEST_UMBREL_UI_ROOT', '/opt/umbreld/ui')).resolve()
 INDEX = ROOT / 'index.html'
+SERVER_SOURCE = Path(os.environ.get('M1S_TEST_UMBREL_SERVER_SOURCE', '/opt/umbreld/source/modules/server/index.ts')).resolve()
 SOURCE_ERROR_30 = 'he==="shutting-down"&&!v&&(ce.isError||ce.failureCount>0)&&(b(!0),setTimeout(()=>S(!0),30*Kh))'
 PUBLIC_STATUS_30 = 'he==="shutting-down"&&!v&&(b(!0),setTimeout(()=>S(!0),30*Kh))'
 CANONICAL_STATUS_75 = 'he==="shutting-down"&&!v&&(b(!0),setTimeout(()=>S(!0),75*Kh))'
@@ -1890,6 +1914,13 @@ if any(managed_maps[0]['start'] >= trigger_start for trigger_start in trigger_st
     fail('managed import map must precede every module graph trigger')
 if managed_maps[0]['data'] != {'imports': {original_ref: ref}}:
     fail('managed import map does not exactly map the original entry to the generated entry')
+if not SERVER_SOURCE.is_file():
+    fail('Umbrel server CSP source is missing')
+payload = json.dumps({'imports': {original_ref: ref}}, separators=(',', ':')).encode()
+digest = base64.b64encode(hashlib.sha256(payload).digest()).decode()
+expected_csp = f"scriptSrc: this.umbreld.developmentMode ? [\"'self'\", \"'unsafe-inline'\"] : [\"'self'\", \"'sha256-{digest}'\"], // m1s-shutdown-ui-csp"
+if expected_csp not in SERVER_SOURCE.read_text(encoding='utf-8'):
+    fail('Umbrel CSP does not authorize the managed import map')
 PY_INNER
 }
 

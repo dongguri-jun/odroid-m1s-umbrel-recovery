@@ -107,6 +107,104 @@ assert_contains "$docker_log" 'start umbrel' 'docker start should include every 
 assert_eq "0" "$CONTAINERS_STOPPED" 'container restart clears stopped state after stop failure recovery'
 pass 'docker stop failure restarts captured containers and preserves status'
 
+printf '[unit] system package updater waits for Umbrel-managed container recreation\n'
+new_tmpdir
+cat > "$TEST_TMPDIR/bin/docker" <<'EOF'
+#!/usr/bin/env bash
+set -eu
+
+log() {
+  printf '%s\n' "$*" >> "$DOCKER_LOG"
+}
+
+managed_label='/opt/umbreld/source/modules/apps/legacy-compat'
+
+case "$1" in
+  ps)
+    if [[ "$*" == *'{{.Names}} {{.Status}}'* ]]; then
+      printf 'umbrel_auth Up test\numbrel_tor_proxy Up test\numbrel Up test\nindependent Up test\n'
+    else
+      printf 'umbrel_auth\numbrel_tor_proxy\numbrel\nindependent\n'
+    fi
+    ;;
+  stop)
+    log "$*"
+    : > "$CONTAINERS_STOPPED_BY_DOCKER"
+    ;;
+  start)
+    log "$*"
+    if [[ "${2:-}" == 'umbrel' ]]; then
+      : > "$PARENT_STARTED"
+    fi
+    ;;
+  container)
+    [[ "${2:-}" == 'inspect' ]] || exit 1
+    container="${3:-}"
+    if [[ "$container" == 'umbrel_auth' || "$container" == 'umbrel_tor_proxy' ]]; then
+      if [[ -f "$PARENT_STARTED" ]]; then
+        exit 1
+      fi
+    fi
+    ;;
+  inspect)
+    container="${2:-}"
+    if [[ "$*" == *'com.docker.compose.project.working_dir'* ]]; then
+      [[ ! -f "$CONTAINERS_STOPPED_BY_DOCKER" ]] || exit 1
+      if [[ "$container" == 'umbrel_auth' || "$container" == 'umbrel_tor_proxy' ]]; then
+        printf '%s\n' "$managed_label"
+      fi
+      exit 0
+    fi
+    if [[ "$*" == *'{{.State.Status}}'* && ( "$container" == 'umbrel_auth' || "$container" == 'umbrel_tor_proxy' ) ]]; then
+      [[ -f "$PARENT_STARTED" ]] || exit 1
+      count_file="$TEST_TMPDIR/${container}.state-count"
+      count=0
+      [[ -f "$count_file" ]] && count="$(cat "$count_file")"
+      count=$((count + 1))
+      printf '%s\n' "$count" > "$count_file"
+      [[ "$count" -gt 1 ]] || exit 1
+      printf 'running\n'
+      exit 0
+    fi
+    ;;
+esac
+EOF
+cat > "$TEST_TMPDIR/bin/apt-get" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$*" >> "$APT_LOG"
+EOF
+cat > "$TEST_TMPDIR/bin/dpkg" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$*" >> "$DPKG_LOG"
+EOF
+chmod +x "$TEST_TMPDIR/bin/"*
+DOCKER_LOG="$TEST_TMPDIR/docker.log"
+APT_LOG="$TEST_TMPDIR/apt.log"
+DPKG_LOG="$TEST_TMPDIR/dpkg.log"
+PARENT_STARTED="$TEST_TMPDIR/parent-started"
+CONTAINERS_STOPPED_BY_DOCKER="$TEST_TMPDIR/containers-stopped"
+export DOCKER_LOG APT_LOG DPKG_LOG PARENT_STARTED CONTAINERS_STOPPED_BY_DOCKER TEST_TMPDIR
+PATH="$TEST_TMPDIR/bin:$ORIGINAL_PATH"
+managed_recovery_output="$TEST_TMPDIR/managed-recovery.out"
+(
+  require_root() { return 0; }
+  reboot_required() { return 1; }
+  DRY_RUN=0
+  NO_REBOOT=0
+  CONTAINERS_STOPPED=0
+  REBOOTING=0
+  STOPPED_CONTAINERS=()
+  main --no-reboot
+) >"$managed_recovery_output" 2>&1
+managed_recovery_log="$(cat "$managed_recovery_output")"
+docker_log="$(cat "$DOCKER_LOG")"
+[[ "$managed_recovery_log" != *'no longer exists'* ]] || fail 'Umbrel-managed children must be awaited instead of being reported as missing'
+assert_contains "$docker_log" 'start umbrel' 'managed recovery should start the top-level Umbrel container'
+assert_contains "$docker_log" 'start independent' 'managed recovery should directly restart independent containers'
+[[ "$docker_log" != *'start umbrel_auth'* ]] || fail 'Umbrel-managed auth child must not be restarted directly'
+[[ "$docker_log" != *'start umbrel_tor_proxy'* ]] || fail 'Umbrel-managed Tor child must not be restarted directly'
+pass 'Umbrel-managed children are verified after top-level Umbrel recovery'
+
 printf '[unit] system package updater noninteractive repair commands\n'
 DRY_RUN=1
 repair_output="$(dpkg_configure_command; apt_fix_install_command)"
@@ -280,29 +378,33 @@ assert_contains "$docker_log" 'start bitcoin_app_1' 'apt failure path should res
 pass 'apt upgrade failure restarts containers and preserves status without cleaning apt cache'
 
 printf '[unit] system package updater CLI argument handling\n'
+new_tmpdir
+cli_out="$TEST_TMPDIR/m1s-cli-out"
+cli_err="$TEST_TMPDIR/m1s-cli-err"
+cli_help="$TEST_TMPDIR/m1s-cli-help"
 set +e
-bash scripts/m1s-update-system-packages.sh --bad-option >/tmp/m1s-cli-out 2>/tmp/m1s-cli-err
+bash scripts/m1s-update-system-packages.sh --bad-option >"$cli_out" 2>"$cli_err"
 status="$?"
 set -e
 assert_eq "2" "$status" 'unknown option should exit 2'
-assert_contains "$(cat /tmp/m1s-cli-err)" 'Unknown argument: --bad-option' 'unknown option should print the rejected option'
+assert_contains "$(cat "$cli_err")" 'Unknown argument: --bad-option' 'unknown option should print the rejected option'
 assert_eq "$SCRIPT_VERSION" "$(bash scripts/m1s-update-system-packages.sh --version)" '--version should print script version'
-bash scripts/m1s-update-system-packages.sh --help >/tmp/m1s-cli-help
-assert_contains "$(cat /tmp/m1s-cli-help)" 'Usage:' '--help should print usage'
+bash scripts/m1s-update-system-packages.sh --help >"$cli_help"
+assert_contains "$(cat "$cli_help")" 'Usage:' '--help should print usage'
 pass 'CLI rejects unknown options and supports --version/--help'
 
 printf '[unit] system package updater Docker absent and empty-container paths\n'
 new_tmpdir
 cat > "$TEST_TMPDIR/bin/apt-get" <<'EOF'
-#!/usr/bin/env bash
+#!/bin/sh
 printf '%s\n' "$*" >> "$APT_LOG"
 EOF
 cat > "$TEST_TMPDIR/bin/dpkg" <<'EOF'
-#!/usr/bin/env bash
+#!/bin/sh
 printf '%s\n' "$*" >> "$DPKG_LOG"
 EOF
 cat > "$TEST_TMPDIR/bin/systemctl" <<'EOF'
-#!/usr/bin/env bash
+#!/bin/sh
 printf '%s\n' "$*" >> "$SYSTEMCTL_LOG"
 EOF
 chmod +x "$TEST_TMPDIR/bin/"*
@@ -310,8 +412,12 @@ APT_LOG="$TEST_TMPDIR/apt.log"
 DPKG_LOG="$TEST_TMPDIR/dpkg.log"
 SYSTEMCTL_LOG="$TEST_TMPDIR/systemctl.log"
 export APT_LOG DPKG_LOG SYSTEMCTL_LOG
-PATH="$TEST_TMPDIR/bin:/bin"
 (
+  PATH="$TEST_TMPDIR/bin"
+  export PATH
+  if command -v docker >/dev/null 2>&1; then
+    fail 'Docker-absent fixture resolved a real docker executable'
+  fi
   require_root() { return 0; }
   reboot_required() { return 1; }
   DRY_RUN=0

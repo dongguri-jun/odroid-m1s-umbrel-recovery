@@ -394,8 +394,8 @@ fi
   printf '[unit] current-version main routing failing first\n'
   M1S_TEST_CHECK_ONLY=0 run_current_version_main_dispatch_case "equal-stopped-apply" "$SCRIPT_VERSION" 0 0 1 0 0
   M1S_TEST_CHECK_ONLY=1 run_current_version_main_dispatch_case "equal-stopped-check" "$SCRIPT_VERSION" 1 0 1 0 0
-  M1S_TEST_CHECK_ONLY=0 run_current_version_main_dispatch_case "newer-apply" "0.5.29" 0 0 0 0 1
-  M1S_TEST_CHECK_ONLY=1 run_current_version_main_dispatch_case "newer-check" "0.5.29" 1 0 0 0 1
+  M1S_TEST_CHECK_ONLY=0 run_current_version_main_dispatch_case "newer-apply" "0.5.30" 0 0 0 0 1
+  M1S_TEST_CHECK_ONLY=1 run_current_version_main_dispatch_case "newer-check" "0.5.30" 1 0 0 0 1
   pass "current-version main routing distinguishes equal stopped drift from newer installs before mutation"
 fi
 
@@ -538,10 +538,19 @@ assert_eq "pre apply post" "${EVENTS[*]}" "successful step calls pre/apply/post 
 assert_json_eq "$INSTALL_STATE_FILE" 'data["applied_steps"]' "9.0.0_to_9.0.1" "successful step is marked applied"
 assert_json_eq "$INSTALL_STATE_FILE" 'data["last_completed_version"]' "9.0.1" "successful step records last_completed_version"
 assert_json_missing "$INSTALL_STATE_FILE" "version"
+update_install_state finalized "" "9.0.1" "" "" ""
 EVENTS=()
 run_migration_step "9.0.0_to_9.0.1"
 assert_eq "" "${EVENTS[*]}" "already applied step is skipped without rerunning handlers"
-pass "run_migration_step succeeds, records progress, and skips applied steps"
+cat > "$INSTALL_STATE_FILE" <<'JSON'
+{"version":"9.0.0","host_version":"9.0.0","applied_steps":["9.0.0_to_9.0.1"]}
+JSON
+TARGET_VERSION="9.0.1"
+EVENTS=()
+run_migration_step "9.0.0_to_9.0.1"
+assert_eq "pre apply post" "${EVENTS[*]}" "recorded unfinalized step replays its recovery handlers"
+unset TARGET_VERSION
+pass "run_migration_step succeeds, skips finalized steps, and replays unfinalized recovery steps"
 
 printf '[unit] public 0.5.26 history baseline\n'
 with_test_state
@@ -581,16 +590,18 @@ eval "$original_postcheck_safe_shutdown"
 unset -f systemctl mount nmcli
 pass "public 0.5.26 history step remains a no-host-mutation baseline"
 
-printf '[unit] v0.5.29 mDNS repair migration baseline\n'
+printf '[unit] v0.5.30 CSP repair migration baseline\n'
 with_test_state
-assert_eq "0.5.29" "$SCRIPT_VERSION" "updater targets the v0.5.29 raw-disk installer release"
+assert_eq "0.5.30" "$SCRIPT_VERSION" "updater targets the v0.5.30 CSP repair release"
 
 build_migration_plan "0.5.26"
-assert_eq "0.5.26_to_0.5.27 0.5.27_to_0.5.28 0.5.28_to_0.5.29" "${PLANNED_MIGRATIONS[*]}" "0.5.26 plans the reliability and mDNS repair transitions"
+assert_eq "0.5.26_to_0.5.27 0.5.27_to_0.5.28 0.5.28_to_0.5.29 0.5.29_to_0.5.30" "${PLANNED_MIGRATIONS[*]}" "0.5.26 plans the reliability, mDNS, and CSP repair transitions"
 build_migration_plan "0.5.27"
-assert_eq "0.5.27_to_0.5.28 0.5.28_to_0.5.29" "${PLANNED_MIGRATIONS[*]}" "local 0.5.27 plans host-profile history before mDNS repair"
+assert_eq "0.5.27_to_0.5.28 0.5.28_to_0.5.29 0.5.29_to_0.5.30" "${PLANNED_MIGRATIONS[*]}" "local 0.5.27 plans host-profile history before mDNS and CSP repairs"
 build_migration_plan "0.5.28"
-assert_eq "0.5.28_to_0.5.29" "${PLANNED_MIGRATIONS[*]}" "local 0.5.28 plans only the mDNS repair step"
+assert_eq "0.5.28_to_0.5.29 0.5.29_to_0.5.30" "${PLANNED_MIGRATIONS[*]}" "local 0.5.28 plans mDNS and CSP repair steps"
+build_migration_plan "0.5.29"
+assert_eq "0.5.29_to_0.5.30" "${PLANNED_MIGRATIONS[*]}" "local 0.5.29 plans only the CSP repair step"
 
 SAFE_SHUTDOWN_EVENTS=()
 DEFERRED_NETWORK_EVENTS=()
@@ -600,6 +611,8 @@ original_precheck_common="$(declare -f precheck_common_canonical_install)"
 original_info="$(declare -f info)"
 original_install_safe_shutdown="$(declare -f install_umbrel_safe_shutdown)"
 original_postcheck_safe_shutdown="$(declare -f postcheck_umbrel_safe_shutdown)"
+original_system_containers_need_replacement="$(declare -f system_containers_need_replacement)"
+original_repair_current_umbrel_runtime="$(declare -f repair_current_umbrel_runtime)"
 original_m1s_configure_avahi_mdns="$(declare -f m1s_configure_avahi_mdns)"
 original_m1s_avahi_internal_health_check="$(declare -f m1s_avahi_internal_health_check)"
 precheck_common_canonical_install() { SAFE_SHUTDOWN_EVENTS+=(data-mount-precheck); }
@@ -611,6 +624,9 @@ install_umbrel_safe_shutdown() {
 }
 # shellcheck disable=SC2317,SC2329 # Test stub is invoked indirectly through migration dispatch.
 postcheck_umbrel_safe_shutdown() { SAFE_SHUTDOWN_EVENTS+=(safe-shutdown-postcheck); }
+SYSTEM_CONTAINERS_NEED_REPLACEMENT=0
+system_containers_need_replacement() { [[ "$SYSTEM_CONTAINERS_NEED_REPLACEMENT" -eq 1 ]]; }
+repair_current_umbrel_runtime() { SAFE_SHUTDOWN_EVENTS+=(runtime-repair); }
 # shellcheck disable=SC2317,SC2329 # Safety stub guards against unintended deferred network mutation.
 nmcli() { DEFERRED_NETWORK_EVENTS+=(nmcli); }
 # shellcheck disable=SC2317,SC2329 # Safety stub guards against unintended deferred network mutation.
@@ -631,6 +647,19 @@ assert_eq "0.5.29 repairs stale Avahi interface pins without stopping Docker or 
 assert_eq "mdns-configure" "${DEFERRED_NETWORK_EVENTS[*]}" "0.5.29 migration delegates mDNS mutation to the shared helper"
 PROFILE_HISTORY_EVENTS=()
 DEFERRED_NETWORK_EVENTS=()
+
+apply_0_5_29_to_0_5_30
+assert_eq "0.5.30 repairs the managed import-map CSP authorization and restarts Umbrel so the web UI loads it." "${PROFILE_HISTORY_EVENTS[*]}" "0.5.30 migration message scopes the repair to the rendered web UI"
+assert_eq "safe-shutdown-install" "${SAFE_SHUTDOWN_EVENTS[*]}" "0.5.30 migration reapplies the safe-shutdown installer to repair the live CSP source and restart Umbrel"
+SAFE_SHUTDOWN_EVENTS=()
+PROFILE_HISTORY_EVENTS=()
+
+SYSTEM_CONTAINERS_NEED_REPLACEMENT=1
+apply_0_5_29_to_0_5_30
+assert_eq "safe-shutdown-install runtime-repair" "${SAFE_SHUTDOWN_EVENTS[*]}" "0.5.30 converges stale system containers before final runtime publication"
+SYSTEM_CONTAINERS_NEED_REPLACEMENT=0
+SAFE_SHUTDOWN_EVENTS=()
+PROFILE_HISTORY_EVENTS=()
 
 precheck_0_5_26_to_0_5_27
 assert_eq "data-mount-precheck" "${SAFE_SHUTDOWN_EVENTS[*]}" "reliability migration fixture precheck stub is exercised before migration dispatch"
@@ -673,14 +702,24 @@ assert_eq "data-mount-precheck" "${SAFE_SHUTDOWN_EVENTS[*]}" "mDNS repair keeps 
 assert_eq "mdns-configure mdns-health systemctl" "${DEFERRED_NETWORK_EVENTS[*]}" "mDNS repair configures only Avahi services and runs its postcheck"
 assert_json_eq "$INSTALL_STATE_FILE" 'data["applied_steps"]' "0.5.28_to_0.5.29" "mDNS repair step records completion"
 
+with_test_state
+SAFE_SHUTDOWN_EVENTS=()
+DEFERRED_NETWORK_EVENTS=()
+run_migration_step "0.5.29_to_0.5.30"
+assert_eq "data-mount-precheck safe-shutdown-install safe-shutdown-postcheck" "${SAFE_SHUTDOWN_EVENTS[*]}" "CSP repair keeps the canonical data-mount precheck and verifies the repaired live UI"
+assert_eq "" "${DEFERRED_NETWORK_EVENTS[*]}" "CSP repair does not mutate deferred network ownership"
+assert_json_eq "$INSTALL_STATE_FILE" 'data["applied_steps"]' "0.5.29_to_0.5.30" "CSP repair step records completion"
+
 eval "$original_precheck_common"
 eval "$original_info"
 eval "$original_install_safe_shutdown"
 eval "$original_postcheck_safe_shutdown"
+eval "$original_system_containers_need_replacement"
+eval "$original_repair_current_umbrel_runtime"
 eval "$original_m1s_configure_avahi_mdns"
 eval "$original_m1s_avahi_internal_health_check"
 unset -f nmcli systemctl mount
-pass "v0.5.29 migration preserves reliability behavior and adds the bounded mDNS repair"
+pass "v0.5.30 migration preserves reliability behavior and repairs the managed import-map CSP"
 
 printf '[unit] run_migration_step failure paths\n'
 with_test_state
@@ -724,6 +763,7 @@ printf '[unit] updater writes content-hashed 75s shutdown UI asset\n'
 with_test_state
 FAKE_UI_ROOT="$TEST_TMPDIR/umbreld-ui"
 FAKE_UI_ASSET_DIR="$FAKE_UI_ROOT/assets"
+FAKE_SERVER_SOURCE="$TEST_TMPDIR/umbreld-server.ts"
 mkdir -p "$FAKE_UI_ASSET_DIR"
 source_callback='he==="shutting-down"&&!v&&(ce.isError||ce.failureCount>0)&&(b(!0),setTimeout(()=>S(!0),30*Kh))'
 public_callback='he==="shutting-down"&&!v&&(b(!0),setTimeout(()=>S(!0),30*Kh))'
@@ -742,7 +782,7 @@ docker() {
     [[ "${1:-}" == "-i" ]] && shift
     [[ "${1:-}" == "umbrel" ]] || return 1
     shift
-    M1S_TEST_UMBREL_UI_ROOT="$FAKE_UI_ROOT" "$@"
+    M1S_TEST_UMBREL_UI_ROOT="$FAKE_UI_ROOT" M1S_TEST_UMBREL_SERVER_SOURCE="$FAKE_SERVER_SOURCE" "$@"
     return $?
   fi
   return 1
@@ -751,6 +791,12 @@ docker() {
 reset_shutdown_ui_fixture() {
   rm -rf "$FAKE_UI_ROOT"
   mkdir -p "$FAKE_UI_ASSET_DIR"
+  printf '%s\n' \
+    'helmet.contentSecurityPolicy({' \
+    '  directives: {' \
+    "    scriptSrc: this.umbreld.developmentMode ? [\"'self'\", \"'unsafe-inline'\"] : null," \
+    '  },' \
+    '})' > "$FAKE_SERVER_SOURCE"
 }
 
 write_shutdown_index() {
@@ -782,6 +828,28 @@ print(f"{stem}.m1s-{digest}.js")
 PY
 }
 
+shutdown_import_map_csp_hash_for() {
+  python3 - "$1" "$2" <<'PY'
+import base64
+import hashlib
+import json
+import sys
+
+payload = json.dumps({'imports': {sys.argv[1]: sys.argv[2]}}, separators=(',', ':')).encode()
+print(base64.b64encode(hashlib.sha256(payload).digest()).decode())
+PY
+}
+
+assert_shutdown_import_map_csp_hash() {
+  local original_ref="$1"
+  local generated_ref="$2"
+  local label="$3"
+  local expected_hash
+
+  expected_hash="$(shutdown_import_map_csp_hash_for "$original_ref" "$generated_ref")"
+  assert_contains "scriptSrc: this.umbreld.developmentMode ? [\"'self'\", \"'unsafe-inline'\"] : [\"'self'\", \"'sha256-$expected_hash'\"]," "$(<"$FAKE_SERVER_SOURCE")" "$label must authorize exactly the managed import-map payload"
+}
+
 assert_hashed_shutdown_patch() {
   local label="$1"
   local region="$2"
@@ -811,9 +879,34 @@ assert_hashed_shutdown_patch() {
   assert_not_contains "$source_callback" "$patched_asset" "$label patched asset should remove the upstream error gate"
   assert_not_contains "$public_callback" "$patched_asset" "$label patched asset should remove the 30s status-only branch"
   assert_contains "/assets/$new_asset_name" "$index_text" "$label index must reference the new hashed asset"
+  assert_shutdown_import_map_csp_hash "/assets/index-7c0be990.js" "/assets/$new_asset_name" "$label"
   patch_umbrel_shutdown_ui
   assert_eq "$patched_asset" "$(<"$new_asset_path")" "$label canonical rerun must leave hashed asset bytes unchanged"
   assert_eq "$index_text" "$(<"$FAKE_UI_ROOT/index.html")" "$label canonical rerun must leave index unchanged"
+
+  python3 - "$FAKE_SERVER_SOURCE" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+prefix = "scriptSrc: this.umbreld.developmentMode ? [\"'self'\", \"'unsafe-inline'\"] : "
+lines = path.read_text(encoding='utf-8').splitlines(keepends=True)
+matches = [index for index, line in enumerate(lines) if line.strip().startswith(prefix)]
+if len(matches) != 1:
+    raise SystemExit('expected exactly one fixture CSP directive')
+newline = '\n' if lines[matches[0]].endswith('\n') else ''
+indent = lines[matches[0]][:len(lines[matches[0]]) - len(lines[matches[0]].lstrip())]
+lines[matches[0]] = f'{indent}{prefix}null,{newline}'
+path.write_text(''.join(lines), encoding='utf-8')
+PY
+  if verify_umbrel_shutdown_ui >/dev/null 2>&1; then
+    fail "$label verify must reject a managed import map whose CSP authorization was removed"
+  fi
+  patch_umbrel_shutdown_ui
+  verify_umbrel_shutdown_ui
+  assert_shutdown_import_map_csp_hash "/assets/index-7c0be990.js" "/assets/$new_asset_name" "$label existing managed map must restore its CSP authorization"
+  assert_eq "$patched_asset" "$(<"$new_asset_path")" "$label CSP repair must not rewrite the generated asset"
+  assert_eq "$index_text" "$(<"$FAKE_UI_ROOT/index.html")" "$label CSP repair must not rewrite the managed import map"
 }
 
 assert_patch_fails_without_index_mutation() {
@@ -1606,6 +1699,7 @@ fake_transaction_hooks() {
       && is_expected_tor_proxy_image "$FAKE_UMBREL_TOR_PROXY_IMAGE"
   }
   sleep() { ((FAKE_SLEEP_CALLS += 1)); }
+  # shellcheck disable=SC2329 # Invoked indirectly by repair_current_umbrel_runtime.
   install_umbrel_safe_shutdown() {
     [[ "$FAKE_SAFE_SHUTDOWN_APPLY_FAIL" -eq 0 ]] || return 1
     if [[ "$FAKE_REPAIR_CONVERGES_SAFE_SHUTDOWN" -eq 1 ]]; then
@@ -1643,6 +1737,7 @@ fake_transaction_hooks() {
       *) return 1 ;;
     esac
   }
+  # shellcheck disable=SC2329 # Invoked indirectly by verify_umbrel_runtime_truth.
   postcheck_umbrel_safe_shutdown() {
     [[ "$FAKE_SAFE_SHUTDOWN_POSTCHECK_FAIL" -eq 0 && "$FAKE_SAFE_SHUTDOWN_COMPONENT" == "canonical" ]]
   }
@@ -1690,7 +1785,7 @@ assert_transaction_rolled_back() {
 
 printf '[unit] 0.5.25 transaction and runtime-truth state\n'
 fake_transaction_hooks
-assert_eq "0.5.24_to_0.5.25" "${MIGRATIONS[$((${#MIGRATIONS[@]} - 5))]}" "0.5.25 transaction remains before the 0.5.26 history, reliability, host-profile, and mDNS repair steps"
+assert_eq "0.5.24_to_0.5.25" "${MIGRATIONS[$((${#MIGRATIONS[@]} - 6))]}" "0.5.25 transaction remains before the 0.5.26 history, reliability, host-profile, mDNS, and CSP repair steps"
 
 printf '[unit] 0.5.25 finalization baseline characterization\n'
 prepare_transaction_case
@@ -1720,8 +1815,8 @@ if [[ "${M1S_TEST_CHARACTERIZE_IMAGE_ONLY:-0}" -eq 1 ]]; then
   FAKE_UMBREL_IMAGE_REF="$UMBREL_IMAGE"
   FAKE_UMBREL_IMAGE_ID="$FAKE_CANDIDATE_IMAGE_ID"
   FAKE_UMBREL_STATE="exited"
-  finalize_install_state "0.5.29"
-  assert_json_eq "$INSTALL_STATE_FILE" 'data["version"]' "0.5.29" "image-only finalization currently publishes an image-correct stopped runtime"
+  finalize_install_state "0.5.30"
+  assert_json_eq "$INSTALL_STATE_FILE" 'data["version"]' "0.5.30" "image-only finalization currently publishes an image-correct stopped runtime"
   assert_json_eq "$INSTALL_STATE_FILE" 'data["image"]' "$UMBREL_IMAGE" "image-only finalization currently records the image-correct stopped runtime"
   pass "image-only finalization false-success path is characterized before runtime-truth coverage"
 fi
@@ -1734,13 +1829,13 @@ assert_finalization_failure_preserves_state() {
   local finalization_output="$TEST_TMPDIR/$label-finalization.out"
 
   cp "$INSTALL_STATE_FILE" "$before_state"
-  if finalize_install_state "0.5.29" >"$finalization_output" 2>&1; then
+  if finalize_install_state "0.5.30" >"$finalization_output" 2>&1; then
     fail "$label must reject finalization"
   fi
   cmp -s "$before_state" "$INSTALL_STATE_FILE" || fail "$label must leave install state byte-for-byte unchanged"
   assert_json_eq "$INSTALL_STATE_FILE" 'data["version"]' "0.5.24" "$label does not publish the target version"
   assert_json_eq "$INSTALL_STATE_FILE" 'data["host_version"]' "0.5.24" "$label does not publish the target host version"
-  assert_not_contains "0.5.29" "$(<"$finalization_output")" "$label reports a generalized finalization error"
+  assert_not_contains "0.5.30" "$(<"$finalization_output")" "$label reports a generalized finalization error"
   assert_contains "$expected_refusal" "$(<"$finalization_output")" "$label preserves the legacy safe refusal"
   assert_contains "predicate=$expected_predicate observed-state=not-canonical" "$(<"$finalization_output")" "$label reports generalized runtime truth"
 }
@@ -1798,7 +1893,7 @@ assert_runtime_truth_failure_preserves_state() {
   local publications_before="$FINALIZATION_PUBLICATION_CALLS"
 
   cp "$INSTALL_STATE_FILE" "$before_state"
-  if finalize_install_state "0.5.29" >"$finalization_output" 2>&1; then
+  if finalize_install_state "0.5.30" >"$finalization_output" 2>&1; then
     fail "$label must reject image-correct runtime drift"
   fi
   cmp -s "$before_state" "$INSTALL_STATE_FILE" || fail "$label must leave install state byte-for-byte unchanged"
@@ -1846,10 +1941,10 @@ for runtime_truth_case in \
 done
 
 prepare_canonical_runtime_truth_case
-finalize_install_state "0.5.29"
+finalize_install_state "0.5.30"
 assert_eq "1" "$FINALIZATION_PUBLICATION_CALLS" "canonical runtime truth publishes exactly once"
 assert_runtime_truth_reporter_read_only "canonical runtime truth"
-assert_json_eq "$INSTALL_STATE_FILE" 'data["version"]' "0.5.29" "canonical runtime truth finalization writes the target version"
+assert_json_eq "$INSTALL_STATE_FILE" 'data["version"]' "0.5.30" "canonical runtime truth finalization writes the target version"
 assert_json_eq "$INSTALL_STATE_FILE" 'data["image"]' "$UMBREL_IMAGE" "canonical runtime truth finalization records the verified image ref"
 assert_json_eq "$INSTALL_STATE_FILE" 'data["image_id"]' "$FAKE_CANDIDATE_IMAGE_ID" "canonical runtime truth finalization records the verified image ID"
 pass "full runtime-truth finalization rejects every image-correct drift class before publication"
@@ -2047,9 +2142,9 @@ cat > "$INSTALL_STATE_FILE" <<'JSON'
 JSON
 FAKE_UMBREL_IMAGE_REF="$UMBREL_IMAGE"
 FAKE_UMBREL_IMAGE_ID="$FAKE_CANDIDATE_IMAGE_ID"
-finalize_install_state "0.5.29"
-assert_json_eq "$INSTALL_STATE_FILE" 'data["version"]' "0.5.29" "stale public 0.5.26 state repairs the final version"
-assert_json_eq "$INSTALL_STATE_FILE" 'data["host_version"]' "0.5.29" "stale public 0.5.26 state repairs the host version"
+finalize_install_state "0.5.30"
+assert_json_eq "$INSTALL_STATE_FILE" 'data["version"]' "0.5.30" "stale public 0.5.26 state repairs the final version"
+assert_json_eq "$INSTALL_STATE_FILE" 'data["host_version"]' "0.5.30" "stale public 0.5.26 state repairs the host version"
 assert_json_eq "$INSTALL_STATE_FILE" 'data["image"]' "$UMBREL_IMAGE" "stale public 0.5.26 state repairs the live pinned image ref"
 assert_json_eq "$INSTALL_STATE_FILE" 'data["image_id"]' "$FAKE_CANDIDATE_IMAGE_ID" "stale public 0.5.26 state repairs the missing live image ID"
 
@@ -2091,9 +2186,9 @@ assert_finalization_failure_preserves_state "unresolved-pinned-image-id" "Refusi
 prepare_canonical_runtime_truth_case
 rm -f "$INSTALL_STATE_FILE"
 [[ ! -e "$INSTALL_STATE_FILE" ]] || fail "no-state finalization fixture must start without install state"
-finalize_install_state "0.5.29"
-assert_json_eq "$INSTALL_STATE_FILE" 'data["version"]' "0.5.29" "no-state finalization creates the target version"
-assert_json_eq "$INSTALL_STATE_FILE" 'data["host_version"]' "0.5.29" "no-state finalization creates the target host version"
+finalize_install_state "0.5.30"
+assert_json_eq "$INSTALL_STATE_FILE" 'data["version"]' "0.5.30" "no-state finalization creates the target version"
+assert_json_eq "$INSTALL_STATE_FILE" 'data["host_version"]' "0.5.30" "no-state finalization creates the target host version"
 assert_json_eq "$INSTALL_STATE_FILE" 'data["image"]' "$UMBREL_IMAGE" "no-state finalization creates the live pinned image ref"
 assert_json_eq "$INSTALL_STATE_FILE" 'data["image_id"]' "$FAKE_CANDIDATE_IMAGE_ID" "no-state finalization creates the live image ID"
 
@@ -2101,31 +2196,37 @@ prepare_transaction_case
 original_precheck_common_canonical_install="$(declare -f precheck_common_canonical_install)"
 original_m1s_configure_avahi_mdns="$(declare -f m1s_configure_avahi_mdns)"
 original_m1s_avahi_internal_health_check="$(declare -f m1s_avahi_internal_health_check)"
+original_install_umbrel_safe_shutdown="$(declare -f install_umbrel_safe_shutdown)"
+original_postcheck_umbrel_safe_shutdown="$(declare -f postcheck_umbrel_safe_shutdown)"
 CHAIN_PRECHECK_CALLS=0
 precheck_common_canonical_install() { ((CHAIN_PRECHECK_CALLS += 1)); }
 m1s_configure_avahi_mdns() { :; }
 m1s_avahi_internal_health_check() { :; }
+install_umbrel_safe_shutdown() { :; }
+postcheck_umbrel_safe_shutdown() { :; }
 # shellcheck disable=SC2329 # Invoked indirectly by the final migration postcheck.
 systemctl() { return 0; }
 precheck_common_canonical_install
 assert_eq "1" "$CHAIN_PRECHECK_CALLS" "chained migration fixture precheck stub is exercised before migration dispatch"
-for chained_step in 0.5.24_to_0.5.25 0.5.25_to_0.5.26 0.5.26_to_0.5.27 0.5.27_to_0.5.28 0.5.28_to_0.5.29; do
+for chained_step in 0.5.24_to_0.5.25 0.5.25_to_0.5.26 0.5.26_to_0.5.27 0.5.27_to_0.5.28 0.5.28_to_0.5.29 0.5.29_to_0.5.30; do
   run_migration_step "$chained_step" || fail "chained migration $chained_step must complete before finalization"
 done
-assert_eq "5" "$CHAIN_PRECHECK_CALLS" "chained migration dispatch exercises the common precheck for every applicable later migration"
-finalize_install_state "0.5.29"
+assert_eq "6" "$CHAIN_PRECHECK_CALLS" "chained migration dispatch exercises the common precheck for every applicable later migration"
+finalize_install_state "0.5.30"
 eval "$original_precheck_common_canonical_install"
 eval "$original_m1s_configure_avahi_mdns"
 eval "$original_m1s_avahi_internal_health_check"
+eval "$original_install_umbrel_safe_shutdown"
+eval "$original_postcheck_umbrel_safe_shutdown"
 unset -f systemctl
-assert_json_eq "$INSTALL_STATE_FILE" 'data["version"]' "0.5.29" "0.5.24 to 0.5.29 chain publishes the final version only after runtime verification"
-assert_json_eq "$INSTALL_STATE_FILE" 'data["host_version"]' "0.5.29" "0.5.24 to 0.5.29 chain publishes the final host version"
-assert_json_eq "$INSTALL_STATE_FILE" 'data["image"]' "$UMBREL_IMAGE" "0.5.24 to 0.5.29 chain records the live pinned image ref"
-assert_json_eq "$INSTALL_STATE_FILE" 'data["image_id"]' "$FAKE_CANDIDATE_IMAGE_ID" "0.5.24 to 0.5.29 chain records the resolved live image ID"
+assert_json_eq "$INSTALL_STATE_FILE" 'data["version"]' "0.5.30" "0.5.24 to 0.5.30 chain publishes the final version only after runtime verification"
+assert_json_eq "$INSTALL_STATE_FILE" 'data["host_version"]' "0.5.30" "0.5.24 to 0.5.30 chain publishes the final host version"
+assert_json_eq "$INSTALL_STATE_FILE" 'data["image"]' "$UMBREL_IMAGE" "0.5.24 to 0.5.30 chain records the live pinned image ref"
+assert_json_eq "$INSTALL_STATE_FILE" 'data["image_id"]' "$FAKE_CANDIDATE_IMAGE_ID" "0.5.24 to 0.5.30 chain records the resolved live image ID"
 
 before_rerun_state="$TEST_TMPDIR/finalized-before-rerun.json"
 cp "$INSTALL_STATE_FILE" "$before_rerun_state"
-finalize_install_state "0.5.29"
+finalize_install_state "0.5.30"
 assert_json_semantically_equal_excluding_updated_at "$before_rerun_state" "$INSTALL_STATE_FILE" "second successful finalization is semantically idempotent except timestamps"
 
 prepare_transaction_case
@@ -2135,7 +2236,7 @@ dry_run_state="$TEST_TMPDIR/dry-run-before.json"
 cp "$INSTALL_STATE_FILE" "$dry_run_state"
 dry_run_docker_log="$(fake_docker_log_text)"
 DRY_RUN=1
-dry_run_output="$(finalize_install_state "0.5.29")"
+dry_run_output="$(finalize_install_state "0.5.30")"
 DRY_RUN=0
 assert_contains "skips live Umbrel runtime verification and final state publication" "$dry_run_output" "dry-run finalization must not claim runtime verification"
 cmp -s "$dry_run_state" "$INSTALL_STATE_FILE" || fail "dry-run finalization must not write install state"
@@ -2275,7 +2376,7 @@ if [[ "${M1S_TEST_RUNTIME_TRUTH_QA:-0}" -eq 1 ]]; then
   printf '[qa] runtime-truth finalization sourced-shell seam\n'
   prepare_canonical_runtime_truth_case
   set +e
-  finalize_install_state "0.5.29"
+  finalize_install_state "0.5.30"
   canonical_status=$?
   set -e
   assert_eq "0" "$canonical_status" "canonical sourced-shell finalization must succeed"
@@ -2288,7 +2389,7 @@ if [[ "${M1S_TEST_RUNTIME_TRUTH_QA:-0}" -eq 1 ]]; then
   noncanonical_before_sha="$(sha256sum "$INSTALL_STATE_FILE" | cut -d' ' -f1)"
   noncanonical_output="$TEST_TMPDIR/qa-noncanonical-finalization.out"
   set +e
-  finalize_install_state "0.5.29" >"$noncanonical_output" 2>&1
+  finalize_install_state "0.5.30" >"$noncanonical_output" 2>&1
   noncanonical_status=$?
   set -e
   noncanonical_after_sha="$(sha256sum "$INSTALL_STATE_FILE" | cut -d' ' -f1)"
@@ -2371,7 +2472,7 @@ if [[ "${M1S_TEST_CURRENT_VERSION_MAIN_QA:-0}" -eq 1 ]]; then
 
   prepare_canonical_runtime_truth_case
   write_current_version_metadata
-  detect_installed_version() { printf '0.5.29\n'; }
+  detect_installed_version() { printf '0.5.30\n'; }
   newer_main_before_sha="$(sha256sum "$INSTALL_STATE_FILE" | cut -d' ' -f1)"
   newer_main_publications="$FINALIZATION_PUBLICATION_CALLS"
   set +e

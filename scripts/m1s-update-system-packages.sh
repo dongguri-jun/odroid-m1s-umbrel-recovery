@@ -1,17 +1,24 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SCRIPT_VERSION="0.5.29"
+SCRIPT_VERSION="0.5.30"
 DRY_RUN=0
 NO_REBOOT=0
 STOP_TIMEOUT_SECONDS=300
 APT_LOCK_TIMEOUT_SECONDS=300
+UMBREL_MANAGED_CONTAINER_WAIT_ATTEMPTS="${UMBREL_MANAGED_CONTAINER_WAIT_ATTEMPTS:-30}"
+UMBREL_MANAGED_CONTAINER_WAIT_DELAY_SECONDS="${UMBREL_MANAGED_CONTAINER_WAIT_DELAY_SECONDS:-2}"
 STOPPED_CONTAINERS=()
+STOPPED_UMBREL_MANAGED_CONTAINERS=()
+STOPPED_INDEPENDENT_CONTAINERS=()
+CONTAINER_OWNERSHIP_CAPTURED=0
 CONTAINERS_STOPPED=0
 REBOOTING=0
 
 # shellcheck source=scripts/m1s-support-policy.sh
 source "$(dirname "${BASH_SOURCE[0]}")/m1s-support-policy.sh"
+# shellcheck source=scripts/m1s-docker-lifecycle.sh
+source "$(dirname "${BASH_SOURCE[0]}")/m1s-docker-lifecycle.sh"
 
 usage() {
   cat <<'EOF'
@@ -147,9 +154,62 @@ clean_apt_cache() {
 }
 
 load_running_containers() {
-  STOPPED_CONTAINERS=()
-  command -v docker >/dev/null 2>&1 || return 0
-  mapfile -t STOPPED_CONTAINERS < <(docker ps --format '{{.Names}}' 2>/dev/null || true)
+  m1s_docker_lifecycle_load_running STOPPED_CONTAINERS
+  classify_stopped_containers
+  CONTAINER_OWNERSHIP_CAPTURED=1
+}
+
+classify_stopped_containers() {
+  local container
+
+  STOPPED_UMBREL_MANAGED_CONTAINERS=()
+  STOPPED_INDEPENDENT_CONTAINERS=()
+  for container in "${STOPPED_CONTAINERS[@]}"; do
+    if is_umbrel_managed_container "$container"; then
+      STOPPED_UMBREL_MANAGED_CONTAINERS+=("$container")
+    elif [[ "$container" != "umbrel" ]]; then
+      STOPPED_INDEPENDENT_CONTAINERS+=("$container")
+    fi
+  done
+}
+
+is_umbrel_managed_container() {
+  local container="$1"
+  local compose_working_dir
+
+  compose_working_dir="$(docker inspect "$container" --format '{{index .Config.Labels "com.docker.compose.project.working_dir"}}' 2>/dev/null || true)"
+  [[ "$compose_working_dir" == /opt/umbreld/source/modules/* ]]
+}
+
+stopped_umbrel_parent() {
+  local container
+  for container in "${STOPPED_CONTAINERS[@]}"; do
+    [[ "$container" == "umbrel" ]] && return 0
+  done
+  return 1
+}
+
+wait_for_umbrel_managed_containers() {
+  local attempt container state
+  local all_running
+
+  [[ "${#STOPPED_UMBREL_MANAGED_CONTAINERS[@]}" -gt 0 ]] || return 0
+  for ((attempt = 1; attempt <= UMBREL_MANAGED_CONTAINER_WAIT_ATTEMPTS; attempt++)); do
+    all_running=1
+    for container in "${STOPPED_UMBREL_MANAGED_CONTAINERS[@]}"; do
+      state="$(docker inspect "$container" --format '{{.State.Status}}' 2>/dev/null || true)"
+      if [[ "$state" != "running" ]]; then
+        all_running=0
+        break
+      fi
+    done
+    [[ "$all_running" -eq 1 ]] && return 0
+    if [[ "$attempt" -lt "$UMBREL_MANAGED_CONTAINER_WAIT_ATTEMPTS" ]]; then
+      sleep "$UMBREL_MANAGED_CONTAINER_WAIT_DELAY_SECONDS"
+    fi
+  done
+  err "Umbrel-managed containers did not return running after $UMBREL_MANAGED_CONTAINER_WAIT_ATTEMPTS attempts."
+  return 1
 }
 
 print_bitcoin_container_hint() {
@@ -172,7 +232,7 @@ stop_running_containers() {
 
   info "Stopping running Docker containers before apt upgrade (${#STOPPED_CONTAINERS[@]} container(s), timeout ${STOP_TIMEOUT_SECONDS}s)..."
   CONTAINERS_STOPPED=1
-  if run_cmd docker stop --timeout "$STOP_TIMEOUT_SECONDS" "${STOPPED_CONTAINERS[@]}"; then
+  if m1s_docker_lifecycle_stop STOPPED_CONTAINERS "$STOP_TIMEOUT_SECONDS"; then
     return 0
   else
     local status=$?
@@ -187,29 +247,34 @@ start_stopped_containers() {
     return 0
   fi
 
+  if [[ "$CONTAINER_OWNERSHIP_CAPTURED" -ne 1 ]]; then
+    classify_stopped_containers
+  fi
   info "Starting containers again because no reboot is being performed..."
   if [[ "$DRY_RUN" -eq 1 ]]; then
     run_cmd docker start "${STOPPED_CONTAINERS[@]}"
     CONTAINERS_STOPPED=0
+    CONTAINER_OWNERSHIP_CAPTURED=0
     return 0
   fi
 
-  local failed=0
-  local container
-  local index
-  for ((index=${#STOPPED_CONTAINERS[@]} - 1; index >= 0; index--)); do
-    container="${STOPPED_CONTAINERS[$index]}"
-    if ! docker container inspect "$container" >/dev/null 2>&1; then
-      warn "Container $container no longer exists; skipping direct restart. Umbrel may recreate app containers after its own restart."
-      continue
+  if [[ "${#STOPPED_UMBREL_MANAGED_CONTAINERS[@]}" -gt 0 ]]; then
+    if ! stopped_umbrel_parent; then
+      err "Umbrel-managed containers were stopped but the top-level umbrel container was not captured for recovery."
+      return 1
     fi
-    if ! docker start "$container"; then
-      warn "Failed to restart container: $container"
-      failed=1
-    fi
-  done
+    docker start umbrel >/dev/null || {
+      err "Failed to restart the top-level umbrel container."
+      return 1
+    }
+    wait_for_umbrel_managed_containers || return 1
+  elif stopped_umbrel_parent; then
+    STOPPED_INDEPENDENT_CONTAINERS+=(umbrel)
+  fi
+
+  m1s_docker_lifecycle_start_existing_reverse STOPPED_INDEPENDENT_CONTAINERS || return 1
   CONTAINERS_STOPPED=0
-  return "$failed"
+  CONTAINER_OWNERSHIP_CAPTURED=0
 }
 
 reboot_required() {

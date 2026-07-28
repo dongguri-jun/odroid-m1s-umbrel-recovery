@@ -545,6 +545,7 @@ python3 - <<'PY'
 from pathlib import Path
 import re
 text = Path('scripts/m1s-update-umbrel.sh').read_text(encoding='utf-8')
+lifecycle = Path('scripts/m1s-docker-lifecycle.sh').read_text(encoding='utf-8')
 for forbidden in ['mkfs.', 'sfdisk', 'parted', 'wipefs', 'sgdisk', 'gdisk', 'blkdiscard', 'shred']:
     if forbidden in text:
         raise SystemExit(f'Updater must never contain destructive disk command: {forbidden}')
@@ -612,7 +613,7 @@ required = [
     'print_running_app_container_hint',
     'stop_running_app_containers',
     'start_stopped_app_containers',
-    'docker stop --timeout "$APP_STOP_TIMEOUT_SECONDS"',
+    'm1s_docker_lifecycle_stop STOPPED_APP_CONTAINERS "$APP_STOP_TIMEOUT_SECONDS"',
     'docker stop umbrel',
     'docker rm umbrel',
     'HOST_DATA_ALIAS="/data"',
@@ -897,8 +898,10 @@ if pos('assert_fullnode_data_mount_safe', transaction) > pos('docker pull "$UMBR
     raise SystemExit('Umbrel data mount safety check must happen before docker pull')
 if pos('load_running_app_containers') > pos('UMBREL_TRANSACTION_APP_CONTAINERS=("${STOPPED_APP_CONTAINERS[@]}")'):
     raise SystemExit('Updater must capture running ordinary apps into transaction context')
-if pos('is_system_container "$container" && continue') > pos('STOPPED_APP_CONTAINERS+=("$container")'):
+if pos('! "$predicate_name" "$container"', lifecycle) > pos('containers_ref+=("$container")', lifecycle):
     raise SystemExit('System containers must be excluded before ordinary app capture')
+if '[[ "$container" != "umbrel" ]] && ! is_system_container "$container"' not in text:
+    raise SystemExit('Updater must exclude top-level and system containers before ordinary app capture')
 if pos('if [[ "$DRY_RUN" -eq 1 ]]', transaction) > pos('docker pull "$UMBREL_IMAGE"', transaction):
     raise SystemExit('Dry-run branch must return before docker pull mutates image cache')
 if pos('docker pull "$UMBREL_IMAGE"', transaction) > pos('UMBREL_TRANSACTION_ACTIVE=1', transaction):
@@ -1899,19 +1902,21 @@ printf '[verify] system package updater safety invariants\n'
 python3 - <<'PY'
 from pathlib import Path
 text = Path('scripts/m1s-update-system-packages.sh').read_text(encoding='utf-8')
+lifecycle = Path('scripts/m1s-docker-lifecycle.sh').read_text(encoding='utf-8')
 for forbidden in ['mkfs.', 'sfdisk', 'parted', 'wipefs', 'sgdisk', 'gdisk', 'blkdiscard', 'shred']:
     if forbidden in text:
         raise SystemExit(f'System package updater must never contain destructive disk command: {forbidden}')
 required = [
-    'SCRIPT_VERSION="0.5.29"',
+    'SCRIPT_VERSION="0.5.30"',
     '--dry-run',
     '--no-reboot',
     'STOP_TIMEOUT_SECONDS=300',
     'APT_LOCK_TIMEOUT_SECONDS=300',
     'apt_update_command',
-    'docker ps --format',
+    'm1s-docker-lifecycle.sh',
+    'm1s_docker_lifecycle_load_running STOPPED_CONTAINERS',
     'Bitcoin-related containers are running and will be stopped gracefully',
-    'docker stop --timeout "$STOP_TIMEOUT_SECONDS"',
+    'm1s_docker_lifecycle_stop STOPPED_CONTAINERS "$STOP_TIMEOUT_SECONDS"',
     'run_noninteractive',
     'apt_upgrade_command',
     'dpkg_configure_command',
@@ -1924,13 +1929,26 @@ required = [
     'DPkg::Lock::Timeout="$APT_LOCK_TIMEOUT_SECONDS"',
     '/var/run/reboot-required',
     'run_cmd systemctl reboot',
-    'docker container inspect "$container"',
-    'docker start "$container"',
+    'is_umbrel_managed_container',
+    'wait_for_umbrel_managed_containers',
+    'docker start umbrel',
 ]
 missing = [needle for needle in required if needle not in text]
 if missing:
     print('Missing expected system package updater invariant text:')
     for needle in missing:
+        print(f'  {needle}')
+    raise SystemExit(1)
+helper_required = [
+    'docker ps --format',
+    'run_cmd docker stop --timeout "$timeout_seconds"',
+    'docker container inspect "$container"',
+    'docker start "$container"',
+]
+helper_missing = [needle for needle in helper_required if needle not in lifecycle]
+if helper_missing:
+    print('Missing expected shared Docker lifecycle invariant text:')
+    for needle in helper_missing:
         print(f'  {needle}')
     raise SystemExit(1)
 
@@ -2053,8 +2071,16 @@ print('  ok residue manifest, full-scan directories, and backup bound are derive
 PY
 
 printf '[verify] updater unit tests\n'
+test_docker_guard_dir="$(mktemp -d)"
+trap 'rm -rf "$test_docker_guard_dir"' EXIT
+cat > "$test_docker_guard_dir/docker" <<'EOF'
+#!/usr/bin/env bash
+printf 'Unexpected real Docker invocation from test process: %s\n' "$*" >&2
+exit 97
+EOF
+chmod +x "$test_docker_guard_dir/docker"
 for test_script in "${test_scripts[@]}"; do
-  bash "$test_script"
+  PATH="$test_docker_guard_dir:$PATH" bash "$test_script"
   printf '  ok %s\n' "$test_script"
 done
 
