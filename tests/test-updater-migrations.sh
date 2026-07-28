@@ -581,14 +581,16 @@ eval "$original_postcheck_safe_shutdown"
 unset -f systemctl mount nmcli
 pass "public 0.5.26 history step remains a no-host-mutation baseline"
 
-printf '[unit] v0.5.28 reliability migration baseline\n'
+printf '[unit] v0.5.29 mDNS repair migration baseline\n'
 with_test_state
-assert_eq "0.5.28" "$SCRIPT_VERSION" "updater targets the v0.5.28 reliability release"
+assert_eq "0.5.29" "$SCRIPT_VERSION" "updater targets the v0.5.29 raw-disk installer release"
 
 build_migration_plan "0.5.26"
-assert_eq "0.5.26_to_0.5.27 0.5.27_to_0.5.28" "${PLANNED_MIGRATIONS[*]}" "0.5.26 plans the reliability transition before the host-profile reporting history step"
+assert_eq "0.5.26_to_0.5.27 0.5.27_to_0.5.28 0.5.28_to_0.5.29" "${PLANNED_MIGRATIONS[*]}" "0.5.26 plans the reliability and mDNS repair transitions"
 build_migration_plan "0.5.27"
-assert_eq "0.5.27_to_0.5.28" "${PLANNED_MIGRATIONS[*]}" "local 0.5.27 plans only the host-profile reporting history step"
+assert_eq "0.5.27_to_0.5.28 0.5.28_to_0.5.29" "${PLANNED_MIGRATIONS[*]}" "local 0.5.27 plans host-profile history before mDNS repair"
+build_migration_plan "0.5.28"
+assert_eq "0.5.28_to_0.5.29" "${PLANNED_MIGRATIONS[*]}" "local 0.5.28 plans only the mDNS repair step"
 
 SAFE_SHUTDOWN_EVENTS=()
 DEFERRED_NETWORK_EVENTS=()
@@ -598,6 +600,8 @@ original_precheck_common="$(declare -f precheck_common_canonical_install)"
 original_info="$(declare -f info)"
 original_install_safe_shutdown="$(declare -f install_umbrel_safe_shutdown)"
 original_postcheck_safe_shutdown="$(declare -f postcheck_umbrel_safe_shutdown)"
+original_m1s_configure_avahi_mdns="$(declare -f m1s_configure_avahi_mdns)"
+original_m1s_avahi_internal_health_check="$(declare -f m1s_avahi_internal_health_check)"
 precheck_common_canonical_install() { SAFE_SHUTDOWN_EVENTS+=(data-mount-precheck); }
 info() { PROFILE_HISTORY_EVENTS+=("$1"); }
 # shellcheck disable=SC2317,SC2329 # Test stub is invoked indirectly through migration dispatch.
@@ -613,12 +617,20 @@ nmcli() { DEFERRED_NETWORK_EVENTS+=(nmcli); }
 systemctl() { DEFERRED_NETWORK_EVENTS+=(systemctl); }
 # shellcheck disable=SC2317,SC2329 # Safety stub guards against unintended deferred network mutation.
 mount() { DEFERRED_NETWORK_EVENTS+=(mount); }
-# shellcheck disable=SC2317,SC2329 # Safety stub guards against unintended deferred network mutation.
-set_avahi_interfaces() { DEFERRED_NETWORK_EVENTS+=(avahi-interface); }
+# shellcheck disable=SC2317,SC2329 # Test stub is invoked indirectly through migration dispatch.
+m1s_configure_avahi_mdns() { DEFERRED_NETWORK_EVENTS+=(mdns-configure); }
+# shellcheck disable=SC2317,SC2329 # Test stub is invoked indirectly through migration dispatch.
+m1s_avahi_internal_health_check() { DEFERRED_NETWORK_EVENTS+=(mdns-health); }
 
 apply_0_5_27_to_0_5_28
 assert_eq "0.5.28 reports the validated host profile without blocking other environments; no immediate host mutation required." "${PROFILE_HISTORY_EVENTS[*]}" "0.5.28 history message describes non-blocking profile guidance"
 PROFILE_HISTORY_EVENTS=()
+
+apply_0_5_28_to_0_5_29
+assert_eq "0.5.29 repairs stale Avahi interface pins without stopping Docker or Umbrel." "${PROFILE_HISTORY_EVENTS[*]}" "0.5.29 migration message scopes the repair to mDNS"
+assert_eq "mdns-configure" "${DEFERRED_NETWORK_EVENTS[*]}" "0.5.29 migration delegates mDNS mutation to the shared helper"
+PROFILE_HISTORY_EVENTS=()
+DEFERRED_NETWORK_EVENTS=()
 
 precheck_0_5_26_to_0_5_27
 assert_eq "data-mount-precheck" "${SAFE_SHUTDOWN_EVENTS[*]}" "reliability migration fixture precheck stub is exercised before migration dispatch"
@@ -653,12 +665,22 @@ run_migration_step "0.5.27_to_0.5.28"
 assert_eq "data-mount-precheck" "${SAFE_SHUTDOWN_EVENTS[*]}" "host-profile reporting history step keeps the canonical data-mount precheck without host mutation"
 assert_eq "" "${DEFERRED_NETWORK_EVENTS[*]}" "host-profile reporting history step leaves deferred network ownership untouched"
 
+with_test_state
+SAFE_SHUTDOWN_EVENTS=()
+DEFERRED_NETWORK_EVENTS=()
+run_migration_step "0.5.28_to_0.5.29"
+assert_eq "data-mount-precheck" "${SAFE_SHUTDOWN_EVENTS[*]}" "mDNS repair keeps the canonical data-mount precheck"
+assert_eq "mdns-configure mdns-health systemctl" "${DEFERRED_NETWORK_EVENTS[*]}" "mDNS repair configures only Avahi services and runs its postcheck"
+assert_json_eq "$INSTALL_STATE_FILE" 'data["applied_steps"]' "0.5.28_to_0.5.29" "mDNS repair step records completion"
+
 eval "$original_precheck_common"
 eval "$original_info"
 eval "$original_install_safe_shutdown"
 eval "$original_postcheck_safe_shutdown"
-unset -f nmcli systemctl mount set_avahi_interfaces
-pass "v0.5.28 reliability migration fails closed on safe-shutdown setup while host-profile reporting remains non-blocking"
+eval "$original_m1s_configure_avahi_mdns"
+eval "$original_m1s_avahi_internal_health_check"
+unset -f nmcli systemctl mount
+pass "v0.5.29 migration preserves reliability behavior and adds the bounded mDNS repair"
 
 printf '[unit] run_migration_step failure paths\n'
 with_test_state
@@ -1668,7 +1690,7 @@ assert_transaction_rolled_back() {
 
 printf '[unit] 0.5.25 transaction and runtime-truth state\n'
 fake_transaction_hooks
-assert_eq "0.5.24_to_0.5.25" "${MIGRATIONS[$((${#MIGRATIONS[@]} - 4))]}" "0.5.25 transaction remains before the 0.5.26 history, reliability, and host-profile reporting steps"
+assert_eq "0.5.24_to_0.5.25" "${MIGRATIONS[$((${#MIGRATIONS[@]} - 5))]}" "0.5.25 transaction remains before the 0.5.26 history, reliability, host-profile, and mDNS repair steps"
 
 printf '[unit] 0.5.25 finalization baseline characterization\n'
 prepare_transaction_case
@@ -1698,8 +1720,8 @@ if [[ "${M1S_TEST_CHARACTERIZE_IMAGE_ONLY:-0}" -eq 1 ]]; then
   FAKE_UMBREL_IMAGE_REF="$UMBREL_IMAGE"
   FAKE_UMBREL_IMAGE_ID="$FAKE_CANDIDATE_IMAGE_ID"
   FAKE_UMBREL_STATE="exited"
-  finalize_install_state "0.5.28"
-  assert_json_eq "$INSTALL_STATE_FILE" 'data["version"]' "0.5.28" "image-only finalization currently publishes an image-correct stopped runtime"
+  finalize_install_state "0.5.29"
+  assert_json_eq "$INSTALL_STATE_FILE" 'data["version"]' "0.5.29" "image-only finalization currently publishes an image-correct stopped runtime"
   assert_json_eq "$INSTALL_STATE_FILE" 'data["image"]' "$UMBREL_IMAGE" "image-only finalization currently records the image-correct stopped runtime"
   pass "image-only finalization false-success path is characterized before runtime-truth coverage"
 fi
@@ -1712,13 +1734,13 @@ assert_finalization_failure_preserves_state() {
   local finalization_output="$TEST_TMPDIR/$label-finalization.out"
 
   cp "$INSTALL_STATE_FILE" "$before_state"
-  if finalize_install_state "0.5.28" >"$finalization_output" 2>&1; then
+  if finalize_install_state "0.5.29" >"$finalization_output" 2>&1; then
     fail "$label must reject finalization"
   fi
   cmp -s "$before_state" "$INSTALL_STATE_FILE" || fail "$label must leave install state byte-for-byte unchanged"
   assert_json_eq "$INSTALL_STATE_FILE" 'data["version"]' "0.5.24" "$label does not publish the target version"
   assert_json_eq "$INSTALL_STATE_FILE" 'data["host_version"]' "0.5.24" "$label does not publish the target host version"
-  assert_not_contains "0.5.28" "$(<"$finalization_output")" "$label reports a generalized finalization error"
+  assert_not_contains "0.5.29" "$(<"$finalization_output")" "$label reports a generalized finalization error"
   assert_contains "$expected_refusal" "$(<"$finalization_output")" "$label preserves the legacy safe refusal"
   assert_contains "predicate=$expected_predicate observed-state=not-canonical" "$(<"$finalization_output")" "$label reports generalized runtime truth"
 }
@@ -1776,7 +1798,7 @@ assert_runtime_truth_failure_preserves_state() {
   local publications_before="$FINALIZATION_PUBLICATION_CALLS"
 
   cp "$INSTALL_STATE_FILE" "$before_state"
-  if finalize_install_state "0.5.28" >"$finalization_output" 2>&1; then
+  if finalize_install_state "0.5.29" >"$finalization_output" 2>&1; then
     fail "$label must reject image-correct runtime drift"
   fi
   cmp -s "$before_state" "$INSTALL_STATE_FILE" || fail "$label must leave install state byte-for-byte unchanged"
@@ -1824,10 +1846,10 @@ for runtime_truth_case in \
 done
 
 prepare_canonical_runtime_truth_case
-finalize_install_state "0.5.28"
+finalize_install_state "0.5.29"
 assert_eq "1" "$FINALIZATION_PUBLICATION_CALLS" "canonical runtime truth publishes exactly once"
 assert_runtime_truth_reporter_read_only "canonical runtime truth"
-assert_json_eq "$INSTALL_STATE_FILE" 'data["version"]' "0.5.28" "canonical runtime truth finalization writes the target version"
+assert_json_eq "$INSTALL_STATE_FILE" 'data["version"]' "0.5.29" "canonical runtime truth finalization writes the target version"
 assert_json_eq "$INSTALL_STATE_FILE" 'data["image"]' "$UMBREL_IMAGE" "canonical runtime truth finalization records the verified image ref"
 assert_json_eq "$INSTALL_STATE_FILE" 'data["image_id"]' "$FAKE_CANDIDATE_IMAGE_ID" "canonical runtime truth finalization records the verified image ID"
 pass "full runtime-truth finalization rejects every image-correct drift class before publication"
@@ -2025,9 +2047,9 @@ cat > "$INSTALL_STATE_FILE" <<'JSON'
 JSON
 FAKE_UMBREL_IMAGE_REF="$UMBREL_IMAGE"
 FAKE_UMBREL_IMAGE_ID="$FAKE_CANDIDATE_IMAGE_ID"
-finalize_install_state "0.5.28"
-assert_json_eq "$INSTALL_STATE_FILE" 'data["version"]' "0.5.28" "stale public 0.5.26 state repairs the final version"
-assert_json_eq "$INSTALL_STATE_FILE" 'data["host_version"]' "0.5.28" "stale public 0.5.26 state repairs the host version"
+finalize_install_state "0.5.29"
+assert_json_eq "$INSTALL_STATE_FILE" 'data["version"]' "0.5.29" "stale public 0.5.26 state repairs the final version"
+assert_json_eq "$INSTALL_STATE_FILE" 'data["host_version"]' "0.5.29" "stale public 0.5.26 state repairs the host version"
 assert_json_eq "$INSTALL_STATE_FILE" 'data["image"]' "$UMBREL_IMAGE" "stale public 0.5.26 state repairs the live pinned image ref"
 assert_json_eq "$INSTALL_STATE_FILE" 'data["image_id"]' "$FAKE_CANDIDATE_IMAGE_ID" "stale public 0.5.26 state repairs the missing live image ID"
 
@@ -2069,32 +2091,41 @@ assert_finalization_failure_preserves_state "unresolved-pinned-image-id" "Refusi
 prepare_canonical_runtime_truth_case
 rm -f "$INSTALL_STATE_FILE"
 [[ ! -e "$INSTALL_STATE_FILE" ]] || fail "no-state finalization fixture must start without install state"
-finalize_install_state "0.5.28"
-assert_json_eq "$INSTALL_STATE_FILE" 'data["version"]' "0.5.28" "no-state finalization creates the target version"
-assert_json_eq "$INSTALL_STATE_FILE" 'data["host_version"]' "0.5.28" "no-state finalization creates the target host version"
+finalize_install_state "0.5.29"
+assert_json_eq "$INSTALL_STATE_FILE" 'data["version"]' "0.5.29" "no-state finalization creates the target version"
+assert_json_eq "$INSTALL_STATE_FILE" 'data["host_version"]' "0.5.29" "no-state finalization creates the target host version"
 assert_json_eq "$INSTALL_STATE_FILE" 'data["image"]' "$UMBREL_IMAGE" "no-state finalization creates the live pinned image ref"
 assert_json_eq "$INSTALL_STATE_FILE" 'data["image_id"]' "$FAKE_CANDIDATE_IMAGE_ID" "no-state finalization creates the live image ID"
 
 prepare_transaction_case
 original_precheck_common_canonical_install="$(declare -f precheck_common_canonical_install)"
+original_m1s_configure_avahi_mdns="$(declare -f m1s_configure_avahi_mdns)"
+original_m1s_avahi_internal_health_check="$(declare -f m1s_avahi_internal_health_check)"
 CHAIN_PRECHECK_CALLS=0
 precheck_common_canonical_install() { ((CHAIN_PRECHECK_CALLS += 1)); }
+m1s_configure_avahi_mdns() { :; }
+m1s_avahi_internal_health_check() { :; }
+# shellcheck disable=SC2329 # Invoked indirectly by the final migration postcheck.
+systemctl() { return 0; }
 precheck_common_canonical_install
 assert_eq "1" "$CHAIN_PRECHECK_CALLS" "chained migration fixture precheck stub is exercised before migration dispatch"
-for chained_step in 0.5.24_to_0.5.25 0.5.25_to_0.5.26 0.5.26_to_0.5.27 0.5.27_to_0.5.28; do
+for chained_step in 0.5.24_to_0.5.25 0.5.25_to_0.5.26 0.5.26_to_0.5.27 0.5.27_to_0.5.28 0.5.28_to_0.5.29; do
   run_migration_step "$chained_step" || fail "chained migration $chained_step must complete before finalization"
 done
-assert_eq "4" "$CHAIN_PRECHECK_CALLS" "chained migration dispatch exercises the common precheck for every applicable later migration"
-finalize_install_state "0.5.28"
+assert_eq "5" "$CHAIN_PRECHECK_CALLS" "chained migration dispatch exercises the common precheck for every applicable later migration"
+finalize_install_state "0.5.29"
 eval "$original_precheck_common_canonical_install"
-assert_json_eq "$INSTALL_STATE_FILE" 'data["version"]' "0.5.28" "0.5.24 to 0.5.28 chain publishes the final version only after runtime verification"
-assert_json_eq "$INSTALL_STATE_FILE" 'data["host_version"]' "0.5.28" "0.5.24 to 0.5.28 chain publishes the final host version"
-assert_json_eq "$INSTALL_STATE_FILE" 'data["image"]' "$UMBREL_IMAGE" "0.5.24 to 0.5.28 chain records the live pinned image ref"
-assert_json_eq "$INSTALL_STATE_FILE" 'data["image_id"]' "$FAKE_CANDIDATE_IMAGE_ID" "0.5.24 to 0.5.28 chain records the resolved live image ID"
+eval "$original_m1s_configure_avahi_mdns"
+eval "$original_m1s_avahi_internal_health_check"
+unset -f systemctl
+assert_json_eq "$INSTALL_STATE_FILE" 'data["version"]' "0.5.29" "0.5.24 to 0.5.29 chain publishes the final version only after runtime verification"
+assert_json_eq "$INSTALL_STATE_FILE" 'data["host_version"]' "0.5.29" "0.5.24 to 0.5.29 chain publishes the final host version"
+assert_json_eq "$INSTALL_STATE_FILE" 'data["image"]' "$UMBREL_IMAGE" "0.5.24 to 0.5.29 chain records the live pinned image ref"
+assert_json_eq "$INSTALL_STATE_FILE" 'data["image_id"]' "$FAKE_CANDIDATE_IMAGE_ID" "0.5.24 to 0.5.29 chain records the resolved live image ID"
 
 before_rerun_state="$TEST_TMPDIR/finalized-before-rerun.json"
 cp "$INSTALL_STATE_FILE" "$before_rerun_state"
-finalize_install_state "0.5.28"
+finalize_install_state "0.5.29"
 assert_json_semantically_equal_excluding_updated_at "$before_rerun_state" "$INSTALL_STATE_FILE" "second successful finalization is semantically idempotent except timestamps"
 
 prepare_transaction_case
@@ -2104,7 +2135,7 @@ dry_run_state="$TEST_TMPDIR/dry-run-before.json"
 cp "$INSTALL_STATE_FILE" "$dry_run_state"
 dry_run_docker_log="$(fake_docker_log_text)"
 DRY_RUN=1
-dry_run_output="$(finalize_install_state "0.5.28")"
+dry_run_output="$(finalize_install_state "0.5.29")"
 DRY_RUN=0
 assert_contains "skips live Umbrel runtime verification and final state publication" "$dry_run_output" "dry-run finalization must not claim runtime verification"
 cmp -s "$dry_run_state" "$INSTALL_STATE_FILE" || fail "dry-run finalization must not write install state"
@@ -2244,7 +2275,7 @@ if [[ "${M1S_TEST_RUNTIME_TRUTH_QA:-0}" -eq 1 ]]; then
   printf '[qa] runtime-truth finalization sourced-shell seam\n'
   prepare_canonical_runtime_truth_case
   set +e
-  finalize_install_state "0.5.28"
+  finalize_install_state "0.5.29"
   canonical_status=$?
   set -e
   assert_eq "0" "$canonical_status" "canonical sourced-shell finalization must succeed"
@@ -2257,7 +2288,7 @@ if [[ "${M1S_TEST_RUNTIME_TRUTH_QA:-0}" -eq 1 ]]; then
   noncanonical_before_sha="$(sha256sum "$INSTALL_STATE_FILE" | cut -d' ' -f1)"
   noncanonical_output="$TEST_TMPDIR/qa-noncanonical-finalization.out"
   set +e
-  finalize_install_state "0.5.28" >"$noncanonical_output" 2>&1
+  finalize_install_state "0.5.29" >"$noncanonical_output" 2>&1
   noncanonical_status=$?
   set -e
   noncanonical_after_sha="$(sha256sum "$INSTALL_STATE_FILE" | cut -d' ' -f1)"

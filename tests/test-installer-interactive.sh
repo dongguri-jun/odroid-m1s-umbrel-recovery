@@ -882,7 +882,7 @@ assert_patch_fails_without_index_mutation() {
 }
 
 assert_hashed_shutdown_patch 'upstream error-gated 30s branch' "$source_region"
-assert_hashed_shutdown_patch 'public v0.5.28 status-only 30s branch' "$public_region"
+assert_hashed_shutdown_patch 'public v0.5.29 status-only 30s branch' "$public_region"
 
 assert_vite_modulepreload_shutdown_patch() {
   reset_shutdown_ui_fixture
@@ -1123,7 +1123,7 @@ pass "Installer writes a deterministic 75s hashed shutdown UI asset and fails cl
 
 record_install_state
 state_text="$(<"$INSTALL_STATE_FILE")"
-assert_contains "$state_text" '"version": "0.5.28"' "Success state must declare the managed 0.5.28 version"
+assert_contains "$state_text" '"version": "0.5.29"' "Success state must declare the managed 0.5.29 version"
 assert_contains "$state_text" "\"image\": \"$EXPECTED_UMBREL_IMAGE\"" "Success state must use the live exact image ref"
 assert_contains "$state_text" "\"image_id\": \"$DEFAULT_RESOLVED_UMBREL_IMAGE_ID\"" "Success state must use Docker's resolved local image ID"
 

@@ -17,7 +17,7 @@ set -Eeuo pipefail
 #   --version      Print script version and exit.
 #   -h, --help     Show this help.
 
-SCRIPT_VERSION="0.5.28"
+SCRIPT_VERSION="0.5.29"
 INSTALL_STATE_DIR="/etc/umbrel-recovery"
 INSTALL_STATE_FILE="$INSTALL_STATE_DIR/installed.json"
 DATA_DIR="/mnt/fullnode"
@@ -42,6 +42,10 @@ ALL_KNOWN_SYSTEM_CONTAINERS=("${LEGACY_SYSTEM_CONTAINERS[@]}" "${CANDIDATE_SYSTE
 
 # shellcheck source=scripts/m1s-support-policy.sh
 source "$(dirname "${BASH_SOURCE[0]}")/m1s-support-policy.sh"
+# shellcheck source=scripts/m1s-backup-retention.sh
+source "$(dirname "${BASH_SOURCE[0]}")/m1s-backup-retention.sh"
+# shellcheck source=scripts/m1s-avahi-mdns.sh
+source "$(dirname "${BASH_SOURCE[0]}")/m1s-avahi-mdns.sh"
 TOR_PROXY_IMAGE="ghcr.io/getumbrel/tor:0.4.9.11"
 CANDIDATE_READINESS_ATTEMPTS=30
 CANDIDATE_RETRY_DELAY_SECONDS=2
@@ -105,6 +109,7 @@ MIGRATIONS=(
   "0.5.25_to_0.5.26"
   "0.5.26_to_0.5.27"
   "0.5.27_to_0.5.28"
+  "0.5.28_to_0.5.29"
 )
 
 log() {
@@ -530,7 +535,7 @@ ensure_fullnode_mount_from_state() {
     if [[ "$mode" == "check" || "$DRY_RUN" -eq 1 ]]; then
       echo "[DRY-RUN] backup /etc/fstab and append UUID=$target_uuid $DATA_DIR ext4 $FULLNODE_FSTAB_OPTIONS 0 0"
     else
-      cp "$FSTAB_FILE" "$FSTAB_FILE.bak.update-repair.$(date +%Y%m%d%H%M%S)"
+      m1s_backup_file_with_retention "$FSTAB_FILE" '.bak.update-repair' '+%Y%m%d%H%M%S'
       printf 'UUID=%s\t%s\text4\t%s\t0\t0\n' "$target_uuid" "$DATA_DIR" "$FULLNODE_FSTAB_OPTIONS" >> "$FSTAB_FILE"
       if [[ "$FSTAB_FILE" == "/etc/fstab" ]]; then
         systemctl daemon-reload || true
@@ -566,7 +571,7 @@ nvme_cmdline_patch_flash_kernel_defaults() {
     echo "[DRY-RUN] append nvme_core.default_ps_max_latency_us=0 pcie_aspm=off pcie_port_pm=off to LINUX_KERNEL_CMDLINE"
     echo "[DRY-RUN] flash-kernel"
   elif [[ -f "$flash_kernel_defaults" ]]; then
-    run_cmd cp "$flash_kernel_defaults" "$flash_kernel_defaults.bak.$(date +%s)"
+    m1s_backup_file_with_retention "$flash_kernel_defaults" '.bak' '+%s'
     FLASH_KERNEL_FILE="$flash_kernel_defaults" python3 - <<'PY'
 from pathlib import Path
 import os
@@ -613,7 +618,7 @@ nvme_cmdline_patch_extlinux() {
   if [[ "$DRY_RUN" -eq 1 ]]; then
     echo "[DRY-RUN] append nvme_core.default_ps_max_latency_us=0 pcie_aspm=off pcie_port_pm=off to $extlinux_conf"
   elif [[ -f "$extlinux_conf" ]]; then
-    cp "$extlinux_conf" "$extlinux_conf.bak.$(date +%s)"
+    m1s_backup_file_with_retention "$extlinux_conf" '.bak' '+%s'
     python3 - "$extlinux_conf" <<'PY'
 import sys
 from pathlib import Path
@@ -665,7 +670,7 @@ remove_pwm_fan_config() {
     return 0
   fi
 
-  run_cmd cp "$config_ini" "$config_ini.bak.$(date +%s)"
+  m1s_backup_file_with_retention "$config_ini" '.bak' '+%s'
   result="$(PWM_CONFIG_FILE="$config_ini" python3 - <<'PY'
 from pathlib import Path
 import os
@@ -856,12 +861,11 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# Patch: 0.3.0 — restrict avahi-daemon to eth0 so Docker veth interfaces do
-# not pollute mDNS responses. Also make sure avahi is installed.
+# Patch: 0.3.0 — install Avahi and apply the current managed mDNS policy.
 # ---------------------------------------------------------------------------
 
 patch_to_0_3_0() {
-  info "[0.3.0] Restricting avahi-daemon to eth0"
+  info "[0.3.0] Applying the managed Avahi and umbrel.local configuration"
 
   # Ensure avahi + libnss-mdns are present. If the 0.2.0 installer already
   # added them this is a no-op.
@@ -870,58 +874,15 @@ patch_to_0_3_0() {
     if [[ "$DRY_RUN" -eq 1 ]]; then
       echo "[DRY-RUN] apt-get install -y avahi-daemon avahi-utils libnss-mdns"
     else
-      DEBIAN_FRONTEND=noninteractive apt-get install -y \
-        avahi-daemon avahi-utils libnss-mdns >/dev/null 2>&1 || \
-        warn "Failed to install avahi packages (continuing)"
+      if ! DEBIAN_FRONTEND=noninteractive apt-get install -y \
+        avahi-daemon avahi-utils libnss-mdns >/dev/null 2>&1; then
+        err "[0.3.0] Failed to install Avahi packages"
+        return 1
+      fi
     fi
   fi
 
-  local conf="/etc/avahi/avahi-daemon.conf"
-  if [[ ! -f "$conf" ]]; then
-    warn "[0.3.0] $conf not found; skipping avahi hardening"
-    return 0
-  fi
-
-  if grep -qE '^allow-interfaces=' "$conf"; then
-    info "[0.3.0] avahi allow-interfaces already set; nothing to do"
-    return 0
-  fi
-
-  if [[ "$DRY_RUN" -eq 1 ]]; then
-    echo "[DRY-RUN] backup $conf"
-    echo "[DRY-RUN] set allow-interfaces=eth0 in $conf"
-    echo "[DRY-RUN] systemctl restart avahi-daemon"
-    return 0
-  fi
-
-  cp "$conf" "$conf.bak.$(date +%s)"
-  sed -i 's/^#allow-interfaces=.*/allow-interfaces=eth0/' "$conf"
-  if ! grep -qE '^allow-interfaces=' "$conf"; then
-    # Template did not have the commented key; insert under [server].
-    python3 - "$conf" <<'PY'
-import sys, re
-from pathlib import Path
-p = Path(sys.argv[1])
-text = p.read_text()
-if re.search(r'^allow-interfaces=', text, flags=re.M):
-    sys.exit(0)
-text = re.sub(r'(\[server\]\n)', r'\1allow-interfaces=eth0\n', text, count=1)
-p.write_text(text)
-PY
-  fi
-  systemctl restart avahi-daemon || warn "Failed to restart avahi-daemon (continuing)"
-  info "[0.3.0] avahi-daemon is now bound to eth0 only"
-}
-
-detect_lan_interface() {
-  local iface=""
-  iface="$(ip route show default 2>/dev/null | awk '/default/ {print $5; exit}' || true)"
-  if [[ -n "$iface" && "$iface" != lo && "$iface" != docker* && "$iface" != br-* && "$iface" != veth* && "$iface" != tailscale* && "$iface" != virbr* && "$iface" != zt* ]]; then
-    printf '%s\n' "$iface"
-    return 0
-  fi
-  iface="$(ip -o link show 2>/dev/null | awk -F': ' '$2 !~ /^(lo|docker.*|br-.*|veth.*|tailscale.*|virbr.*|zt.*)$/ {print $2; exit}' || true)"
-  printf '%s\n' "$iface"
+  m1s_configure_avahi_mdns
 }
 
 ensure_nvme_diagnostic_tools() {
@@ -1067,11 +1028,7 @@ EOF
 }
 
 patch_to_0_4_0() {
-  local conf="/etc/avahi/avahi-daemon.conf"
-  local alias_script="/usr/local/bin/avahi-publish-umbrel"
-  local alias_service="/etc/systemd/system/avahi-alias-umbrel.service"
   local extlinux_conf="/boot/extlinux/extlinux.conf"
-  local lan_interface
   local umbrel_hostname="umbrel"
   local current_hostname
 
@@ -1093,83 +1050,15 @@ patch_to_0_4_0() {
     info "[0.4.0] Hostname already $umbrel_hostname; skipping rename"
   fi
 
-  lan_interface="$(detect_lan_interface)"
-  [[ -n "$lan_interface" ]] || lan_interface="eth0"
-  info "[0.4.0] Hardening avahi-daemon and umbrel.local alias on $lan_interface"
-
-  if [[ "$DRY_RUN" -eq 1 ]]; then
-    echo "[DRY-RUN] set allow-interfaces=$lan_interface in $conf"
-    echo "[DRY-RUN] rewrite $alias_script"
-    echo "[DRY-RUN] rewrite $alias_service"
-    echo "[DRY-RUN] systemctl enable --now avahi-daemon avahi-alias-umbrel.service"
-    return 0
-  fi
-
-  if [[ -f "$conf" ]]; then
-    cp "$conf" "$conf.bak.$(date +%s)"
-    python3 - "$conf" "$lan_interface" <<'PY'
-import re
-import sys
-from pathlib import Path
-path = Path(sys.argv[1])
-iface = sys.argv[2]
-text = path.read_text()
-if re.search(r'^allow-interfaces=', text, flags=re.M):
-    text = re.sub(r'^allow-interfaces=.*$', f'allow-interfaces={iface}', text, flags=re.M)
-elif re.search(r'^#allow-interfaces=', text, flags=re.M):
-    text = re.sub(r'^#allow-interfaces=.*$', f'allow-interfaces={iface}', text, flags=re.M)
-else:
-    text = re.sub(r'(\[server\]\n)', rf'\1allow-interfaces={iface}\n', text, count=1)
-path.write_text(text)
-PY
-  fi
-
-  cat > "$alias_script" <<'ALIASSCRIPT'
-#!/usr/bin/env bash
-set -eu
-while true; do
-  IFACE="$(ip route show default 2>/dev/null | awk '/default/ {print $5; exit}' || true)"
-  if [[ -z "$IFACE" ]]; then
-    sleep 5
-    continue
-  fi
-  IP="$(ip -4 -o addr show dev "$IFACE" scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1)"
-  if [[ -n "$IP" ]]; then
-    exec avahi-publish-address -R umbrel.local "$IP"
-  fi
-  sleep 5
-done
-ALIASSCRIPT
-  chmod 0755 "$alias_script"
-
-  cat > "$alias_service" <<'SERVICEUNIT'
-[Unit]
-Description=Publish umbrel.local mDNS alias
-After=avahi-daemon.service network-online.target
-Requires=avahi-daemon.service
-Wants=network-online.target
-
-[Service]
-Type=simple
-ExecStart=/usr/local/bin/avahi-publish-umbrel
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-SERVICEUNIT
-
-  systemctl daemon-reload
-  systemctl enable --now avahi-daemon >/dev/null 2>&1 || warn "[0.4.0] Failed to enable/start avahi-daemon"
-  systemctl restart avahi-daemon || warn "[0.4.0] Failed to restart avahi-daemon"
-  systemctl enable --now avahi-alias-umbrel.service >/dev/null 2>&1 || warn "[0.4.0] Failed to enable/start avahi-alias-umbrel.service"
+  info "[0.4.0] Applying the managed Avahi and umbrel.local configuration"
+  m1s_configure_avahi_mdns || return 1
 
   # On ODROID M1S the u-boot loader reads /boot/extlinux/extlinux.conf directly
   # for the kernel cmdline, so NVMe/PCIe hardening parameters in
   # /etc/default/flash-kernel are not applied on the next boot. Patch the
   # extlinux append line so the hardening actually takes effect.
   if [[ -f "$extlinux_conf" ]]; then
-    cp "$extlinux_conf" "$extlinux_conf.bak.$(date +%s)"
+    m1s_backup_file_with_retention "$extlinux_conf" '.bak' '+%s'
     python3 - "$extlinux_conf" <<'PY'
 import sys
 from pathlib import Path
@@ -1224,7 +1113,7 @@ APT_CONF
   if [[ "$docker_needs_rewrite" -eq 1 ]]; then
     mkdir -p /etc/docker
     if [[ -f "$docker_json" ]]; then
-      cp "$docker_json" "$docker_json.bak.$(date +%s)"
+      m1s_backup_file_with_retention "$docker_json" '.bak' '+%s'
     fi
     cat > "$docker_json" <<'DOCKER_JSON'
 {
@@ -1340,7 +1229,7 @@ ensure_host_data_alias() {
   elif [[ "$mode" == "check" || "$DRY_RUN" -eq 1 ]]; then
     echo "[DRY-RUN] backup $FSTAB_FILE and append $DATA_DIR $HOST_DATA_ALIAS none $DATA_ALIAS_FSTAB_OPTIONS 0 0"
   else
-    cp "$FSTAB_FILE" "$FSTAB_FILE.bak.data-alias.$(date +%Y%m%d%H%M%S)"
+    m1s_backup_file_with_retention "$FSTAB_FILE" '.bak.data-alias' '+%Y%m%d%H%M%S'
     printf '%s\t%s\tnone\t%s\t0\t0\n' "$DATA_DIR" "$HOST_DATA_ALIAS" "$DATA_ALIAS_FSTAB_OPTIONS" >> "$FSTAB_FILE"
     if [[ "$FSTAB_FILE" == "/etc/fstab" ]]; then
       systemctl daemon-reload || true
@@ -3319,6 +3208,17 @@ postcheck_0_5_26_to_0_5_27() { postcheck_umbrel_safe_shutdown; }
 precheck_0_5_27_to_0_5_28() { precheck_common_canonical_install; }
 apply_0_5_27_to_0_5_28() { info "0.5.28 reports the validated host profile without blocking other environments; no immediate host mutation required."; }
 postcheck_0_5_27_to_0_5_28() { return 0; }
+
+precheck_0_5_28_to_0_5_29() { precheck_common_canonical_install; }
+apply_0_5_28_to_0_5_29() {
+  info "0.5.29 repairs stale Avahi interface pins without stopping Docker or Umbrel."
+  m1s_configure_avahi_mdns
+}
+postcheck_0_5_28_to_0_5_29() {
+  [[ "$DRY_RUN" -eq 1 ]] && return 0
+  m1s_avahi_internal_health_check || return 1
+  systemctl is-enabled avahi-alias-umbrel.service >/dev/null 2>&1 || { err "avahi-alias-umbrel.service is not enabled after mDNS repair"; return 1; }
+}
 
 # ---------------------------------------------------------------------------
 # Main flow

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SCRIPT_VERSION="0.5.28"
-INSTALL_STATE_VERSION="0.5.28"
+SCRIPT_VERSION="0.5.29"
+INSTALL_STATE_VERSION="0.5.29"
 INSTALL_STATE_DIR="/etc/umbrel-recovery"
 INSTALL_STATE_FILE="$INSTALL_STATE_DIR/installed.json"
 PREINSTALL_RESUME_STATE_FILE="$INSTALL_STATE_DIR/preinstall-resume.json"
@@ -33,6 +33,8 @@ EXISTING_TARGET_MOUNT=""
 TARGET_EXISTING_PARTITIONS=()
 TARGET_MOUNT_PATHS=()
 TARGET_SWAP_PATHS=()
+DESTRUCTIVE_WINDOW_MASKED_UNITS=()
+DESTRUCTIVE_WINDOW_ACTIVE=0
 PRESERVED_PATHS=(
   /var/lib/fullnode-mount-guard
   /usr/local/sbin/fullnode-mount-guard.sh
@@ -60,6 +62,10 @@ SCRIPT_PATH_ABS=""
 
 # shellcheck source=scripts/m1s-support-policy.sh
 source "$(dirname "${BASH_SOURCE[0]}")/m1s-support-policy.sh"
+# shellcheck source=scripts/m1s-backup-retention.sh
+source "$(dirname "${BASH_SOURCE[0]}")/m1s-backup-retention.sh"
+# shellcheck source=scripts/m1s-avahi-mdns.sh
+source "$(dirname "${BASH_SOURCE[0]}")/m1s-avahi-mdns.sh"
 
 log() {
   printf '[%s] %s\n' "$1" "$2"
@@ -220,7 +226,19 @@ resume_apt_automation() {
 
 cleanup_on_exit() {
   local exit_code=$?
-  resume_apt_automation
+  trap - EXIT
+
+  if [[ "$DESTRUCTIVE_WINDOW_ACTIVE" -eq 1 ]]; then
+    if [[ "$exit_code" -ne 0 && "$DRY_RUN" -eq 0 ]]; then
+      err "Docker was deliberately left stopped so Umbrel data cannot be written to the eMMC root filesystem instead of the SSD."
+      err "Check /mnt/fullnode, then reboot or rerun the installer."
+    fi
+    if ! leave_destructive_storage_window; then
+      warn "Failed to remove one or more runtime masks; reboot before retrying the installer."
+    fi
+  fi
+
+  resume_apt_automation || true
   return "$exit_code"
 }
 
@@ -424,6 +442,140 @@ stop_target_busy_processes() {
     echo "[DRY-RUN] sleep 1"
   else
     sleep 1
+  fi
+}
+
+enter_destructive_storage_window() {
+  local units=(
+    docker.service
+    docker.socket
+    fullnode-mount-guard.timer
+    fullnode-mount-guard.service
+    m1s-umbrel-autostart.service
+  )
+  local unit
+  local mask_failed=0
+
+  info "Holding down remount-capable units for the destructive storage window"
+  DESTRUCTIVE_WINDOW_MASKED_UNITS=()
+  DESTRUCTIVE_WINDOW_ACTIVE=1
+  for unit in "${units[@]}"; do
+    systemctl cat "$unit" >/dev/null 2>&1 || continue
+    if run_cmd systemctl mask --runtime "$unit"; then
+      DESTRUCTIVE_WINDOW_MASKED_UNITS+=("$unit")
+    else
+      err "Failed to apply runtime mask for destructive storage window unit: $unit"
+      mask_failed=1
+    fi
+  done
+
+  run_cmd systemctl stop "${units[@]}" || true
+  [[ "$mask_failed" -eq 0 ]]
+}
+
+leave_destructive_storage_window() {
+  local unit
+  local unmask_failed=0
+
+  [[ "$DESTRUCTIVE_WINDOW_ACTIVE" -eq 1 ]] || return 0
+  for unit in "${DESTRUCTIVE_WINDOW_MASKED_UNITS[@]}"; do
+    if ! run_cmd systemctl unmask --runtime "$unit"; then
+      err "Failed to remove runtime mask from destructive storage window unit: $unit"
+      unmask_failed=1
+    fi
+  done
+
+  [[ "$unmask_failed" -eq 0 ]] || return 1
+  DESTRUCTIVE_WINDOW_MASKED_UNITS=()
+  DESTRUCTIVE_WINDOW_ACTIVE=0
+}
+
+assert_raw_disk_exclusive() {
+  local disk_path="$1"
+  local probe_status=0
+
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    printf '[DRY-RUN] verify exclusive open O_RDONLY|O_EXCL|O_CLOEXEC for %q\n' "$disk_path"
+    return 0
+  fi
+
+  if [[ -n "${M1S_EXCLUSIVE_PROBE_COMMAND:-}" ]]; then
+    "$M1S_EXCLUSIVE_PROBE_COMMAND" "$disk_path" || probe_status=$?
+  else
+    python3 - "$disk_path" <<'PY' || probe_status=$?
+import errno
+import os
+import sys
+
+try:
+    fd = os.open(sys.argv[1], os.O_RDONLY | os.O_EXCL | os.O_CLOEXEC)
+except OSError as exc:
+    if exc.errno == errno.EBUSY:
+        raise SystemExit(75)
+    raise
+else:
+    os.close(fd)
+PY
+  fi
+
+  [[ "$probe_status" -eq 0 ]] && return 0
+  if [[ "$probe_status" -eq 75 ]]; then
+    err "Raw disk $disk_path was re-claimed after cleanup; refusing to repartition a device that is in use."
+    info "Raw-disk exclusivity diagnostics"
+    if command -v findmnt >/dev/null 2>&1; then
+      findmnt -R /mnt/fullnode || true
+      findmnt -R /data || true
+      findmnt -S "$TARGET_PARTITION" || true
+    fi
+    if command -v swapon >/dev/null 2>&1; then
+      swapon --show || true
+    fi
+    if command -v fuser >/dev/null 2>&1; then
+      fuser -vm "$disk_path" "$TARGET_PARTITION" "$DATA_DIR" || true
+    fi
+    if command -v systemctl >/dev/null 2>&1; then
+      systemctl is-active \
+        docker.service \
+        docker.socket \
+        fullnode-mount-guard.timer \
+        fullnode-mount-guard.service \
+        m1s-umbrel-autostart.service \
+        mnt-fullnode.mount \
+        data.mount \
+        mnt-fullnode-swapfile.swap || true
+    fi
+    exit 1
+  fi
+
+  err "Exclusive-open probe failed unexpectedly for raw disk $disk_path (exit status $probe_status)."
+  exit 1
+}
+
+repartition_raw_disk() {
+  info "Creating a fresh GPT partition on raw SSD $TARGET_DISK_PATH"
+  info "Re-checking for stale SSD holders immediately before repartitioning the raw NVMe disk"
+  stop_target_busy_processes
+  if ! command -v sfdisk >/dev/null 2>&1; then
+    err "sfdisk is required to create a partition on raw SSD targets, but it is not installed."
+    exit 1
+  fi
+  assert_raw_disk_exclusive "$TARGET_DISK_PATH"
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    run_shell "printf ',,L\n' | sfdisk --label gpt '$TARGET_DISK_PATH'"
+  else
+    printf ',,L\n' | sfdisk --label gpt "$TARGET_DISK_PATH"
+  fi
+  if command -v partprobe >/dev/null 2>&1; then
+    run_cmd partprobe "$TARGET_DISK_PATH"
+  fi
+  if command -v udevadm >/dev/null 2>&1; then
+    run_cmd udevadm settle
+  fi
+  if [[ "$DRY_RUN" -eq 0 ]]; then
+    if ! wait_for_block_device "$TARGET_PARTITION" 15; then
+      err "Partition creation completed but target partition did not appear: $TARGET_PARTITION"
+      exit 1
+    fi
   fi
 }
 
@@ -699,7 +851,7 @@ nvme_cmdline_patch_flash_kernel_defaults() {
     echo "[DRY-RUN] append nvme_core.default_ps_max_latency_us=0 pcie_aspm=off pcie_port_pm=off to LINUX_KERNEL_CMDLINE"
     echo "[DRY-RUN] flash-kernel"
   elif [[ -f "$flash_kernel_defaults" ]]; then
-    run_cmd cp "$flash_kernel_defaults" "$flash_kernel_defaults.bak.$(date +%s)"
+    m1s_backup_file_with_retention "$flash_kernel_defaults" '.bak' '+%s'
     FLASH_KERNEL_FILE="$flash_kernel_defaults" python3 - <<'PY'
 from pathlib import Path
 import os
@@ -746,7 +898,7 @@ nvme_cmdline_patch_extlinux() {
   if [[ "$DRY_RUN" -eq 1 ]]; then
     echo "[DRY-RUN] append nvme_core.default_ps_max_latency_us=0 pcie_aspm=off pcie_port_pm=off to $extlinux_conf"
   elif [[ -f "$extlinux_conf" ]]; then
-    cp "$extlinux_conf" "$extlinux_conf.bak.$(date +%s)"
+    m1s_backup_file_with_retention "$extlinux_conf" '.bak' '+%s'
     python3 - "$extlinux_conf" <<'PY'
 import sys
 from pathlib import Path
@@ -1003,24 +1155,6 @@ maybe_recover_missing_nvme() {
   exit 0
 }
 
-detect_lan_interface() {
-  local iface=""
-  iface="$(ip route show default 2>/dev/null | awk '/default/ {print $5; exit}' || true)"
-  if [[ -n "$iface" && "$iface" != lo && "$iface" != docker* && "$iface" != br-* && "$iface" != veth* && "$iface" != tailscale* && "$iface" != virbr* && "$iface" != zt* ]]; then
-    printf '%s\n' "$iface"
-    return 0
-  fi
-
-  iface="$(ip -o link show 2>/dev/null | awk -F': ' '$2 !~ /^(lo|docker.*|br-.*|veth.*|tailscale.*|virbr.*|zt.*)$/ {print $2; exit}' || true)"
-  printf '%s\n' "$iface"
-}
-
-interface_ipv4() {
-  local iface="$1"
-  [[ -n "$iface" ]] || return 1
-  ip -4 -o addr show dev "$iface" scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1
-}
-
 ufw_is_active() {
   command -v ufw >/dev/null 2>&1 || return 1
   ufw status 2>/dev/null | grep -Fxq "Status: active"
@@ -1060,7 +1194,7 @@ remove_pwm_fan_config() {
     return 0
   fi
 
-  run_cmd cp "$config_ini" "$config_ini.bak.$(date +%s)"
+  m1s_backup_file_with_retention "$config_ini" '.bak' '+%s'
   result="$(PWM_CONFIG_FILE="$config_ini" python3 - <<'PY'
 from pathlib import Path
 import os
@@ -1154,13 +1288,18 @@ unmount_all_layers_at_path() {
 report_install_health() {
   local lan_iface="${1:-}"
   local lan_ip="${2:-}"
-  local current_data_source docker_state avahi_state alias_state container_state local_resolve_state ip_http_state local_http_state
+  local current_data_source docker_state avahi_state alias_state container_state local_resolve_state ip_http_state local_http_state avahi_config_state
 
   current_data_source="$(get_exact_data_mount_source)"
   docker_state="$(systemctl is-active docker 2>/dev/null || true)"
   avahi_state="$(systemctl is-active avahi-daemon 2>/dev/null || true)"
   alias_state="$(systemctl is-active avahi-alias-umbrel.service 2>/dev/null || true)"
   container_state="$(docker inspect --format='{{.State.Status}}' umbrel 2>/dev/null || true)"
+  if m1s_avahi_internal_health_check; then
+    avahi_config_state="clean"
+  else
+    avahi_config_state="failed"
+  fi
 
   if getent hosts umbrel.local >/dev/null 2>&1; then
     local_resolve_state="ok"
@@ -1188,6 +1327,7 @@ report_install_health() {
   info "- Umbrel container: ${container_state:-unknown}"
   info "- avahi-daemon: ${avahi_state:-unknown}"
   info "- avahi alias service: ${alias_state:-unknown}"
+  info "- mDNS config self-check: ${avahi_config_state:-unknown}"
   info "- umbrel.local host resolve: ${local_resolve_state:-unknown}"
   info "- HTTP by device IP: ${ip_http_state:-unknown}"
   info "- HTTP by umbrel.local: ${local_http_state:-unknown}"
@@ -1204,14 +1344,20 @@ report_install_health() {
     err "Health check failed: Umbrel container is not running."
     exit 1
   fi
+  if [[ "$avahi_config_state" != "clean" ]]; then
+    err "Health check failed: the managed mDNS configuration is not canonical."
+    exit 1
+  fi
   if [[ "$avahi_state" != "active" ]]; then
     warn "avahi-daemon is not active. umbrel.local may fail; use http://${lan_ip:-<device-ip>} instead."
   fi
   if [[ "$alias_state" != "active" ]]; then
     warn "avahi-alias-umbrel.service is not active. umbrel.local may fail; use http://${lan_ip:-<device-ip>} instead."
   fi
-  if [[ "$local_http_state" != "ok" ]]; then
-    warn "umbrel.local did not answer from this host. Client devices may need to use http://${lan_ip:-<device-ip>} instead."
+  if [[ "$local_http_state" != "ok" && "$ip_http_state" == "ok" ]]; then
+    warn "External mDNS resolution failed while HTTP by device IP succeeded. Check the client VPN, router multicast filtering, or client resolver; use http://${lan_ip:-<device-ip>} meanwhile."
+  elif [[ "$local_http_state" != "ok" ]]; then
+    warn "umbrel.local and the device-IP HTTP check did not answer from this host; use http://${lan_ip:-<device-ip>} for follow-up diagnostics."
   fi
 }
 
@@ -2530,7 +2676,7 @@ for user in "${USERS_TO_REMOVE[@]}"; do
 done
 
 info "Backing up /etc/fstab before modification"
-run_cmd cp /etc/fstab "/etc/fstab.bak.$(date +%s)"
+m1s_backup_file_with_retention /etc/fstab '.bak' '+%s'
 
 info "Cleaning fstab entries that belong to RaspiBlitz eMMC setup"
 TARGET_SWAP_PATHS_STR="${TARGET_SWAP_PATHS[*]}"
@@ -2600,6 +2746,10 @@ if new != text:
     os.rename(tmp, str(fstab))
 PY
 fi
+
+enter_destructive_storage_window
+run_cmd systemctl daemon-reload
+run_cmd systemctl stop mnt-fullnode-swapfile.swap data.mount mnt-fullnode.mount || true
 
 info "Formatting and mounting SSD for Umbrel data"
 if [[ "$DRY_RUN" -eq 1 ]]; then
@@ -2703,30 +2853,7 @@ else
 fi
 
 if [[ "$TARGET_MODE" == "raw-disk" ]]; then
-  info "Creating a fresh GPT partition on raw SSD $TARGET_DISK_PATH"
-  info "Re-checking for stale SSD holders immediately before repartitioning the raw NVMe disk"
-  stop_target_busy_processes
-  if ! command -v sfdisk >/dev/null 2>&1; then
-    err "sfdisk is required to create a partition on raw SSD targets, but it is not installed."
-    exit 1
-  fi
-  if [[ "$DRY_RUN" -eq 1 ]]; then
-    run_shell "printf ',,L\n' | sfdisk --label gpt '$TARGET_DISK_PATH'"
-  else
-    printf ',,L\n' | sfdisk --label gpt "$TARGET_DISK_PATH"
-  fi
-  if command -v partprobe >/dev/null 2>&1; then
-    run_cmd partprobe "$TARGET_DISK_PATH"
-  fi
-  if command -v udevadm >/dev/null 2>&1; then
-    run_cmd udevadm settle
-  fi
-  if [[ "$DRY_RUN" -eq 0 ]]; then
-    if ! wait_for_block_device "$TARGET_PARTITION" 15; then
-      err "Partition creation completed but target partition did not appear: $TARGET_PARTITION"
-      exit 1
-    fi
-  fi
+  repartition_raw_disk
 fi
 
 run_cmd mkfs.ext4 -F "$TARGET_PARTITION"
@@ -2887,11 +3014,15 @@ info "Configuring Docker log rotation"
 DOCKER_DAEMON_JSON="/etc/docker/daemon.json"
 if [[ "$DRY_RUN" -eq 1 ]]; then
   echo "[DRY-RUN] write $DOCKER_DAEMON_JSON with log-driver json-file, max-size=10m, max-file=5"
-  echo "[DRY-RUN] systemctl restart docker"
+  if [[ "$DESTRUCTIVE_WINDOW_ACTIVE" -eq 1 ]]; then
+    echo "[DRY-RUN] defer Docker restart until the destructive storage window closes; Docker is intentionally held down and will be started after the SSD is ready"
+  else
+    echo "[DRY-RUN] systemctl restart docker"
+  fi
 else
   mkdir -p /etc/docker
   if [[ -f "$DOCKER_DAEMON_JSON" ]]; then
-    cp "$DOCKER_DAEMON_JSON" "$DOCKER_DAEMON_JSON.bak.$(date +%s)"
+    m1s_backup_file_with_retention "$DOCKER_DAEMON_JSON" '.bak' '+%s'
   fi
   cat > "$DOCKER_DAEMON_JSON" <<'DOCKER_JSON'
 {
@@ -2903,8 +3034,12 @@ else
 }
 DOCKER_JSON
   chmod 0644 "$DOCKER_DAEMON_JSON"
-  systemctl restart docker || warn "Failed to restart docker after $DOCKER_DAEMON_JSON update"
-  info "Wrote $DOCKER_DAEMON_JSON and restarted docker"
+  if [[ "$DESTRUCTIVE_WINDOW_ACTIVE" -eq 1 ]]; then
+    info "Wrote $DOCKER_DAEMON_JSON; Docker restart is deferred until the destructive storage window closes because Docker is intentionally held down and will be started after the SSD is ready"
+  else
+    systemctl restart docker || warn "Failed to restart docker after $DOCKER_DAEMON_JSON update"
+    info "Wrote $DOCKER_DAEMON_JSON and restarted docker"
+  fi
 fi
 
 info "Installing self-heal guard for fullnode mount"
@@ -2919,7 +3054,6 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
   echo "[DRY-RUN] create $GUARD_SERVICE"
   echo "[DRY-RUN] create $GUARD_TIMER"
   echo "[DRY-RUN] systemctl daemon-reload"
-  echo "[DRY-RUN] systemctl enable --now fullnode-mount-guard.timer"
 else
   run_cmd mkdir -p "$DOCKER_DROPIN_DIR"
   cat > "$DOCKER_DROPIN_FILE" <<EOF
@@ -3051,8 +3185,9 @@ Unit=fullnode-mount-guard.service
 WantedBy=timers.target
 EOF
   run_cmd systemctl daemon-reload
-  run_cmd systemctl enable --now fullnode-mount-guard.timer
 fi
+leave_destructive_storage_window
+run_cmd systemctl enable --now fullnode-mount-guard.timer
 
 ensure_host_data_alias() {
   if [[ "$DRY_RUN" -eq 1 ]]; then
@@ -3081,7 +3216,7 @@ ensure_host_data_alias() {
     fi
   fi
 
-  cp /etc/fstab "/etc/fstab.bak.data-alias.$(date +%Y%m%d%H%M%S)"
+  m1s_backup_file_with_retention /etc/fstab '.bak.data-alias' '+%Y%m%d%H%M%S'
   HOST_DATA_ALIAS="$HOST_DATA_ALIAS" DATA_DIR="$DATA_DIR" DATA_ALIAS_FSTAB_OPTIONS="$DATA_ALIAS_FSTAB_OPTIONS" python3 - <<'PY'
 from pathlib import Path
 import os
@@ -3175,94 +3310,27 @@ fi
 
 info "Setting up umbrel.local mDNS alias"
 LAN_INTERFACE="$(detect_lan_interface || true)"
-if [[ -z "$LAN_INTERFACE" ]]; then
-  LAN_INTERFACE="eth0"
-fi
-LAN_IP="$(interface_ipv4 "$LAN_INTERFACE" || true)"
+LAN_IP="$(m1s_interface_ipv4 "$LAN_INTERFACE" || true)"
 disable_ufw_for_umbrel
 
 if ! command -v avahi-publish >/dev/null 2>&1; then
   info "Installing avahi-daemon and avahi-utils..."
   if [[ "$DRY_RUN" -eq 0 ]]; then
-    DEBIAN_FRONTEND=noninteractive apt-get install -y avahi-daemon avahi-utils libnss-mdns >/dev/null 2>&1 || true
+    if ! DEBIAN_FRONTEND=noninteractive apt-get install -y avahi-daemon avahi-utils libnss-mdns >/dev/null 2>&1; then
+      err "Failed to install avahi-daemon, avahi-utils, and libnss-mdns."
+      exit 1
+    fi
   else
     run_shell 'DEBIAN_FRONTEND=noninteractive apt-get install -y avahi-daemon avahi-utils libnss-mdns'
   fi
 fi
 
-AVAHI_CONF="/etc/avahi/avahi-daemon.conf"
-if [[ "$DRY_RUN" -eq 1 ]]; then
-  echo "[DRY-RUN] set allow-interfaces=$LAN_INTERFACE in $AVAHI_CONF"
-  echo "[DRY-RUN] systemctl enable --now avahi-daemon"
-  echo "[DRY-RUN] systemctl restart avahi-daemon"
-elif [[ -f "$AVAHI_CONF" ]]; then
-  cp "$AVAHI_CONF" "$AVAHI_CONF.bak.$(date +%s)"
-  python3 - "$AVAHI_CONF" "$LAN_INTERFACE" <<'PY'
-import re
-import sys
-from pathlib import Path
-path = Path(sys.argv[1])
-iface = sys.argv[2]
-text = path.read_text()
-if re.search(r'^allow-interfaces=', text, flags=re.M):
-    text = re.sub(r'^allow-interfaces=.*$', f'allow-interfaces={iface}', text, flags=re.M)
-elif re.search(r'^#allow-interfaces=', text, flags=re.M):
-    text = re.sub(r'^#allow-interfaces=.*$', f'allow-interfaces={iface}', text, flags=re.M)
-else:
-    text = re.sub(r'(\[server\]\n)', rf'\1allow-interfaces={iface}\n', text, count=1)
-path.write_text(text)
-PY
-  systemctl enable --now avahi-daemon >/dev/null 2>&1 || warn "Failed to enable/start avahi-daemon (continuing)"
-  systemctl restart avahi-daemon || warn "Failed to restart avahi-daemon (continuing)"
-  info "avahi-daemon restricted to $LAN_INTERFACE"
+if ! m1s_configure_avahi_mdns; then
+  err "Failed to configure the managed umbrel.local mDNS path."
+  exit 1
 fi
 
-AVAHI_ALIAS_SCRIPT="/usr/local/bin/avahi-publish-umbrel"
-AVAHI_ALIAS_SERVICE="/etc/systemd/system/avahi-alias-umbrel.service"
-
-if [[ "$DRY_RUN" -eq 1 ]]; then
-  echo "[DRY-RUN] write $AVAHI_ALIAS_SCRIPT"
-  echo "[DRY-RUN] write $AVAHI_ALIAS_SERVICE"
-  echo "[DRY-RUN] systemctl enable --now avahi-alias-umbrel.service"
-else
-  cat > "$AVAHI_ALIAS_SCRIPT" <<'ALIASSCRIPT'
-#!/usr/bin/env bash
-set -eu
-while true; do
-  IFACE="$(ip route show default 2>/dev/null | awk '/default/ {print $5; exit}' || true)"
-  if [[ -z "$IFACE" ]]; then
-    sleep 5
-    continue
-  fi
-  IP="$(ip -4 -o addr show dev "$IFACE" scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1)"
-  if [[ -n "$IP" ]]; then
-    exec avahi-publish-address -R umbrel.local "$IP"
-  fi
-  sleep 5
-done
-ALIASSCRIPT
-  chmod +x "$AVAHI_ALIAS_SCRIPT"
-
-  cat > "$AVAHI_ALIAS_SERVICE" <<'SERVICEUNIT'
-[Unit]
-Description=Publish umbrel.local mDNS alias
-After=avahi-daemon.service network-online.target
-Requires=avahi-daemon.service
-Wants=network-online.target
-
-[Service]
-Type=simple
-ExecStart=/usr/local/bin/avahi-publish-umbrel
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-SERVICEUNIT
-
-  systemctl daemon-reload
-  systemctl enable avahi-alias-umbrel.service
-  systemctl start avahi-alias-umbrel.service
+if [[ "$DRY_RUN" -eq 0 ]]; then
   info "umbrel.local mDNS alias is now active."
   if ! wait_for_umbrel_runtime_health; then
     err "The install cannot be marked successful until the full Umbrel runtime-health contract passes."

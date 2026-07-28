@@ -143,9 +143,126 @@ if violations:
 print('  ok no heredoc embedded in double-quoted shell command wrappers')
 PY
 
+printf '[verify] bounded backup invariants\n'
+python3 - <<'PY'
+from pathlib import Path
+import re
+
+helper_path = Path('scripts/m1s-backup-retention.sh')
+test_path = Path('tests/test-backup-retention.sh')
+if not helper_path.exists():
+    raise SystemExit(f'{helper_path} is missing')
+if not test_path.exists():
+    raise SystemExit(f'{test_path} is missing')
+
+entrypoints = {
+    Path('scripts/m1s-clean-install-umbrel.sh'): 6,
+    Path('scripts/m1s-update-umbrel.sh'): 7,
+}
+source_line = 'source "$(dirname "${BASH_SOURCE[0]}")/m1s-backup-retention.sh"'
+raw_backup_copy = re.compile(r'(?m)^[ \t]*(?!#)[^\n]*\bcp\b[^\n]*\.bak(?:\.|["\'])')
+violations = []
+for path, minimum_helper_calls in entrypoints.items():
+    text = path.read_text(encoding='utf-8')
+    if source_line not in text:
+        violations.append(f'{path}: shared backup helper is not sourced')
+    helper_calls = text.count('m1s_backup_file_with_retention ')
+    if helper_calls < minimum_helper_calls:
+        violations.append(
+            f'{path}: expected at least {minimum_helper_calls} backup helper calls, found {helper_calls}'
+        )
+    for match in raw_backup_copy.finditer(text):
+        line_number = text.count('\n', 0, match.start()) + 1
+        violations.append(f'{path}:{line_number}: raw timestamped backup copy bypasses retention')
+
+if violations:
+    print('Bounded backup invariant failed:')
+    for violation in violations:
+        print(f'  {violation}')
+    raise SystemExit(1)
+
+print('  ok installer and updater route every timestamped backup through the shared bounded-retention helper')
+PY
+
+printf '[verify] Avahi mDNS invariants\n'
+python3 - <<'PY'
+from pathlib import Path
+import re
+
+helper_path = Path('scripts/m1s-avahi-mdns.sh')
+test_path = Path('tests/test-avahi-mdns.sh')
+entrypoints = (
+    Path('scripts/m1s-clean-install-umbrel.sh'),
+    Path('scripts/m1s-update-umbrel.sh'),
+)
+if not helper_path.exists():
+    raise SystemExit(f'{helper_path} is missing')
+if not test_path.exists():
+    raise SystemExit(f'{test_path} is missing')
+
+source_line = 'source "$(dirname "${BASH_SOURCE[0]}")/m1s-avahi-mdns.sh"'
+helper_text = helper_path.read_text(encoding='utf-8')
+script_texts = {
+    path: path.read_text(encoding='utf-8')
+    for path in sorted(Path('scripts').glob('*.sh'))
+}
+for path in entrypoints:
+    if source_line not in script_texts[path]:
+        raise SystemExit(f'{path}: shared Avahi helper is not sourced')
+
+for path, text in script_texts.items():
+    match = re.search(r'allow-interfaces\s*=', text)
+    if match:
+        line_number = text.count('\n', 0, match.start()) + 1
+        raise SystemExit(f'{path}:{line_number}: script contains an active allow-interfaces writer')
+
+definition_names = (
+    'detect_lan_interface',
+    'm1s_render_avahi_config',
+    'm1s_render_avahi_alias_script',
+    'm1s_render_avahi_alias_unit',
+)
+all_scripts = '\n'.join(script_texts.values())
+for name in definition_names:
+    count = len(re.findall(rf'(?m)^{re.escape(name)}\(\) \{{', all_scripts))
+    if count != 1:
+        raise SystemExit(f'{name} must have exactly one definition, found {count}')
+
+installer_text = script_texts[entrypoints[0]]
+installer_avahi = installer_text[
+    installer_text.index('info "Setting up umbrel.local mDNS alias"'):
+    installer_text.index('info "Recording install state"')
+]
+updater_text = script_texts[entrypoints[1]]
+updater_avahi = '\n'.join((
+    updater_text[updater_text.index('patch_to_0_3_0()'):updater_text.index('ensure_nvme_diagnostic_tools()')],
+    updater_text[updater_text.index('patch_to_0_4_0()'):updater_text.index('patch_to_0_4_1()')],
+    updater_text[updater_text.index('precheck_0_5_28_to_0_5_29()'):updater_text.index('# Main flow')],
+))
+for path, avahi_path in (
+    (helper_path, helper_text),
+    (entrypoints[0], installer_avahi),
+    (entrypoints[1], updater_avahi),
+):
+    if re.search(r'\beth0\b', avahi_path):
+        raise SystemExit(f'{path}: Avahi path hardcodes eth0')
+
+for path in entrypoints:
+    text = script_texts[path]
+    for duplicate in ('avahi-publish-address -R umbrel.local', 'Description=Publish umbrel.local mDNS alias'):
+        if duplicate in text:
+            raise SystemExit(f'{path}: embedded Avahi alias script or unit duplicate remains')
+
+print('  ok Avahi uses one shared renderer, has no active interface pin or fixed LAN interface, and keeps one alias source')
+PY
+
 printf '[verify] installer safety invariants\n'
 python3 - <<'PY'
 from pathlib import Path
+import os
+import re
+import subprocess
+import tempfile
 
 text = Path('scripts/m1s-clean-install-umbrel.sh').read_text(encoding='utf-8')
 required = [
@@ -215,6 +332,10 @@ required = [
     'collect_target_busy_pids',
     'filter_killable_target_pids',
     'stop_target_busy_processes',
+    'enter_destructive_storage_window',
+    'leave_destructive_storage_window',
+    'assert_raw_disk_exclusive "$TARGET_DISK_PATH"',
+    'systemctl mask --runtime "$unit"',
     'kill -TERM',
     'kill -KILL',
     'The selected NVMe SSD is still being used by old processes.',
@@ -265,6 +386,36 @@ order_checks = [
 for label, before, after in order_checks:
     if pos(before) > pos(after):
         raise SystemExit(f'Order invariant failed: {label}')
+
+storage_flow = text[pos('info "Backing up /etc/fstab before modification"'):]
+def storage_pos(needle: str) -> int:
+    idx = storage_flow.find(needle)
+    if idx == -1:
+        raise SystemExit(f'Missing installer storage sequence text: {needle}')
+    return idx
+
+fstab_rewrite = storage_pos('info "Cleaning fstab entries that belong to RaspiBlitz eMMC setup"')
+window_enter = storage_pos('\nenter_destructive_storage_window\n')
+daemon_reload = storage_pos('\nrun_cmd systemctl daemon-reload\n')
+generated_unit_stop = storage_pos('\nrun_cmd systemctl stop mnt-fullnode-swapfile.swap data.mount mnt-fullnode.mount || true\n')
+first_cleanup_stop = storage_pos('\nstop_target_busy_processes\n')
+unmount_section = storage_pos('run_shell "umount \'$DATA_DIR\' >/dev/null 2>&1 || true"')
+if not (fstab_rewrite < window_enter < daemon_reload < generated_unit_stop < first_cleanup_stop < unmount_section):
+    raise SystemExit('Order invariant failed: fstab cleanup must enter the destructive window, reload/stop stale generated units, then clean holders and unmount')
+
+raw_repartition = text[pos('repartition_raw_disk()'):pos('resolve_block_path()')]
+raw_stop = raw_repartition.find('\n  stop_target_busy_processes\n')
+raw_assert = raw_repartition.find('\n  assert_raw_disk_exclusive "$TARGET_DISK_PATH"\n')
+raw_sfdisk = raw_repartition.find('sfdisk --label gpt "$TARGET_DISK_PATH"')
+if min(raw_stop, raw_assert, raw_sfdisk) == -1 or not (raw_stop < raw_assert < raw_sfdisk):
+    raise SystemExit('Order invariant failed: final holder cleanup and exclusive-open assertion must precede raw-disk sfdisk')
+
+window_helpers = text[pos('enter_destructive_storage_window()'):pos('assert_raw_disk_exclusive()')]
+mask_lines = [line.strip() for line in window_helpers.splitlines() if 'systemctl mask' in line]
+if not mask_lines or any('systemctl mask --runtime' not in line for line in mask_lines):
+    raise SystemExit('Destructive storage window must use runtime-only systemd masks')
+if re.search(r'(?m)\bsfdisk\b[^\n]*(?:--force|--no-reread)', text):
+    raise SystemExit('Installer sfdisk invocations must never bypass in-use or partition-table reread safety')
 
 install_phase = text[text.find('info "Pulling and starting Umbrel"'):]
 def install_pos(needle: str) -> int:
@@ -331,6 +482,62 @@ if 'path.write_text(text.replace(source, target, 1))' in text or "target = 'he==
 if 'd.useEffect(()=>{F==="shutting-down"' in text or '30*Gl' in text:
     raise SystemExit('Installer must not retain the obsolete local .tmp minified shutdown UI assumption')
 print('  ok installer safety invariants and critical ordering')
+
+with tempfile.TemporaryDirectory(prefix='m1s-exclusive-gate-') as temp_dir_name:
+    temp_dir = Path(temp_dir_name)
+    fake_bin = temp_dir / 'bin'
+    fake_bin.mkdir()
+    sfdisk_record = temp_dir / 'sfdisk-called'
+    probe = temp_dir / 'exclusive-probe'
+    probe.write_text('#!/usr/bin/env bash\nexit 75\n', encoding='utf-8')
+    probe.chmod(0o755)
+
+    fake_sfdisk = fake_bin / 'sfdisk'
+    fake_sfdisk.write_text(
+        '#!/usr/bin/env bash\nprintf invoked > "$SFDISK_RECORD"\n',
+        encoding='utf-8',
+    )
+    fake_sfdisk.chmod(0o755)
+    for command_name in ('findmnt', 'swapon', 'fuser', 'systemctl'):
+        fake_command = fake_bin / command_name
+        fake_command.write_text('#!/usr/bin/env bash\nexit 0\n', encoding='utf-8')
+        fake_command.chmod(0o755)
+
+    environment = os.environ.copy()
+    environment.update({
+        'INSTALLER_UNDER_TEST': str(Path('scripts/m1s-clean-install-umbrel.sh').resolve()),
+        'M1S_INSTALLER_LIB_ONLY': '1',
+        'M1S_EXCLUSIVE_PROBE_COMMAND': str(probe),
+        'PATH': f'{fake_bin}:{environment["PATH"]}',
+        'SFDISK_RECORD': str(sfdisk_record),
+    })
+    result = subprocess.run(
+        [
+            'bash',
+            '-c',
+            '''set -Eeuo pipefail
+source "$INSTALLER_UNDER_TEST"
+stop_target_busy_processes() { :; }
+TARGET_DISK_PATH="/dev/m1s-exclusive-test"
+TARGET_PARTITION="/dev/m1s-exclusive-testp1"
+DATA_DIR="/mnt/fullnode"
+DRY_RUN=0
+repartition_raw_disk
+''',
+        ],
+        env=environment,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if result.returncode == 0:
+        raise SystemExit('Exclusive-open gate test expected the raw-disk repartition region to fail on probe exit 75')
+    if sfdisk_record.exists():
+        raise SystemExit('Exclusive-open gate test invoked fake sfdisk after probe exit 75')
+    if 'was re-claimed after cleanup' not in result.stderr:
+        raise SystemExit('Exclusive-open gate test did not emit the hard-failure re-claimed diagnostic')
+    print('  ok exclusive-open EBUSY gate blocks raw-disk sfdisk')
 PY
 
 printf '[verify] updater safety invariants\n'
@@ -1696,7 +1903,7 @@ for forbidden in ['mkfs.', 'sfdisk', 'parted', 'wipefs', 'sgdisk', 'gdisk', 'blk
     if forbidden in text:
         raise SystemExit(f'System package updater must never contain destructive disk command: {forbidden}')
 required = [
-    'SCRIPT_VERSION="0.5.28"',
+    'SCRIPT_VERSION="0.5.29"',
     '--dry-run',
     '--no-reboot',
     'STOP_TIMEOUT_SECONDS=300',
@@ -1755,6 +1962,94 @@ if pos('if reboot_required; then', main) > pos('run_cmd systemctl reboot', main)
 if pos('if reboot_required; then', main) > pos('start_stopped_containers', main):
     raise SystemExit('container restart must happen only after reboot-required handling')
 print('  ok system package updater stops containers before apt upgrade and reboots only behind reboot-required gate')
+PY
+
+printf '[verify] host residue detector invariants\n'
+python3 - <<'PY'
+from pathlib import Path
+import re
+
+text = Path('scripts/check-host-residue.sh').read_text(encoding='utf-8')
+
+
+def section(start: str, end: str) -> str:
+    start_position = text.find(start)
+    end_position = text.find(end, start_position + len(start))
+    if start_position == -1 or end_position == -1:
+        raise SystemExit(f'Host residue detector contract section is missing: {start} ... {end}')
+    return text[start_position:end_position]
+
+
+manifest = section('EXPECTED="$(mktemp)"', 'expected_path()')
+for required in [
+    'grep -rhoE',
+    "--include='*.sh'",
+    "--exclude='check-host-residue.sh'",
+    '"$REPO/scripts"',
+    '> "$EXPECTED"',
+]:
+    if required not in manifest:
+        raise SystemExit(f'Host residue manifest must be derived by grepping repository scripts: missing {required}')
+for forbidden in ['EXPECTED_PATHS=(', 'cat > "$EXPECTED"', 'printf > "$EXPECTED"']:
+    if forbidden in manifest:
+        raise SystemExit(f'Host residue manifest must not become hand-maintained: found {forbidden}')
+
+full_scan_derivation = section('derive_full_scan_dirs() {', 'expected_path()')
+for required in [
+    'while IFS= read -r manifest_path; do',
+    'done < "$EXPECTED"',
+    'parent_dir="${manifest_path%/*}"',
+    'printf \'%s\\n\' "${EXPLICIT_HIGH_RISK_DIRS[@]}"',
+    'is_broad_shared_dir "$candidate_dir"',
+    'sort -u',
+    'mapfile -t FULL_SCAN_DIRS < <(derive_full_scan_dirs)',
+    'for host_dir in "${FULL_SCAN_DIRS[@]}"; do',
+]:
+    if required not in full_scan_derivation and required not in text:
+        raise SystemExit(f'Host residue full-scan directories must be derived from the manifest: missing {required}')
+for forbidden in ['WATCHED_DIRS=(', 'FULL_SCAN_DIRS=(']:
+    if forbidden in text:
+        raise SystemExit(f'Host residue full-scan directories must not become a bare hardcoded list: found {forbidden}')
+
+retention_derivation = section(
+    'RETENTION_HELPER="$REPO/scripts/m1s-backup-retention.sh"',
+    'ORPHAN=0',
+)
+for required in [
+    'derive_backup_retention_count() {',
+    'M1S_BACKUP_RETENTION_COUNT',
+    'sed -nE',
+    '"$helper_path"',
+    'BACKUP_RETENTION_BOUND="$(derive_backup_retention_count "$RETENTION_HELPER")"',
+]:
+    if required not in retention_derivation:
+        raise SystemExit(f'Host residue backup bound must be derived from the retention helper: missing {required}')
+hardcoded_retention_assignment = re.search(
+    r'(?mi)^[ \t]*(?:readonly[ \t]+)?[A-Za-z_]*(?:RETENTION|BACKUP_(?:BOUND|LIMIT|COUNT))'
+    r'[A-Za-z0-9_]*[ \t]*=[ \t]*["\']?[0-9]+["\']?[ \t]*$',
+    text,
+)
+if hardcoded_retention_assignment:
+    raise SystemExit(
+        'Host residue backup bound must not be hardcoded: '
+        + hardcoded_retention_assignment.group(0).strip()
+    )
+
+ours_classifier = section('is_ours() {', 'is_our_backup()')
+substring_match = '[[ "$basename" == *m1s-* || "$basename" == *fullnode-* || "$basename" == *umbrel* ]]'
+if substring_match not in ours_classifier:
+    raise SystemExit('Host residue ownership classifier must use substring matching for NN-prefixed files')
+
+gate_match = re.search(r'(?m)^GATE=\$\(\(([^)]*)\)\)$', text)
+if not gate_match:
+    raise SystemExit('Host residue gate expression is missing')
+gate_terms = re.sub(r'\s+', '', gate_match.group(1)).split('+')
+if gate_terms != ['ORPHAN', 'BACKUP', 'DRIFT', 'FAILCOUNT']:
+    raise SystemExit(
+        'Host residue gate must include only ours-orphan, ours-backup, settings-drift, and failed systemd units'
+    )
+
+print('  ok residue manifest, full-scan directories, and backup bound are derived; ownership and drift gate semantics are intact')
 PY
 
 printf '[verify] updater unit tests\n'

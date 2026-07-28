@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.5.29
+
+- Fix raw-disk installs failing with `This disk is currently in use` at `sfdisk`, even though every preceding cleanup check reported the disk as released. systemd was silently remounting the target between the last check and the partition write.
+- Hold Docker, its socket, the fullnode mount guard, and the Umbrel autostart unit down with runtime-only masks for the destructive storage window, reload systemd after the fstab rewrite so stale generated mount units cannot be revived, and stop the generated mount and swap units through systemd before the existing unmount and swapoff fallbacks.
+- Refuse to write a new partition table unless the target disk passes the same exclusive-open check `sfdisk` itself relies on, reporting the remaining mount, swap, and holder diagnostics when it does not.
+- Leave Docker stopped when a raw-disk install aborts before the SSD is ready, so Umbrel data cannot be written to the eMMC root filesystem instead of the SSD.
+- Fix `umbrel.local` going silently unreachable after the network path changes. The installer used to pin mDNS to the interface present at install time, so moving between Wi-Fi and Ethernet, swapping a network adapter, or a renamed interface left the address published nowhere while the device IP kept working.
+- Stop pinning mDNS to a single interface. Avahi now only excludes the Docker bridges that are actually present, so it follows whatever interface currently carries the LAN.
+- Repair stale mDNS interface pins on existing installations during the update, without stopping Docker or Umbrel.
+- Separate installer health checks into our own misconfiguration, which now fails the install, and external mDNS problems such as client VPNs or routers that block multicast, which stay advisory because the guides already document the device-IP fallback.
+- Keep only the five most recent backups per configuration file. Repeated installs and updates previously left an unbounded number of timestamped copies, which made it hard to tell which backup of a critical file such as `/etc/fstab` was the last known good one.
+- Add `scripts/check-host-residue.sh`, which reports files and settings on the host that neither the operating system nor these scripts are responsible for, including configuration values that have drifted away from what the running system actually needs.
+- Make the updater compatibility matrix execute each named refusal boundary against the real updater instead of asserting on its label, and fail the suite if any of those boundaries stops refusing.
+
 ## 0.5.28
 
 - Warn when the host differs from the validated ODROID M1S, Ubuntu 22.04, and Linux 5.10.x profile while allowing every script to continue.
