@@ -46,8 +46,10 @@ new_release_fixture() {
   local changelog_body="$2"
   local fixture_root="$test_tmpdir/$name"
 
-  mkdir -p "$fixture_root/bin" "$fixture_root/scripts"
+  mkdir -p "$fixture_root/bin" "$fixture_root/scripts" "$fixture_root/main/.local/real-device-validations"
   cp "$repo_root/scripts/release.sh" "$fixture_root/scripts/release.sh"
+  cp "$repo_root/scripts/real-device-validation.sh" "$fixture_root/scripts/real-device-validation.sh"
+  cp "$repo_root/scripts/public-tree-private-paths.sh" "$fixture_root/scripts/public-tree-private-paths.sh"
   chmod +x "$fixture_root/scripts/release.sh"
   for required_path in \
     README.md \
@@ -71,6 +73,27 @@ $changelog_body
 - Keep the unreleased shutdown path changes scoped to runtime-state reconciliation only.
 EOF
 
+  cat > "$fixture_root/main/.local/real-device-validations/fixture-tree.record" <<'EOF'
+# Real-device validation record
+schema_version=1
+content_tree=fixture-tree
+recorded_at=2026-07-29T12:00:00+0900
+user_facing_path_status=performed
+user_facing_path_evidence=Ran the documented user path.
+fresh_install_status=not_applicable
+fresh_install_evidence=No installation path changed.
+official_update_status=not_applicable
+official_update_evidence=No update path changed.
+web_ui_status=not_applicable
+web_ui_evidence=No web UI changed.
+verify_scripts_status=performed
+verify_scripts_evidence=Verifier passed.
+evidence_for=Fixture records measured dry-run evidence.
+evidence_against=No contrary fixture observation.
+not_confirmed=No physical device is used in this hermetic test.
+honest_caveat=Fixture evidence proves gate behavior only.
+EOF
+
   cat > "$fixture_root/scripts/check-public-scrub.sh" <<'EOF'
 #!/usr/bin/env bash
 set -Eeuo pipefail
@@ -89,6 +112,13 @@ case "$1" in
       HEAD|origin/main)
         printf 'fixture-head\n'
         ;;
+      'HEAD^{tree}')
+        printf 'fixture-tree\n'
+        ;;
+      --verify)
+        [[ "${3:-}" == 'HEAD^{tree}' ]] || exit 1
+        printf 'fixture-tree\n'
+        ;;
       -q)
         exit 1
         ;;
@@ -100,6 +130,17 @@ case "$1" in
   branch)
     [[ "${2:-}" == "--show-current" ]] || exit 1
     printf 'public-clean\n'
+    ;;
+  worktree)
+    [[ "${2:-}" == 'list' && "${3:-}" == '--porcelain' && "${4:-}" == '-z' ]] || exit 1
+    printf 'worktree %s\0HEAD fixture-main\0branch refs/heads/main\0\0' "$RELEASE_MAIN_WORKTREE"
+    ;;
+  ls-tree)
+    [[ "${2:-}" == '-r' && "${3:-}" == '-z' && "${4:-}" == '--name-only' ]] || exit 1
+    printf 'README.md\0'
+    ;;
+  check-ignore)
+    exit 1
     ;;
   diff|status|fetch|tag|push)
     ;;
@@ -157,6 +198,7 @@ run_release() {
       RELEASE_GIT_LOG="$fixture_root/git.log" \
       RELEASE_GH_LOG="$fixture_root/gh.log" \
       RELEASE_NOTES_CAPTURE="$fixture_root/release-notes.md" \
+      RELEASE_MAIN_WORKTREE="$fixture_root/main" \
       bash scripts/release.sh "$@"
   )
 }
@@ -305,6 +347,7 @@ safe_dry_run_output="$(run_release "$safe_fixture" --dry-run --real-device-valid
 safe_dry_run_status=$?
 set -e
 assert_eq '0' "$safe_dry_run_status" 'exact public updater block should pass release dry-run'
+assert_contains "$safe_dry_run_output" '[public-tree] no paths matching .gitignore found in HEAD' 'safe dry-run should inspect the public tree before release checks'
 assert_contains "$safe_dry_run_output" '[release] release notes scrub passed' 'safe dry-run should pass the release-note scrub'
 assert_contains "$safe_dry_run_output" "[release] dry-run passed. Would create tag and release v$release_version." 'safe dry-run should complete'
 assert_not_contains "$(<"$safe_fixture/git.log")" 'tag -a' 'safe dry-run should not create a tag'
@@ -315,6 +358,26 @@ assert_contains "$safe_release_output" "[release] created v$release_version" 'fi
 expected_update_block=$'bash\ncd /home/*/odroid-m1s-umbrel-recovery\nsudo git -c safe.directory="$(pwd)" fetch https://github.com/dongguri-jun/odroid-m1s-umbrel-recovery.git main\nsudo git -c safe.directory="$(pwd)" reset --hard FETCH_HEAD\nsudo bash scripts/m1s-update-umbrel.sh --check\nsudo bash scripts/m1s-update-umbrel.sh'
 assert_eq "$expected_update_block" "$(extract_update_command_block "$safe_fixture/release-notes.md")" 'release notes should preserve the exact five-line public updater command block'
 pass 'exact public updater block passes dry-run without tag or release mutation'
+
+printf '[unit] release requires a matching real-device validation record\n'
+missing_validation_fixture="$(new_release_fixture 'missing-validation' '- Public release-note fixture.')"
+rm -f "$missing_validation_fixture/main/.local/real-device-validations/fixture-tree.record"
+set +e
+missing_validation_output="$(run_release "$missing_validation_fixture" --dry-run 2>&1)"
+missing_validation_status=$?
+set -e
+assert_eq '1' "$missing_validation_status" 'release should reject a missing real-device validation record'
+assert_contains "$missing_validation_output" 'Missing real-device validation record for content tree: fixture-tree' 'release should name the missing content tree'
+
+stale_validation_fixture="$(new_release_fixture 'stale-validation' '- Public release-note fixture.')"
+sed -i 's/^content_tree=fixture-tree$/content_tree=other-tree/' "$stale_validation_fixture/main/.local/real-device-validations/fixture-tree.record"
+set +e
+stale_validation_output="$(run_release "$stale_validation_fixture" --dry-run 2>&1)"
+stale_validation_status=$?
+set -e
+assert_eq '1' "$stale_validation_status" 'release should reject a stale real-device validation record'
+assert_contains "$stale_validation_output" 'Record content tree does not match the publish tree.' 'release should report a stale content tree'
+pass 'release dry-run blocks missing and stale real-device validation records before release checks'
 
 public_fence='```'
 printf -v duplicated_public_updater_block '%s%s\n%s' "$public_fence" "$expected_update_block" "$public_fence"

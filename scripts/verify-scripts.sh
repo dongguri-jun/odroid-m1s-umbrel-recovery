@@ -2135,6 +2135,9 @@ required = [
     'CHANGELOG.md is missing section',
     'bash scripts/check-public-scrub.sh',
     'Release notes scrub failed',
+    'real_device_validation_require_current_tree',
+    'public_tree_require_no_ignored_paths',
+    'source "$repo_root/scripts/public-tree-private-paths.sh"',
     'release notes expanded $(pwd) to this checkout path',
     r'safe\.directory="\$\(pwd\)"',
 ]
@@ -2144,7 +2147,7 @@ if missing:
     for needle in missing:
         print(f'  {needle}')
     raise SystemExit(1)
-print('  ok release script gates tags/releases on clean tree, pushed HEAD, changelog, successful CI, and release-note scrub')
+print('  ok release script gates tags/releases on clean tree, exact-tree real-device evidence, pushed HEAD, changelog, successful CI, and release-note scrub')
 PY
 
 printf '[verify] public-clean publish guard\n'
@@ -2170,6 +2173,9 @@ files = {
         'Publish must run from public-clean.',
         'Local public-clean must not track an upstream.',
         'bash scripts/check-public-scrub.sh',
+        'real_device_validation_require_current_tree',
+        'public_tree_require_no_ignored_paths',
+        'source "$repo_root/scripts/public-tree-private-paths.sh"',
         'git ls-remote --exit-code --heads origin public-clean',
         'git push origin public-clean:main',
     ],
@@ -2180,6 +2186,23 @@ files = {
         'local checkout path',
         'expanded safe.directory path',
         'public metadata scrub failed',
+    ],
+    'scripts/public-tree-private-paths.sh': [
+        'git check-ignore --no-index -q -- "$path"',
+        'git ls-tree -r -z --name-only "$tree_hash"',
+        'Refusing to publish: current tree contains paths matching .gitignore',
+    ],
+    'scripts/real-device-validation.sh': [
+        "git worktree list --porcelain -z",
+        "git rev-parse 'HEAD^{tree}'",
+        'Missing real-device validation record for content tree:',
+        'performed|not_applicable',
+    ],
+    'scripts/record-real-device-validation.sh': [
+        'Missing required option:',
+        'not_applicable',
+        'EVIDENCE FOR',
+        'HONEST CAVEAT',
     ],
 }
 for path, needles in files.items():

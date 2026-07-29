@@ -17,6 +17,8 @@ Creates the Git tag and GitHub Release for the version in VERSION.
 This script refuses to release unless:
   - the working tree is clean,
   - the current branch is public-clean,
+  - no path in the public tree matches the repository ignore rules,
+  - a complete real-device validation record matches the exact public tree,
   - local HEAD matches origin/main,
   - the latest GitHub Actions run for HEAD succeeded,
   - CHANGELOG.md has a section for the version,
@@ -62,6 +64,11 @@ require_cmd git
 require_cmd gh
 require_cmd python3
 
+# shellcheck source=scripts/real-device-validation.sh
+source "$repo_root/scripts/real-device-validation.sh"
+# shellcheck source=scripts/public-tree-private-paths.sh
+source "$repo_root/scripts/public-tree-private-paths.sh"
+
 version="$(tr -d '[:space:]' < VERSION)"
 if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
   printf 'VERSION must be semver without v prefix. Got: %s\n' "$version" >&2
@@ -91,6 +98,9 @@ if [[ -n "$(git status --porcelain --untracked-files=all)" ]]; then
   git status --short --untracked-files=all >&2
   exit 1
 fi
+
+public_tree_require_no_ignored_paths
+real_device_validation_require_current_tree
 
 git fetch origin main --tags >/dev/null
 origin_main_sha="$(git rev-parse origin/main)"

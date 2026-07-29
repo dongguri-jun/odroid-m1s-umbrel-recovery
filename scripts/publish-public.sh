@@ -16,6 +16,8 @@ This script refuses to publish unless:
   - the current branch is public-clean,
   - the working tree is clean,
   - local public-clean has no upstream,
+  - no path in the public tree matches the repository ignore rules,
+  - a complete real-device validation record matches the exact public tree,
   - origin/main exists,
   - origin/public-clean does not exist.
 
@@ -52,6 +54,11 @@ require_cmd() {
 
 require_cmd git
 
+# shellcheck source=scripts/real-device-validation.sh
+source "$repo_root/scripts/real-device-validation.sh"
+# shellcheck source=scripts/public-tree-private-paths.sh
+source "$repo_root/scripts/public-tree-private-paths.sh"
+
 current_branch="$(git branch --show-current)"
 head_sha="$(git rev-parse HEAD)"
 
@@ -78,6 +85,9 @@ if git rev-parse --abbrev-ref 'public-clean@{upstream}' >/dev/null 2>&1; then
   printf 'Local public-clean must not track an upstream. Run: git branch --unset-upstream public-clean\n' >&2
   exit 1
 fi
+
+public_tree_require_no_ignored_paths
+real_device_validation_require_current_tree
 
 bash scripts/check-public-scrub.sh
 
