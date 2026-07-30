@@ -348,12 +348,12 @@ if local_gate_verified:
 else:
     existing_verified_block = blocks['verified']
     local_gate_ok = ('- [x] `bash scripts/verify-scripts.sh`' in existing_verified_block) and not local_verification_stale
-    if local_gate_ok and not local_gate_verified_at:
+    if not local_gate_verified_at:
         match = re.search(r'Last successful local gate: `([^`]+)`', existing_verified_block)
-        if match:
+        if match and match.group(1) != 'not recorded':
             local_gate_verified_at = match.group(1)
-if not local_gate_ok:
-    local_gate_verified_at = 'not recorded' if not local_gate_verified_at else local_gate_verified_at
+if not local_gate_verified_at:
+    local_gate_verified_at = 'not recorded'
 
 installer_text = Path('scripts/m1s-clean-install-umbrel.sh').read_text(encoding='utf-8')
 status_lines: list[str] = []

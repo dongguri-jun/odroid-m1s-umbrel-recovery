@@ -1191,6 +1191,12 @@ print_missing_bitcoin_config_status() {
   echo "If the Bitcoin app is installed, confirm it has created bitcoin.conf and umbrel-bitcoin.conf under $DATA_DIR."
 }
 
+# NOTE for maintainers: this is deliberately NOT read-only. Once a requested
+# recovery has demonstrably started, it consumes the one-shot request from
+# bitcoin.conf so Bitcoin does not reindex again on every later restart. This
+# is currently the only consumer of a started request. Do not call it from a
+# monitor, a loop, or another script expecting it to be side-effect free, and
+# do not remove the consumption without adding a replacement consumer first.
 run_recovery_status_check() {
   m1s_report_host_support
   require_root

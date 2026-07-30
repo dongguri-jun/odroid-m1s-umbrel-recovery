@@ -148,4 +148,30 @@ cache_changed_json='[{"status":"??","path":"scripts/__pycache__/local_task_store
 cache_tracked_paths="$(DEV_TRACKER_PATH="$tracker_copy" TASK_LEDGER_PATH="$ledger_copy" TRACKER_CHANGED_JSON_OVERRIDE="$cache_changed_json" bash scripts/sync-dev-tracker.sh --print-tracked-paths)"
 assert_eq '' "$cache_tracked_paths" 'Python bytecode caches must not be tracked tracker changes'
 
+printf '[unit] dev tracker sync preserves the last successful gate timestamp when verification goes stale\n'
+python3 - "$tracker_copy" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+text = text.replace('- [ ] `bash scripts/verify-scripts.sh`', '- [x] `bash scripts/verify-scripts.sh`')
+text = re.sub(r'- Last successful local gate: `[^`]*`', '- Last successful local gate: `2026-07-30 01:23:45 KST`', text)
+path.write_text(text, encoding="utf-8")
+PY
+DEV_TRACKER_PATH="$tracker_copy" TASK_LEDGER_PATH="$ledger_copy" TRACKER_CHANGED_JSON_OVERRIDE="$changed_sync_json" bash scripts/sync-dev-tracker.sh
+tracker_text="$(python3 - "$tracker_copy" <<'PY'
+from pathlib import Path
+import sys
+print(Path(sys.argv[1]).read_text(encoding='utf-8'))
+PY
+)"
+# shellcheck disable=SC2016
+assert_contains "$tracker_text" '- [ ] `bash scripts/verify-scripts.sh`' 'Tracked changes must mark the local gate stale'
+# shellcheck disable=SC2016
+assert_contains "$tracker_text" '- Last successful local gate: `2026-07-30 01:23:45 KST`' 'Stale verification must not erase when the gate last passed'
+# shellcheck disable=SC2016
+assert_not_contains "$tracker_text" '- Last successful local gate: `not recorded`' 'Stale verification must not reset the gate timestamp to not recorded'
+
 printf '[unit] dev tracker sync tests complete\n'

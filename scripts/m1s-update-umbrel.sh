@@ -17,7 +17,7 @@ set -Eeuo pipefail
 #   --version      Print script version and exit.
 #   -h, --help     Show this help.
 
-SCRIPT_VERSION="0.5.31"
+SCRIPT_VERSION="0.5.32"
 INSTALL_STATE_DIR="/etc/umbrel-recovery"
 INSTALL_STATE_FILE="$INSTALL_STATE_DIR/installed.json"
 DATA_DIR="/mnt/fullnode"
@@ -36,6 +36,7 @@ SELF_SYNC_REEXECED=0
 APP_STOP_TIMEOUT_SECONDS=300
 STOPPED_APP_CONTAINERS=()
 APP_CONTAINERS_STOPPED=0
+RECONCILE_APPS_ON_EXIT=0
 LEGACY_SYSTEM_CONTAINERS=(auth tor_proxy)
 CANDIDATE_SYSTEM_CONTAINERS=(umbrel_auth umbrel_tor_proxy)
 ALL_KNOWN_SYSTEM_CONTAINERS=("${LEGACY_SYSTEM_CONTAINERS[@]}" "${CANDIDATE_SYSTEM_CONTAINERS[@]}")
@@ -114,6 +115,7 @@ MIGRATIONS=(
   "0.5.28_to_0.5.29"
   "0.5.29_to_0.5.30"
   "0.5.30_to_0.5.31"
+  "0.5.31_to_0.5.32"
 )
 
 log() {
@@ -1379,6 +1381,74 @@ start_stopped_app_containers() {
 
   m1s_docker_lifecycle_start_existing_reverse STOPPED_APP_CONTAINERS || return 1
   APP_CONTAINERS_STOPPED=0
+}
+
+reconcile_installed_app_containers() {
+  local apps_file="$DATA_DIR/umbrel.yaml"
+  local app app_settings container state index
+  local installed_apps=()
+  local container_names=()
+  local container_states=()
+  local containers_to_start=()
+
+  [[ -d "$DATA_DIR" && -f "$apps_file" && -d "$DATA_DIR/app-data" ]] || return 0
+  command -v docker >/dev/null 2>&1 || return 0
+
+  while IFS= read -r app; do
+    [[ -n "$app" ]] && installed_apps+=("$app")
+  done < <(awk '
+    /^apps:[[:space:]]*\[\][[:space:]]*(#.*)?$/ { in_apps = 0; next }
+    /^apps:[[:space:]]*(#.*)?$/ { in_apps = 1; next }
+    in_apps && /^[[:space:]]*-[[:space:]]+/ {
+      app = $0
+      sub(/^[[:space:]]*-[[:space:]]+/, "", app)
+      sub(/[[:space:]]*(#.*)?$/, "", app)
+      if (app ~ /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/) print app
+      next
+    }
+    in_apps && /^[^[:space:]#]/ { in_apps = 0 }
+  ' "$apps_file")
+
+  [[ "${#installed_apps[@]}" -gt 0 ]] || return 0
+  while IFS=' ' read -r container state; do
+    [[ -n "$container" ]] || continue
+    container_names+=("$container")
+    container_states+=("$state")
+  done < <(docker ps -a --format '{{.Names}} {{.State}}' 2>/dev/null || true)
+
+  for app in "${installed_apps[@]}"; do
+    app_settings="$DATA_DIR/app-data/$app/settings.yml"
+    if [[ -f "$app_settings" ]] && grep -Eq '^[[:space:]]*autoStart:[[:space:]]*false[[:space:]]*(#.*)?$' "$app_settings"; then
+      continue
+    fi
+    for index in "${!container_names[@]}"; do
+      container="${container_names[$index]}"
+      state="${container_states[$index]}"
+      [[ "$container" == "${app}_"* && "$state" != "running" ]] || continue
+      is_restartable_app_container "$container" || continue
+      containers_to_start+=("$container")
+    done
+  done
+
+  [[ "${#containers_to_start[@]}" -gt 0 ]] || return 0
+  info "Starting installed Umbrel app containers according to persisted app intent..."
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    run_cmd docker start "${containers_to_start[@]}"
+    return 0
+  fi
+  m1s_docker_lifecycle_start_existing_reverse containers_to_start
+}
+
+reconcile_installed_app_containers_on_exit() {
+  local updater_status=$?
+  trap - EXIT
+  if [[ "$RECONCILE_APPS_ON_EXIT" -eq 1 && "$CHECK_ONLY" -eq 0 && "$DRY_RUN" -eq 0 ]]; then
+    if ! reconcile_installed_app_containers; then
+      warn "Failed to reconcile installed Umbrel app containers at updater exit."
+      [[ "$updater_status" -ne 0 ]] || updater_status=1
+    fi
+  fi
+  exit "$updater_status"
 }
 
 umbrel_image_id() {
@@ -3263,12 +3333,22 @@ precheck_0_5_30_to_0_5_31() { precheck_common_canonical_install; }
 apply_0_5_30_to_0_5_31() { info "0.5.31 updates Bitcoin recovery scripts only; no immediate host mutation required."; }
 postcheck_0_5_30_to_0_5_31() { return 0; }
 
+precheck_0_5_31_to_0_5_32() { precheck_common_canonical_install; }
+apply_0_5_31_to_0_5_32() { info "0.5.32 restores installed apps at the end of every updater run; no immediate host mutation required."; }
+postcheck_0_5_31_to_0_5_32() { return 0; }
+
 # ---------------------------------------------------------------------------
 # Main flow
 # ---------------------------------------------------------------------------
 
+run_updater() {
+  trap reconcile_installed_app_containers_on_exit EXIT
+  main "$@"
+}
+
 main() {
   parse_args "$@"
+  RECONCILE_APPS_ON_EXIT=1
   m1s_report_host_support
   require_root
   sync_repository_to_origin_main "$@"
@@ -3355,5 +3435,5 @@ echo
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
-  main "$@"
+  run_updater "$@"
 fi

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.32
+
+- Fix installed apps staying stopped after an interrupted update. If an update was cut short after it had already stopped your apps, for example because the process was killed or the device rebooted mid-update, a later update run could finish and report success while leaving those apps switched off. Every update run now ends by restarting each installed app, except ones you deliberately stopped from the Umbrel interface. This affected published versions 0.5.25 through 0.5.31.
+
 ## 0.5.31
 
 - Fix the Bitcoin recovery status check reporting `Bitcoin container: unavailable`, zero RPC checks, and unavailable sync progress even while the Bitcoin app was running. The check now finds the running app and reports its live progress. This affected published versions 0.5.18 through 0.5.30.

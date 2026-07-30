@@ -285,6 +285,7 @@ assert_plan_from_version "0.5.22" "0.5.22_to_0.5.23"
 assert_plan_from_version "0.5.23" "0.5.23_to_0.5.24"
 assert_plan_from_version "0.5.25" "0.5.25_to_0.5.26"
 assert_plan_from_version "0.5.30" "0.5.30_to_0.5.31"
+assert_plan_from_version "0.5.31" "0.5.31_to_0.5.32"
 
 assert_invalid_migration_plan() {
   local current="$1"
@@ -395,8 +396,8 @@ fi
   printf '[unit] current-version main routing failing first\n'
   M1S_TEST_CHECK_ONLY=0 run_current_version_main_dispatch_case "equal-stopped-apply" "$SCRIPT_VERSION" 0 0 1 0 0
   M1S_TEST_CHECK_ONLY=1 run_current_version_main_dispatch_case "equal-stopped-check" "$SCRIPT_VERSION" 1 0 1 0 0
-  M1S_TEST_CHECK_ONLY=0 run_current_version_main_dispatch_case "newer-apply" "0.5.31" 0 0 0 0 1
-  M1S_TEST_CHECK_ONLY=1 run_current_version_main_dispatch_case "newer-check" "0.5.31" 1 0 0 0 1
+  M1S_TEST_CHECK_ONLY=0 run_current_version_main_dispatch_case "newer-apply" "0.5.32" 0 0 0 0 1
+  M1S_TEST_CHECK_ONLY=1 run_current_version_main_dispatch_case "newer-check" "0.5.32" 1 0 0 0 1
   pass "current-version main routing distinguishes equal stopped drift from newer installs before mutation"
 fi
 
@@ -553,6 +554,21 @@ assert_eq "pre apply post" "${EVENTS[*]}" "recorded unfinalized step replays its
 unset TARGET_VERSION
 pass "run_migration_step succeeds, skips finalized steps, and replays unfinalized recovery steps"
 
+printf '[unit] run_migration_step replays a step interrupted mid-apply\n'
+with_test_state
+mkdir -p "$INSTALL_STATE_DIR"
+cat > "$INSTALL_STATE_FILE" <<'JSON'
+{"version":"9.0.0","host_version":"9.0.0","applied_steps":[]}
+JSON
+mark_step_started "9.0.0_to_9.0.1"
+assert_json_eq "$INSTALL_STATE_FILE" 'data["in_progress_step"]' "9.0.0_to_9.0.1" "an interrupted step leaves in_progress_step behind"
+assert_json_eq "$INSTALL_STATE_FILE" 'data["applied_steps"]' "" "starting a step must never mark it applied"
+EVENTS=()
+run_migration_step "9.0.0_to_9.0.1"
+assert_eq "pre apply post" "${EVENTS[*]}" "a step interrupted mid-apply is replayed on rerun rather than skipped"
+assert_json_eq "$INSTALL_STATE_FILE" 'data["applied_steps"]' "9.0.0_to_9.0.1" "the replayed step is marked applied only after it completes"
+pass "a dangling started record replays its handlers instead of being skipped"
+
 printf '[unit] public 0.5.26 history baseline\n'
 with_test_state
 public_history_step_present=0
@@ -591,26 +607,28 @@ eval "$original_postcheck_safe_shutdown"
 unset -f systemctl mount nmcli
 pass "public 0.5.26 history step remains a no-host-mutation baseline"
 
-printf '[unit] v0.5.31 script-only recovery migration baseline\n'
+printf '[unit] v0.5.32 app-restoration migration baseline\n'
 with_test_state
-assert_eq "0.5.31" "$SCRIPT_VERSION" "updater targets the v0.5.31 recovery-script release"
+assert_eq "0.5.32" "$SCRIPT_VERSION" "updater targets the v0.5.32 app-restoration release"
 
 build_migration_plan "0.5.26"
-assert_eq "0.5.26_to_0.5.27 0.5.27_to_0.5.28 0.5.28_to_0.5.29 0.5.29_to_0.5.30 0.5.30_to_0.5.31" "${PLANNED_MIGRATIONS[*]}" "0.5.26 plans the reliability, mDNS, CSP, and recovery-script transitions"
+assert_eq "0.5.26_to_0.5.27 0.5.27_to_0.5.28 0.5.28_to_0.5.29 0.5.29_to_0.5.30 0.5.30_to_0.5.31 0.5.31_to_0.5.32" "${PLANNED_MIGRATIONS[*]}" "0.5.26 plans the reliability, mDNS, CSP, recovery-script, and app-restoration transitions"
 build_migration_plan "0.5.27"
-assert_eq "0.5.27_to_0.5.28 0.5.28_to_0.5.29 0.5.29_to_0.5.30 0.5.30_to_0.5.31" "${PLANNED_MIGRATIONS[*]}" "local 0.5.27 plans host-profile history before mDNS, CSP, and recovery-script transitions"
+assert_eq "0.5.27_to_0.5.28 0.5.28_to_0.5.29 0.5.29_to_0.5.30 0.5.30_to_0.5.31 0.5.31_to_0.5.32" "${PLANNED_MIGRATIONS[*]}" "local 0.5.27 plans host-profile history before mDNS, CSP, recovery-script, and app-restoration transitions"
 build_migration_plan "0.5.28"
-assert_eq "0.5.28_to_0.5.29 0.5.29_to_0.5.30 0.5.30_to_0.5.31" "${PLANNED_MIGRATIONS[*]}" "local 0.5.28 plans mDNS, CSP, and recovery-script transitions"
+assert_eq "0.5.28_to_0.5.29 0.5.29_to_0.5.30 0.5.30_to_0.5.31 0.5.31_to_0.5.32" "${PLANNED_MIGRATIONS[*]}" "local 0.5.28 plans mDNS, CSP, recovery-script, and app-restoration transitions"
 build_migration_plan "0.5.29"
-assert_eq "0.5.29_to_0.5.30 0.5.30_to_0.5.31" "${PLANNED_MIGRATIONS[*]}" "local 0.5.29 plans the CSP and recovery-script steps"
+assert_eq "0.5.29_to_0.5.30 0.5.30_to_0.5.31 0.5.31_to_0.5.32" "${PLANNED_MIGRATIONS[*]}" "local 0.5.29 plans the CSP, recovery-script, and app-restoration steps"
 build_migration_plan "0.5.30"
-assert_eq "0.5.30_to_0.5.31" "${PLANNED_MIGRATIONS[*]}" "local 0.5.30 plans only the recovery-script step"
+assert_eq "0.5.30_to_0.5.31 0.5.31_to_0.5.32" "${PLANNED_MIGRATIONS[*]}" "local 0.5.30 plans the recovery-script and app-restoration steps"
+build_migration_plan "0.5.31"
+assert_eq "0.5.31_to_0.5.32" "${PLANNED_MIGRATIONS[*]}" "local 0.5.31 plans only the app-restoration step"
 
-printf '[unit] v0.5.31 check-only migration plan\n'
+printf '[unit] v0.5.32 check-only migration plan\n'
 with_test_state
 mkdir -p "$INSTALL_STATE_DIR"
 cat > "$INSTALL_STATE_FILE" <<'JSON'
-{"version":"0.5.30","host_version":"0.5.30","applied_steps":[]}
+{"version":"0.5.31","host_version":"0.5.31","applied_steps":[]}
 JSON
 check_mount_mode_file="$TEST_TMPDIR/check-mount-mode"
 check_output="$(
@@ -622,13 +640,13 @@ check_output="$(
     main --check --skip-sync
   )
 )"
-assert_contains "  - 0.5.30_to_0.5.31" "$check_output" "0.5.30 check plans only the recovery-script step"
-assert_not_contains "0.5.29_to_0.5.30" "$check_output" "0.5.30 check excludes completed earlier migrations"
-assert_contains "--check specified; not applying anything." "$check_output" "0.5.30 check reports its no-apply boundary"
-assert_eq "check" "$(<"$check_mount_mode_file")" "0.5.30 check uses the read-only mount path"
-assert_json_eq "$INSTALL_STATE_FILE" 'data["version"]' "0.5.30" "0.5.30 check leaves the installed version unchanged"
-assert_json_eq "$INSTALL_STATE_FILE" 'data["applied_steps"]' "" "0.5.30 check leaves migration history unchanged"
-pass "v0.5.31 check-only plan is exactly the recovery-script migration"
+assert_contains "  - 0.5.31_to_0.5.32" "$check_output" "0.5.31 check plans only the app-restoration step"
+assert_not_contains "0.5.30_to_0.5.31" "$check_output" "0.5.31 check excludes completed earlier migrations"
+assert_contains "--check specified; not applying anything." "$check_output" "0.5.31 check reports its no-apply boundary"
+assert_eq "check" "$(<"$check_mount_mode_file")" "0.5.31 check uses the read-only mount path"
+assert_json_eq "$INSTALL_STATE_FILE" 'data["version"]' "0.5.31" "0.5.31 check leaves the installed version unchanged"
+assert_json_eq "$INSTALL_STATE_FILE" 'data["applied_steps"]' "" "0.5.31 check leaves migration history unchanged"
+pass "v0.5.32 check-only plan is exactly the app-restoration migration"
 
 SAFE_SHUTDOWN_EVENTS=()
 DEFERRED_NETWORK_EVENTS=()
@@ -694,6 +712,12 @@ assert_eq "" "${SAFE_SHUTDOWN_EVENTS[*]}" "0.5.31 migration does not modify the 
 assert_eq "" "${DEFERRED_NETWORK_EVENTS[*]}" "0.5.31 migration does not modify deferred network ownership"
 PROFILE_HISTORY_EVENTS=()
 
+apply_0_5_31_to_0_5_32
+assert_eq "0.5.32 restores installed apps at the end of every updater run; no immediate host mutation required." "${PROFILE_HISTORY_EVENTS[*]}" "0.5.32 migration scopes the release to updater-exit app restoration"
+assert_eq "" "${SAFE_SHUTDOWN_EVENTS[*]}" "0.5.32 migration does not modify the safe-shutdown runtime"
+assert_eq "" "${DEFERRED_NETWORK_EVENTS[*]}" "0.5.32 migration does not modify deferred network ownership"
+PROFILE_HISTORY_EVENTS=()
+
 precheck_0_5_26_to_0_5_27
 assert_eq "data-mount-precheck" "${SAFE_SHUTDOWN_EVENTS[*]}" "reliability migration fixture precheck stub is exercised before migration dispatch"
 SAFE_SHUTDOWN_EVENTS=()
@@ -751,6 +775,14 @@ assert_eq "data-mount-precheck" "${SAFE_SHUTDOWN_EVENTS[*]}" "recovery-script st
 assert_eq "" "${DEFERRED_NETWORK_EVENTS[*]}" "recovery-script step does not mutate deferred network ownership"
 assert_json_eq "$INSTALL_STATE_FILE" 'data["applied_steps"]' "0.5.30_to_0.5.31" "recovery-script step records completion"
 
+with_test_state
+SAFE_SHUTDOWN_EVENTS=()
+DEFERRED_NETWORK_EVENTS=()
+run_migration_step "0.5.31_to_0.5.32"
+assert_eq "data-mount-precheck" "${SAFE_SHUTDOWN_EVENTS[*]}" "app-restoration step keeps the canonical data-mount precheck without host mutation"
+assert_eq "" "${DEFERRED_NETWORK_EVENTS[*]}" "app-restoration step does not mutate deferred network ownership"
+assert_json_eq "$INSTALL_STATE_FILE" 'data["applied_steps"]' "0.5.31_to_0.5.32" "app-restoration step records completion"
+
 eval "$original_precheck_common"
 eval "$original_info"
 eval "$original_install_safe_shutdown"
@@ -760,7 +792,7 @@ eval "$original_repair_current_umbrel_runtime"
 eval "$original_m1s_configure_avahi_mdns"
 eval "$original_m1s_avahi_internal_health_check"
 unset -f nmcli systemctl mount
-pass "v0.5.31 migration preserves prior repairs and records the recovery-script update without host mutation"
+pass "v0.5.32 migration preserves prior repairs and records app restoration without host mutation"
 
 printf '[unit] run_migration_step failure paths\n'
 with_test_state
@@ -1826,7 +1858,7 @@ assert_transaction_rolled_back() {
 
 printf '[unit] 0.5.25 transaction and runtime-truth state\n'
 fake_transaction_hooks
-assert_eq "0.5.24_to_0.5.25" "${MIGRATIONS[$((${#MIGRATIONS[@]} - 7))]}" "0.5.25 transaction remains before the 0.5.26 history, reliability, host-profile, mDNS, CSP, and recovery-script steps"
+assert_eq "0.5.24_to_0.5.25" "${MIGRATIONS[$((${#MIGRATIONS[@]} - 8))]}" "0.5.25 transaction remains before the 0.5.26 history, reliability, host-profile, mDNS, CSP, recovery-script, and app-restoration steps"
 
 printf '[unit] 0.5.25 finalization baseline characterization\n'
 prepare_transaction_case
@@ -1856,8 +1888,8 @@ if [[ "${M1S_TEST_CHARACTERIZE_IMAGE_ONLY:-0}" -eq 1 ]]; then
   FAKE_UMBREL_IMAGE_REF="$UMBREL_IMAGE"
   FAKE_UMBREL_IMAGE_ID="$FAKE_CANDIDATE_IMAGE_ID"
   FAKE_UMBREL_STATE="exited"
-  finalize_install_state "0.5.31"
-  assert_json_eq "$INSTALL_STATE_FILE" 'data["version"]' "0.5.31" "image-only finalization currently publishes an image-correct stopped runtime"
+  finalize_install_state "0.5.32"
+  assert_json_eq "$INSTALL_STATE_FILE" 'data["version"]' "0.5.32" "image-only finalization currently publishes an image-correct stopped runtime"
   assert_json_eq "$INSTALL_STATE_FILE" 'data["image"]' "$UMBREL_IMAGE" "image-only finalization currently records the image-correct stopped runtime"
   pass "image-only finalization false-success path is characterized before runtime-truth coverage"
 fi
@@ -1870,13 +1902,13 @@ assert_finalization_failure_preserves_state() {
   local finalization_output="$TEST_TMPDIR/$label-finalization.out"
 
   cp "$INSTALL_STATE_FILE" "$before_state"
-  if finalize_install_state "0.5.31" >"$finalization_output" 2>&1; then
+  if finalize_install_state "0.5.32" >"$finalization_output" 2>&1; then
     fail "$label must reject finalization"
   fi
   cmp -s "$before_state" "$INSTALL_STATE_FILE" || fail "$label must leave install state byte-for-byte unchanged"
   assert_json_eq "$INSTALL_STATE_FILE" 'data["version"]' "0.5.24" "$label does not publish the target version"
   assert_json_eq "$INSTALL_STATE_FILE" 'data["host_version"]' "0.5.24" "$label does not publish the target host version"
-  assert_not_contains "0.5.31" "$(<"$finalization_output")" "$label reports a generalized finalization error"
+  assert_not_contains "0.5.32" "$(<"$finalization_output")" "$label reports a generalized finalization error"
   assert_contains "$expected_refusal" "$(<"$finalization_output")" "$label preserves the legacy safe refusal"
   assert_contains "predicate=$expected_predicate observed-state=not-canonical" "$(<"$finalization_output")" "$label reports generalized runtime truth"
 }
@@ -1934,7 +1966,7 @@ assert_runtime_truth_failure_preserves_state() {
   local publications_before="$FINALIZATION_PUBLICATION_CALLS"
 
   cp "$INSTALL_STATE_FILE" "$before_state"
-  if finalize_install_state "0.5.31" >"$finalization_output" 2>&1; then
+  if finalize_install_state "0.5.32" >"$finalization_output" 2>&1; then
     fail "$label must reject image-correct runtime drift"
   fi
   cmp -s "$before_state" "$INSTALL_STATE_FILE" || fail "$label must leave install state byte-for-byte unchanged"
@@ -1982,10 +2014,10 @@ for runtime_truth_case in \
 done
 
 prepare_canonical_runtime_truth_case
-finalize_install_state "0.5.31"
+finalize_install_state "0.5.32"
 assert_eq "1" "$FINALIZATION_PUBLICATION_CALLS" "canonical runtime truth publishes exactly once"
 assert_runtime_truth_reporter_read_only "canonical runtime truth"
-assert_json_eq "$INSTALL_STATE_FILE" 'data["version"]' "0.5.31" "canonical runtime truth finalization writes the target version"
+assert_json_eq "$INSTALL_STATE_FILE" 'data["version"]' "0.5.32" "canonical runtime truth finalization writes the target version"
 assert_json_eq "$INSTALL_STATE_FILE" 'data["image"]' "$UMBREL_IMAGE" "canonical runtime truth finalization records the verified image ref"
 assert_json_eq "$INSTALL_STATE_FILE" 'data["image_id"]' "$FAKE_CANDIDATE_IMAGE_ID" "canonical runtime truth finalization records the verified image ID"
 pass "full runtime-truth finalization rejects every image-correct drift class before publication"
@@ -2183,9 +2215,9 @@ cat > "$INSTALL_STATE_FILE" <<'JSON'
 JSON
 FAKE_UMBREL_IMAGE_REF="$UMBREL_IMAGE"
 FAKE_UMBREL_IMAGE_ID="$FAKE_CANDIDATE_IMAGE_ID"
-finalize_install_state "0.5.31"
-assert_json_eq "$INSTALL_STATE_FILE" 'data["version"]' "0.5.31" "stale public 0.5.26 state repairs the final version"
-assert_json_eq "$INSTALL_STATE_FILE" 'data["host_version"]' "0.5.31" "stale public 0.5.26 state repairs the host version"
+finalize_install_state "0.5.32"
+assert_json_eq "$INSTALL_STATE_FILE" 'data["version"]' "0.5.32" "stale public 0.5.26 state repairs the final version"
+assert_json_eq "$INSTALL_STATE_FILE" 'data["host_version"]' "0.5.32" "stale public 0.5.26 state repairs the host version"
 assert_json_eq "$INSTALL_STATE_FILE" 'data["image"]' "$UMBREL_IMAGE" "stale public 0.5.26 state repairs the live pinned image ref"
 assert_json_eq "$INSTALL_STATE_FILE" 'data["image_id"]' "$FAKE_CANDIDATE_IMAGE_ID" "stale public 0.5.26 state repairs the missing live image ID"
 
@@ -2227,9 +2259,9 @@ assert_finalization_failure_preserves_state "unresolved-pinned-image-id" "Refusi
 prepare_canonical_runtime_truth_case
 rm -f "$INSTALL_STATE_FILE"
 [[ ! -e "$INSTALL_STATE_FILE" ]] || fail "no-state finalization fixture must start without install state"
-finalize_install_state "0.5.31"
-assert_json_eq "$INSTALL_STATE_FILE" 'data["version"]' "0.5.31" "no-state finalization creates the target version"
-assert_json_eq "$INSTALL_STATE_FILE" 'data["host_version"]' "0.5.31" "no-state finalization creates the target host version"
+finalize_install_state "0.5.32"
+assert_json_eq "$INSTALL_STATE_FILE" 'data["version"]' "0.5.32" "no-state finalization creates the target version"
+assert_json_eq "$INSTALL_STATE_FILE" 'data["host_version"]' "0.5.32" "no-state finalization creates the target host version"
 assert_json_eq "$INSTALL_STATE_FILE" 'data["image"]' "$UMBREL_IMAGE" "no-state finalization creates the live pinned image ref"
 assert_json_eq "$INSTALL_STATE_FILE" 'data["image_id"]' "$FAKE_CANDIDATE_IMAGE_ID" "no-state finalization creates the live image ID"
 
@@ -2249,25 +2281,25 @@ postcheck_umbrel_safe_shutdown() { :; }
 systemctl() { return 0; }
 precheck_common_canonical_install
 assert_eq "1" "$CHAIN_PRECHECK_CALLS" "chained migration fixture precheck stub is exercised before migration dispatch"
-for chained_step in 0.5.24_to_0.5.25 0.5.25_to_0.5.26 0.5.26_to_0.5.27 0.5.27_to_0.5.28 0.5.28_to_0.5.29 0.5.29_to_0.5.30 0.5.30_to_0.5.31; do
+for chained_step in 0.5.24_to_0.5.25 0.5.25_to_0.5.26 0.5.26_to_0.5.27 0.5.27_to_0.5.28 0.5.28_to_0.5.29 0.5.29_to_0.5.30 0.5.30_to_0.5.31 0.5.31_to_0.5.32; do
   run_migration_step "$chained_step" || fail "chained migration $chained_step must complete before finalization"
 done
-assert_eq "7" "$CHAIN_PRECHECK_CALLS" "chained migration dispatch exercises the common precheck for every applicable later migration"
-finalize_install_state "0.5.31"
+assert_eq "8" "$CHAIN_PRECHECK_CALLS" "chained migration dispatch exercises the common precheck for every applicable later migration"
+finalize_install_state "0.5.32"
 eval "$original_precheck_common_canonical_install"
 eval "$original_m1s_configure_avahi_mdns"
 eval "$original_m1s_avahi_internal_health_check"
 eval "$original_install_umbrel_safe_shutdown"
 eval "$original_postcheck_umbrel_safe_shutdown"
 unset -f systemctl
-assert_json_eq "$INSTALL_STATE_FILE" 'data["version"]' "0.5.31" "0.5.24 to 0.5.31 chain publishes the final version only after runtime verification"
-assert_json_eq "$INSTALL_STATE_FILE" 'data["host_version"]' "0.5.31" "0.5.24 to 0.5.31 chain publishes the final host version"
-assert_json_eq "$INSTALL_STATE_FILE" 'data["image"]' "$UMBREL_IMAGE" "0.5.24 to 0.5.31 chain records the live pinned image ref"
-assert_json_eq "$INSTALL_STATE_FILE" 'data["image_id"]' "$FAKE_CANDIDATE_IMAGE_ID" "0.5.24 to 0.5.31 chain records the resolved live image ID"
+assert_json_eq "$INSTALL_STATE_FILE" 'data["version"]' "0.5.32" "0.5.24 to 0.5.32 chain publishes the final version only after runtime verification"
+assert_json_eq "$INSTALL_STATE_FILE" 'data["host_version"]' "0.5.32" "0.5.24 to 0.5.32 chain publishes the final host version"
+assert_json_eq "$INSTALL_STATE_FILE" 'data["image"]' "$UMBREL_IMAGE" "0.5.24 to 0.5.32 chain records the live pinned image ref"
+assert_json_eq "$INSTALL_STATE_FILE" 'data["image_id"]' "$FAKE_CANDIDATE_IMAGE_ID" "0.5.24 to 0.5.32 chain records the resolved live image ID"
 
 before_rerun_state="$TEST_TMPDIR/finalized-before-rerun.json"
 cp "$INSTALL_STATE_FILE" "$before_rerun_state"
-finalize_install_state "0.5.31"
+finalize_install_state "0.5.32"
 assert_json_semantically_equal_excluding_updated_at "$before_rerun_state" "$INSTALL_STATE_FILE" "second successful finalization is semantically idempotent except timestamps"
 
 prepare_transaction_case
@@ -2277,7 +2309,7 @@ dry_run_state="$TEST_TMPDIR/dry-run-before.json"
 cp "$INSTALL_STATE_FILE" "$dry_run_state"
 dry_run_docker_log="$(fake_docker_log_text)"
 DRY_RUN=1
-dry_run_output="$(finalize_install_state "0.5.31")"
+dry_run_output="$(finalize_install_state "0.5.32")"
 DRY_RUN=0
 assert_contains "skips live Umbrel runtime verification and final state publication" "$dry_run_output" "dry-run finalization must not claim runtime verification"
 cmp -s "$dry_run_state" "$INSTALL_STATE_FILE" || fail "dry-run finalization must not write install state"
@@ -2417,7 +2449,7 @@ if [[ "${M1S_TEST_RUNTIME_TRUTH_QA:-0}" -eq 1 ]]; then
   printf '[qa] runtime-truth finalization sourced-shell seam\n'
   prepare_canonical_runtime_truth_case
   set +e
-  finalize_install_state "0.5.31"
+  finalize_install_state "0.5.32"
   canonical_status=$?
   set -e
   assert_eq "0" "$canonical_status" "canonical sourced-shell finalization must succeed"
@@ -2430,7 +2462,7 @@ if [[ "${M1S_TEST_RUNTIME_TRUTH_QA:-0}" -eq 1 ]]; then
   noncanonical_before_sha="$(sha256sum "$INSTALL_STATE_FILE" | cut -d' ' -f1)"
   noncanonical_output="$TEST_TMPDIR/qa-noncanonical-finalization.out"
   set +e
-  finalize_install_state "0.5.31" >"$noncanonical_output" 2>&1
+  finalize_install_state "0.5.32" >"$noncanonical_output" 2>&1
   noncanonical_status=$?
   set -e
   noncanonical_after_sha="$(sha256sum "$INSTALL_STATE_FILE" | cut -d' ' -f1)"
@@ -2513,7 +2545,7 @@ if [[ "${M1S_TEST_CURRENT_VERSION_MAIN_QA:-0}" -eq 1 ]]; then
 
   prepare_canonical_runtime_truth_case
   write_current_version_metadata
-  detect_installed_version() { printf '0.5.31\n'; }
+  detect_installed_version() { printf '0.5.32\n'; }
   newer_main_before_sha="$(sha256sum "$INSTALL_STATE_FILE" | cut -d' ' -f1)"
   newer_main_publications="$FINALIZATION_PUBLICATION_CALLS"
   set +e
